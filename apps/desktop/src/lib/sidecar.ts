@@ -10,7 +10,8 @@ export type SidecarEvent =
   | { type: "ask"; proposalId: string; question: string }
   | { type: "done"; message: string }
   | { type: "error"; message: string }
-  | { type: "round"; n: number; max: number };
+  | { type: "round"; n: number; max: number }
+  | { type: "heartbeat"; message: string };
 
 export async function sidecarHealth(): Promise<boolean> {
   try {

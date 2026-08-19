@@ -51,7 +51,8 @@ export type SseEvent =
   | { type: "ask"; proposalId: string; question: string }
   | { type: "done"; message: string }
   | { type: "error"; message: string }
-  | { type: "round"; n: number; max: number };
+  | { type: "round"; n: number; max: number }
+  | { type: "heartbeat"; message: string };
 
 export const MAX_ROUNDS = 50;
 export const TURN_TIMEOUT_MS = 90_000;
@@ -81,4 +82,6 @@ How you work:
 - If attached scrollback already contains the answer, use it. If it is missing, incomplete, or stale, propose the command.
 - When you find a problem (down interface, OSPF neighbor missing, ACL drop, high retransmits), say what is wrong, then propose_command with intent=remediate and the specific command to implement the fix (config, clear, bounce, permit). Still dual-gated — never imply it already ran.
 - Propose one command at a time. After output returns, continue until the question is answered or the operator denies.
-- If the permit list blocks a command, explain why and propose an allowed equivalent.`;
+- If the permit list blocks a command, explain why and propose an allowed equivalent.
+- When asked to implement something (storm-control, QoS, ACL, NTP, etc.): gather whatever show/display output you still need (version, current config, feature syntax for this code). Do not stop at an arbitrary command count. Once you have enough to write the correct config, switch to propose_command with intent=remediate and the actual set/configure commands. Do not sit idle, and do not keep investigating after you already know what to implement.
+- When you can answer the operator's question, stop. Do not run extra show commands, do not chase related features, and do not keep thinking. State the answer and wait.`;

@@ -48,6 +48,8 @@ export function ChatPane() {
     backends: ["local", "cursor", "ollama"],
   });
   const [busy, setBusy] = useState(false);
+  const [thinking, setThinking] = useState("");
+  const [thinkMs, setThinkMs] = useState(0);
   const [status, setStatus] = useState("sidecar idle");
   const [gpu, setGpu] = useState({
     running: false,
@@ -126,6 +128,16 @@ export function ChatPane() {
     return () => window.clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!busy) {
+      setThinkMs(0);
+      return;
+    }
+    const t0 = Date.now();
+    const id = window.setInterval(() => setThinkMs(Date.now() - t0), 250);
+    return () => window.clearInterval(id);
+  }, [busy]);
+
   function resetChat(opts?: { backend?: ChatBackend; model?: string; label?: string }) {
     abort.current?.abort();
     void stopChat(conv.current);
@@ -133,6 +145,7 @@ export function ChatPane() {
     setMessages([]);
     setInput("");
     setBusy(false);
+    setThinking("");
     setState({ approval: null });
     const b = opts?.backend ?? backend;
     if (opts?.backend) {
@@ -175,6 +188,7 @@ export function ChatPane() {
     setMessages(next);
     setInput("");
     setBusy(true);
+    setThinking("Thinking");
     abort.current = new AbortController();
     let assistant = "";
     const id = newId();
@@ -188,10 +202,26 @@ export function ChatPane() {
         onEvent: (e) => {
           if (e.type === "delta") {
             assistant += e.text;
+            setThinking("Writing");
             setMessages([...next, { id, role: "assistant", content: assistant }]);
+          } else if (e.type === "tool") {
+            const name = e.name || "tool";
+            if (e.status === "start") setThinking(`Using ${name.replace(/_/g, " ")}`);
+            else if (e.status === "ok") setThinking("Thinking about the result");
+            else if (e.status === "denied") {
+              const reason =
+                typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail ?? "permit list denied");
+              setStatus(`permit denied: ${reason}`);
+              setMessages((cur) => [
+                ...cur,
+                { id: newId(), role: "system", content: `Permit list denied: ${reason}` },
+              ]);
+            }
           } else if (e.type === "approval") {
+            setThinking("Waiting for you to Approve");
             setState({ approval: e.pending });
           } else if (e.type === "ask") {
+            setThinking("Waiting for your answer");
             setState({
               approval: {
                 proposalId: e.proposalId,
@@ -200,31 +230,31 @@ export function ChatPane() {
                 detail: { question: e.question },
               },
             });
-          } else if (e.type === "tool" && e.status === "denied") {
-            const reason =
-              typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail ?? "permit list denied");
-            setStatus(`permit denied: ${reason}`);
-            setMessages((cur) => [
-              ...cur,
-              { id: newId(), role: "system", content: `Permit list denied: ${reason}` },
-            ]);
           } else if (e.type === "error") {
             setStatus(e.message);
+            setThinking("");
             setMessages((cur) => [
               ...cur,
               { id: newId(), role: "system", content: `Agent stopped: ${e.message}` },
             ]);
           } else if (e.type === "round") {
+            setThinking(`Thinking · round ${e.n}/${e.max}`);
             setStatus(`round ${e.n}/${e.max}`);
+          } else if (e.type === "heartbeat") {
+            setThinking(e.message || "Still thinking");
+            setStatus(e.message || "still thinking");
           } else if (e.type === "done") {
+            setThinking("");
             if (!assistant) setMessages([...next, { id, role: "assistant", content: e.message }]);
           }
         },
       });
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
+      setThinking("");
     } finally {
       setBusy(false);
+      setThinking("");
     }
   }
 
@@ -465,6 +495,22 @@ export function ChatPane() {
         {approval && (
           <div className="banner">
             Agent proposed a command to {approval.detail?.intent === "remediate" ? "implement a fix" : "answer your question"} — Approve to run it
+          </div>
+        )}
+        {busy && (
+          <div className="msg assistant thinking" aria-live="polite">
+            <div className="meta">assistant</div>
+            <div className="think-row">
+              <span className="think-dots" aria-hidden>
+                <i />
+                <i />
+                <i />
+              </span>
+              <span>
+                {thinking || "Thinking"}
+                {thinkMs >= 1000 ? ` · ${Math.floor(thinkMs / 1000)}s` : ""}
+              </span>
+            </div>
           </div>
         )}
       </div>

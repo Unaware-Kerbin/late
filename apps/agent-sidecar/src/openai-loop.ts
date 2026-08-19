@@ -129,7 +129,17 @@ async function runCompatChat(opts: {
 
     let completion: Awaited<ReturnType<typeof chatCompletions>>;
     try {
-      completion = await chatCompletions(label, base, model, messages, opts.signal);
+      const beat = setInterval(() => {
+        opts.emit({
+          type: "heartbeat",
+          message: gathered ? `Waiting on ${label} after the command…` : `${label} is thinking…`,
+        });
+      }, 5000);
+      try {
+        completion = await chatCompletions(label, base, model, messages, opts.signal);
+      } finally {
+        clearInterval(beat);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (gathered) {

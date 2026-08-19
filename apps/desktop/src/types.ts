@@ -264,6 +264,22 @@ export function coerceDeviceKind(v: unknown): DeviceKind {
   return "ssh";
 }
 
+/** Collapse empty / `.` / `..` segments. Empty input becomes ungrouped (`null`). */
+export function normalizeFolderPath(raw: string | null | undefined): string | null {
+  const path = (raw ?? "")
+    .split("/")
+    .map((p) => p.trim())
+    .filter((p) => p && p !== "." && p !== "..")
+    .join("/");
+  return path || null;
+}
+
+/** True when `path` is `ancestor` or a descendant (`ancestor/...`). "NY" does not match "NYC". */
+export function folderPathIsUnder(path: string, ancestor: string): boolean {
+  if (!ancestor) return path === "";
+  return path === ancestor || path.startsWith(`${ancestor}/`);
+}
+
 export function coerceDevice(raw: unknown): Device {
   const d = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const kind = coerceDeviceKind(d.kind);
@@ -281,7 +297,7 @@ export function coerceDevice(raw: unknown): Device {
     api_base_url: pickStr(d, "api_base_url", "apiBaseUrl") ?? base.api_base_url,
     api_controller: pickStr(d, "api_controller", "apiController") ?? base.api_controller,
     auth_profile_id: pickStr(d, "auth_profile_id", "authProfileId", "auth_profile", "profile_id"),
-    folder: pickStr(d, "folder"),
+    folder: normalizeFolderPath(pickStr(d, "folder")),
     tags: Array.isArray(d.tags) ? (d.tags as string[]) : [],
     accent: pickStr(d, "accent") ?? base.accent,
     syntax_highlight: Boolean(pickRaw(d, "syntax_highlight", "syntaxHighlight") ?? true),
@@ -317,13 +333,35 @@ export function coerceSession(raw: unknown): SessionInfo {
   };
 }
 
+function coerceFolderList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const item of raw) {
+    const path = normalizeFolderPath(typeof item === "string" ? item : String(item ?? ""));
+    if (!path) continue;
+    let acc = "";
+    for (const part of path.split("/")) {
+      acc = acc ? `${acc}/${part}` : part;
+      if (!out.includes(acc)) out.push(acc);
+    }
+  }
+  return out;
+}
+
 export function coerceInventory(raw: unknown): Inventory {
   const inv = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const devices = inv.devices;
-  return {
-    devices: Array.isArray(devices) ? devices.map(coerceDevice) : [],
-    folders: Array.isArray(inv.folders) ? (inv.folders as string[]) : [],
-  };
+  const devices = Array.isArray(inv.devices) ? inv.devices.map(coerceDevice) : [];
+  // RPC snake_to_camel leaves `folders` unchanged (no `_`). Accept aliases if a caller skips remapping.
+  const folders = coerceFolderList(pickRaw(inv, "folders", "folder_list", "folderList"));
+  for (const d of devices) {
+    if (!d.folder) continue;
+    let acc = "";
+    for (const part of d.folder.split("/")) {
+      acc = acc ? `${acc}/${part}` : part;
+      if (!folders.includes(acc)) folders.push(acc);
+    }
+  }
+  return { devices, folders };
 }
 
 export function emptyDevice(kind: DeviceKind = "ssh"): Device {

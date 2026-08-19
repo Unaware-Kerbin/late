@@ -38,7 +38,7 @@ import {
   useApp,
 } from "../store";
 import { rpc } from "../lib/rpc";
-import { VENDORS, emptyDevice, newId, type AuthProfile, type Device, type DeviceKind } from "../types";
+import { VENDORS, emptyDevice, newId, normalizeFolderPath, type AuthProfile, type Device, type DeviceKind } from "../types";
 
 function trap(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -79,7 +79,7 @@ export function Modals() {
       {collectionsOpen && <CollectionsModal />}
       {captureOpen && <CaptureModal />}
       {authOpen && <AuthModal />}
-      {deviceEditor && <DeviceModal device={deviceEditor} />}
+      {deviceEditor && <DeviceModal key={deviceEditor.id} device={deviceEditor} />}
     </>
   );
 }
@@ -712,6 +712,7 @@ function DeviceModal({ device }: { device: Device }) {
   const [ports, setPorts] = useState<string[]>([]);
   const [more, setMore] = useState(false);
   const auth = useApp((s) => s.auth);
+  const folders = useApp((s) => s.inventory.folders);
   const linked = auth.find((p) => p.id === (device.auth_profile_id ?? ""));
   const [username, setUsername] = useState(linked?.username ?? "");
   const [password, setPassword] = useState("");
@@ -778,7 +779,17 @@ function DeviceModal({ device }: { device: Device }) {
           </label>
           <label>
             Folder
-            <input placeholder="Lab / Core" value={d.folder ?? ""} onChange={(e) => patch({ folder: e.target.value })} />
+            <input
+              list="late-folders"
+              placeholder="Sites/NYC/Core"
+              value={d.folder ?? ""}
+              onChange={(e) => patch({ folder: e.target.value || null })}
+            />
+            <datalist id="late-folders">
+              {folders.map((f) => (
+                <option key={f} value={f} />
+              ))}
+            </datalist>
           </label>
         </div>
 
@@ -1025,6 +1036,7 @@ function DeviceModal({ device }: { device: Device }) {
               const body = {
                 ...d,
                 name,
+                folder: normalizeFolderPath(d.folder),
                 serial_path: d.kind === "serial" ? serialPath || d.serial_path : null,
                 host: d.kind === "ssh" || d.kind === "api" ? d.host : null,
                 port: d.kind === "ssh" ? d.port ?? 22 : null,

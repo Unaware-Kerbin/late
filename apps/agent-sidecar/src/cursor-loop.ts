@@ -64,19 +64,38 @@ export async function runCursorChat(opts: {
   ].join("\n");
 
   const toolNotes: string[] = [];
+  let lastToolDoneAt = 0;
   const tools = cursorToolDefs(() => ctx);
-  for (const def of Object.values(tools) as { execute?: (a: Record<string, unknown>) => Promise<string> }[]) {
-    const orig = def.execute;
-    if (!orig) continue;
-    def.execute = async (args: Record<string, unknown>) => {
-      const result = await orig(args);
-      toolNotes.push(String(result).slice(0, 4000));
-      return result;
-    };
+  for (const def of Object.values(tools) as Record<string, unknown>[]) {
+    for (const key of ["execute", "handler", "run"] as const) {
+      const orig = def[key];
+      if (typeof orig !== "function") continue;
+      const bound = (orig as (a: Record<string, unknown>) => Promise<string>).bind(def);
+      def[key] = async (args: Record<string, unknown>) => {
+        const result = await bound(args);
+        toolNotes.push(String(result).slice(0, 4000));
+        lastToolDoneAt = Date.now();
+        return result;
+      };
+    }
   }
 
   const linked = AbortSignal.any([opts.signal, AbortSignal.timeout(TURN_TIMEOUT_MS * 8)]);
   let agent: AgentHandle | undefined;
+
+  function continuePrompt(): string {
+    return [
+      SYSTEM_PROMPT,
+      "",
+      "Live device output is already below.",
+      "If that output answers the question, reply with the answer ONLY. Do not propose another show. Do not investigate related features.",
+      "Only propose a command if a named fact is still missing, or if the operator asked you to implement a change and you now have the syntax.",
+      "",
+      `Original question:\n${lastUser?.content ?? ""}`,
+      "",
+      `Command output so far:\n${toolNotes.join("\n\n---\n")}`,
+    ].join("\n");
+  }
 
   async function oneShot(userPrompt: string): Promise<string> {
     agent = await Agent.create({
@@ -104,39 +123,98 @@ export async function runCursorChat(opts: {
       },
     });
     const run = await agent.send(userPrompt);
+    const iterator = run.stream()[Symbol.asyncIterator]();
     let text = "";
-    for await (const event of run.stream()) {
-      if (linked.aborted) break;
-      const e = event as {
+    let lastTextAt = Date.now();
+    const toolsAtStart = toolNotes.length;
+    const idleAfterToolsMs = 15_000;
+    const idleAfterAnswerMs = 8_000;
+
+    const closeStream = async () => {
+      try {
+        await iterator.return?.(undefined);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const settle = async (): Promise<"none" | "done" | "stall"> => {
+      const quietText = Date.now() - lastTextAt > idleAfterAnswerMs;
+      const quietTool = Date.now() - lastToolDoneAt > idleAfterToolsMs;
+      if (text.trim().length > 40 && quietText) {
+        await closeStream();
+        return "done";
+      }
+      if (toolNotes.length > toolsAtStart && quietTool && quietText && !text.trim()) {
+        await closeStream();
+        return "stall";
+      }
+      return "none";
+    };
+
+    while (true) {
+      if (opts.signal.aborted || linked.aborted) throw new Error("stopped");
+      const settled = await settle();
+      if (settled === "done") return text;
+      if (settled === "stall") {
+        if (text.trim()) return text;
+        throw new Error("Cursor went silent after a command");
+      }
+      const raced = await Promise.race([
+        iterator.next().then((v) => ({ kind: "val" as const, v })),
+        new Promise<{ kind: "tick" }>((resolve) => {
+          setTimeout(() => resolve({ kind: "tick" }), 1000);
+        }),
+      ]);
+      if (raced.kind === "tick") {
+        const sinceTool = lastToolDoneAt ? Math.round((Date.now() - lastToolDoneAt) / 1000) : 0;
+        const sinceText = Math.round((Date.now() - lastTextAt) / 1000);
+        opts.emit({
+          type: "heartbeat",
+          message: text.trim()
+            ? `Finishing the answer (${sinceText}s quiet)`
+            : toolNotes.length > toolsAtStart
+              ? `Waiting on Cursor after the command (${sinceTool}s)`
+              : `Cursor is thinking (${sinceText}s)`,
+        });
+        continue;
+      }
+      if (raced.v.done) break;
+      const e = raced.v.value as {
         type?: string;
         message?: { content?: { type: string; text?: string }[] };
       };
       if (e.type === "assistant" && e.message?.content) {
         for (const block of e.message.content) {
-          if (block.type === "text" && block.text) {
+          if (block.type === "text" && block.text?.trim()) {
             text += block.text;
+            lastTextAt = Date.now();
             opts.emit({ type: "delta", text: block.text });
           }
         }
       }
     }
-    if (linked.aborted) throw new Error("stopped");
-    const result = await run.wait();
+    const result = await Promise.race([
+      run.wait(),
+      new Promise<{ result?: string }>((resolve) => setTimeout(() => resolve({}), 8000)),
+    ]);
     return text || result.result || "";
   }
 
   try {
     try {
-      return await oneShot(prompt);
+      const text = await oneShot(prompt);
+      if (text.trim() || !toolNotes.length) return text;
     } catch (err) {
       if (!toolNotes.length || opts.signal.aborted) throw err;
-      const why = err instanceof Error ? err.message : String(err);
-      const note = `\n(Cursor paused after a command: ${why}. Continuing from device output.)\n`;
-      opts.emit({ type: "delta", text: note });
-      return await oneShot(
-        `${SYSTEM_PROMPT}\n\nA command already ran after operator Approve. Continue and answer the original question. Do not ask them to paste output.\n\nOriginal question:\n${lastUser?.content ?? ""}\n\nCommand output:\n${toolNotes.join("\n\n")}\n`,
-      );
+      opts.emit({
+        type: "delta",
+        text: `\n(Cursor went quiet after the command. Not starting another think loop.)\n`,
+      });
+      return "";
     }
+    opts.emit({ type: "delta", text: "\n(Answering from device output.)\n" });
+    return await oneShot(continuePrompt());
   } finally {
     try {
       await agent?.[Symbol.asyncDispose]?.();

@@ -17,6 +17,7 @@ import {
   coerceSettings,
   emptyDevice,
   newId,
+  normalizeFolderPath,
   type AppSettings,
   type AuthProfile,
   type CaptureRecord,
@@ -312,10 +313,15 @@ export async function refreshAll() {
   }
 }
 
+function persistDevice(device: Device): Device {
+  return { ...device, folder: normalizeFolderPath(device.folder) };
+}
+
 export async function upsertDevice(device: Device) {
   try {
-    await rpc.call("inventory.upsert", { device, ...device });
-    toast("ok", `saved ${device.name}`);
+    const next = persistDevice(device);
+    await rpc.call("inventory.upsert", { device: next, ...next });
+    toast("ok", `saved ${next.name}`);
     setState({ deviceEditor: null });
     await refreshAll();
   } catch (err) {
@@ -328,7 +334,7 @@ export async function saveDeviceWithLogin(
   login?: { username: string; password?: string; keyPath?: string | null },
 ) {
   try {
-    let next = { ...device };
+    let next = persistDevice(device);
     if (device.kind === "ssh") {
       const user = login?.username?.trim() ?? "";
       if (!user) {
@@ -356,7 +362,7 @@ export async function saveDeviceWithLogin(
         ...profile,
         password: login?.password || undefined,
       });
-      next = { ...next, auth_profile_id: id };
+      next = persistDevice({ ...next, auth_profile_id: id });
     }
     await rpc.call("inventory.upsert", { device: next, ...next });
     toast("ok", `saved ${next.name}`);
@@ -370,6 +376,67 @@ export async function saveDeviceWithLogin(
 export async function deleteDevice(id: string) {
   try {
     await rpc.call("inventory.delete", { id });
+    await refreshAll();
+  } catch (err) {
+    toast("error", errText(err));
+  }
+}
+
+export async function upsertFolder(path: string): Promise<boolean> {
+  const next = normalizeFolderPath(path);
+  if (!next) {
+    toast("error", "Folder name is empty");
+    return false;
+  }
+  try {
+    await rpc.call("inventory.folder.upsert", { path: next, folder: next });
+    await refreshAll();
+    return true;
+  } catch (err) {
+    toast("error", errText(err));
+    return false;
+  }
+}
+
+export async function renameFolder(from: string, to: string): Promise<boolean> {
+  const src = normalizeFolderPath(from);
+  const dest = normalizeFolderPath(to);
+  if (!src || !dest) {
+    toast("error", "Folder name is empty");
+    return false;
+  }
+  try {
+    await rpc.call("inventory.folder.rename", { from: src, to: dest, old: src });
+    await refreshAll();
+    return true;
+  } catch (err) {
+    toast("error", errText(err));
+    return false;
+  }
+}
+
+export async function deleteFolder(path: string): Promise<boolean> {
+  const next = normalizeFolderPath(path);
+  if (!next) {
+    toast("error", "Folder name is empty");
+    return false;
+  }
+  try {
+    await rpc.call("inventory.folder.delete", { path: next, folder: next });
+    await refreshAll();
+    return true;
+  } catch (err) {
+    toast("error", errText(err));
+    return false;
+  }
+}
+
+export async function moveDeviceToFolder(deviceId: string, folder: string | null) {
+  const device = getState().inventory.devices.find((d) => d.id === deviceId);
+  if (!device) return;
+  const next = persistDevice({ ...device, folder: normalizeFolderPath(folder) });
+  try {
+    await rpc.call("inventory.upsert", { device: next, ...next });
     await refreshAll();
   } catch (err) {
     toast("error", errText(err));
@@ -998,8 +1065,14 @@ export function markDisconnected(sessionId: string, reason?: string) {
   });
 }
 
-export function startDeviceEditor(device?: Device, kind?: Device["kind"]) {
-  setState({ deviceEditor: device ? { ...device } : emptyDevice(kind ?? "ssh") });
+export function startDeviceEditor(device?: Device, kind?: Device["kind"], folder?: string | null) {
+  if (device) {
+    setState({ deviceEditor: { ...device } });
+    return;
+  }
+  const next = emptyDevice(kind ?? "ssh");
+  next.folder = normalizeFolderPath(folder);
+  setState({ deviceEditor: next });
 }
 
 rpc.onStatus((ok, err) => {

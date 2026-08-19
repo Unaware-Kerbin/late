@@ -56,6 +56,19 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             app.inventory.delete_device(&id)?;
             Ok(json!({"ok": true}))
         }
+        "inventory.folder.upsert" => {
+            let path = req_str(&params, &["path", "folder"])?;
+            Ok(serde_json::to_value(app.inventory.upsert_folder(&path)?)?)
+        }
+        "inventory.folder.rename" => {
+            let from = req_str(&params, &["from", "old", "path"])?;
+            let to = req_str(&params, &["to", "new", "name"])?;
+            Ok(serde_json::to_value(app.inventory.rename_folder(&from, &to)?)?)
+        }
+        "inventory.folder.delete" => {
+            let path = req_str(&params, &["path", "folder"])?;
+            Ok(serde_json::to_value(app.inventory.delete_folder(&path)?)?)
+        }
         "auth.list" => Ok(serde_json::to_value(app.inventory.load_auth()?)?),
         "auth.upsert" => auth_upsert(app, params),
         "auth.delete" => {
@@ -538,4 +551,68 @@ fn snake_to_camel(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn folder_rename_reads_to_not_new() {
+        // UI store.ts sends { from, to, old: from }. `new` is a reserved-ish JS key
+        // so the client prefers `to`; req_str must read that first.
+        let params = to_snake(json!({
+            "from": "Sites/NYC",
+            "to": "Sites/Boston",
+            "old": "Sites/NYC"
+        }));
+        assert_eq!(
+            req_str(&params, &["from", "old", "path"]).unwrap(),
+            "Sites/NYC"
+        );
+        assert_eq!(
+            req_str(&params, &["to", "new", "name"]).unwrap(),
+            "Sites/Boston"
+        );
+        assert_eq!(
+            params.get("to").and_then(|v| v.as_str()),
+            Some("Sites/Boston")
+        );
+        assert!(params.get("new").is_none());
+    }
+
+    #[test]
+    fn folder_rename_aliases_old_new_path_name() {
+        let params = to_snake(json!({
+            "old": "Sites/NYC",
+            "new": "Sites/Boston"
+        }));
+        assert_eq!(
+            req_str(&params, &["from", "old", "path"]).unwrap(),
+            "Sites/NYC"
+        );
+        assert_eq!(
+            req_str(&params, &["to", "new", "name"]).unwrap(),
+            "Sites/Boston"
+        );
+        let params = to_snake(json!({
+            "path": "Sites/NYC",
+            "name": "Sites/Boston"
+        }));
+        assert_eq!(
+            req_str(&params, &["from", "old", "path"]).unwrap(),
+            "Sites/NYC"
+        );
+        assert_eq!(
+            req_str(&params, &["to", "new", "name"]).unwrap(),
+            "Sites/Boston"
+        );
+    }
+
+    #[test]
+    fn folder_upsert_delete_aliases() {
+        let params = to_snake(json!({ "path": "Sites/NYC", "folder": "Sites/NYC" }));
+        assert_eq!(req_str(&params, &["path", "folder"]).unwrap(), "Sites/NYC");
+    }
 }

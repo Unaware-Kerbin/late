@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Vendor {
     Junos,
@@ -50,6 +50,13 @@ impl Vendor {
             "aos_cx" | "aos-cx" | "aoscx" | "aruba" | "arubaos-cx" => Vendor::AosCx,
             _ => Vendor::Generic,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for Vendor {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::parse(&raw))
     }
 }
 
@@ -176,7 +183,7 @@ pub struct Device {
     pub api_controller: Option<String>,
     #[serde(default, alias = "authProfileId", alias = "auth_profile", alias = "profile_id")]
     pub auth_profile_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
@@ -367,6 +374,52 @@ mod tests {
         let json: Wrap = serde_json::from_str(r#"{"kind":"ssh"}"#).unwrap();
         assert_eq!(json.kind, DeviceKind::Ssh);
         assert_eq!(serde_json::to_value(DeviceKind::Ssh).unwrap(), "ssh");
+    }
+
+    #[test]
+    fn vendor_reads_parse_aliases_from_toml() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            vendor: Vendor,
+        }
+        for (raw, want) in [
+            ("vendor = \"aos_cx\"", Vendor::AosCx),
+            ("vendor = \"aos-cx\"", Vendor::AosCx),
+            ("vendor = \"aruba\"", Vendor::AosCx),
+            ("vendor = \"juniper\"", Vendor::Junos),
+            ("vendor = \"generic\"", Vendor::Generic),
+        ] {
+            let w: Wrap = toml::from_str(raw).unwrap();
+            assert_eq!(w.vendor, want, "{raw}");
+        }
+        assert_eq!(serde_json::to_value(Vendor::AosCx).unwrap(), "aos_cx");
+    }
+
+    #[test]
+    fn legacy_inventory_without_folders_key_roundtrips() {
+        let raw = r#"
+[[devices]]
+id = "ssh-1"
+name = "core"
+kind = "ssh"
+vendor = "generic"
+host = "192.0.2.1"
+"#;
+        let inv: Inventory = toml::from_str(raw).unwrap();
+        assert_eq!(inv.devices.len(), 1);
+        assert!(inv.folders.is_empty());
+        assert_eq!(inv.devices[0].folder, None);
+        let encoded = toml::to_string_pretty(&inv).unwrap();
+        assert!(
+            !encoded.lines().any(|l| {
+                let t = l.trim();
+                t.starts_with("folder ") || t.starts_with("folder=")
+            }),
+            "ungrouped devices must not write a folder key: {encoded}"
+        );
+        let again: Inventory = toml::from_str(&encoded).unwrap();
+        assert_eq!(again.devices[0].name, "core");
+        assert_eq!(again.devices[0].folder, None);
     }
 
     #[test]
