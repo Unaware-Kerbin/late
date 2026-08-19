@@ -365,7 +365,7 @@ async function proposeCommand(
     allow_always_allow?: boolean;
   };
   const linux = Boolean(policy.linuxUnrestricted ?? policy.linux_unrestricted);
-  const allowed = policy.allowed !== false;
+  const allowed = policy.allowed === true;
   const expanded = policy.expanded ?? command;
   const fingerprint = `${sessionId}::${expanded}`;
   const alwaysOk =

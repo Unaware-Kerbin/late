@@ -255,6 +255,7 @@ export function ChatPane() {
     } finally {
       setBusy(false);
       setThinking("");
+      setState({ approval: null });
     }
   }
 

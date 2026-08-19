@@ -2,6 +2,16 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-19 16:23
+
+**Stop Cursor hangs after a command, and let Settings scroll.**
+
+- Cursor idle timer no longer treats pre-tool “I’ll check…” text as the answer, and no longer closes the stream while Approve is pending.
+- Stream iterator is no longer polled twice at once (that deadlock froze the agent).
+- After a silent stall, one hop writes the answer from device output.
+- Vendor permit check is fail-closed (`allowed === true` required).
+- Settings (and other tall dialogs) scroll inside the viewport.
+
 ## 2026-08-19 14:57 — `3bfa1c4`
 
 **Add nested inventory folders so devices can be grouped by site.**

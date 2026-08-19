@@ -65,6 +65,7 @@ export async function runCursorChat(opts: {
 
   const toolNotes: string[] = [];
   let lastToolDoneAt = 0;
+  let toolsInFlight = 0;
   const tools = cursorToolDefs(() => ctx);
   for (const def of Object.values(tools) as Record<string, unknown>[]) {
     for (const key of ["execute", "handler", "run"] as const) {
@@ -72,10 +73,15 @@ export async function runCursorChat(opts: {
       if (typeof orig !== "function") continue;
       const bound = (orig as (a: Record<string, unknown>) => Promise<string>).bind(def);
       def[key] = async (args: Record<string, unknown>) => {
-        const result = await bound(args);
-        toolNotes.push(String(result).slice(0, 4000));
-        lastToolDoneAt = Date.now();
-        return result;
+        toolsInFlight++;
+        try {
+          const result = await bound(args);
+          toolNotes.push(String(result).slice(0, 4000));
+          lastToolDoneAt = Date.now();
+          return result;
+        } finally {
+          toolsInFlight--;
+        }
       };
     }
   }
@@ -98,6 +104,14 @@ export async function runCursorChat(opts: {
   }
 
   async function oneShot(userPrompt: string): Promise<string> {
+    if (agent) {
+      try {
+        await agent[Symbol.asyncDispose]?.();
+      } catch {
+        /* ignore */
+      }
+      agent = undefined;
+    }
     agent = await Agent.create({
       apiKey,
       model: { id: opts.model ?? "composer-2.5" },
@@ -129,6 +143,10 @@ export async function runCursorChat(opts: {
     const toolsAtStart = toolNotes.length;
     const idleAfterToolsMs = 15_000;
     const idleAfterAnswerMs = 8_000;
+    let pendingNext: Promise<
+      | { kind: "val"; v: IteratorResult<Record<string, unknown>> }
+      | { kind: "err"; err: unknown }
+    > | undefined;
 
     const closeStream = async () => {
       try {
@@ -138,14 +156,20 @@ export async function runCursorChat(opts: {
       }
     };
 
+    const textAfterTools = () => lastToolDoneAt === 0 || lastTextAt > lastToolDoneAt;
+
     const settle = async (): Promise<"none" | "done" | "stall"> => {
+      if (toolsInFlight > 0) return "none";
       const quietText = Date.now() - lastTextAt > idleAfterAnswerMs;
       const quietTool = Date.now() - lastToolDoneAt > idleAfterToolsMs;
-      if (text.trim().length > 40 && quietText) {
+      const ranTool = toolNotes.length > toolsAtStart;
+      // Preamble before a tool is not the answer. Only stop when text arrived
+      // after the last tool (or there was no tool) and then went quiet.
+      if (text.trim() && textAfterTools() && quietText) {
         await closeStream();
         return "done";
       }
-      if (toolNotes.length > toolsAtStart && quietTool && quietText && !text.trim()) {
+      if (ranTool && quietTool && !textAfterTools()) {
         await closeStream();
         return "stall";
       }
@@ -156,28 +180,40 @@ export async function runCursorChat(opts: {
       if (opts.signal.aborted || linked.aborted) throw new Error("stopped");
       const settled = await settle();
       if (settled === "done") return text;
-      if (settled === "stall") {
-        if (text.trim()) return text;
-        throw new Error("Cursor went silent after a command");
-      }
+      // Empty return lets the outer hop write from device output once.
+      if (settled === "stall") return "";
+      pendingNext ??= iterator.next().then(
+        (v) => ({ kind: "val" as const, v }),
+        (err) => ({ kind: "err" as const, err }),
+      );
+      let tickTimer: ReturnType<typeof setTimeout> | undefined;
       const raced = await Promise.race([
-        iterator.next().then((v) => ({ kind: "val" as const, v })),
+        pendingNext,
         new Promise<{ kind: "tick" }>((resolve) => {
-          setTimeout(() => resolve({ kind: "tick" }), 1000);
+          tickTimer = setTimeout(() => resolve({ kind: "tick" }), 1000);
         }),
       ]);
+      if (tickTimer) clearTimeout(tickTimer);
       if (raced.kind === "tick") {
         const sinceTool = lastToolDoneAt ? Math.round((Date.now() - lastToolDoneAt) / 1000) : 0;
         const sinceText = Math.round((Date.now() - lastTextAt) / 1000);
+        const afterCmd = toolNotes.length > toolsAtStart;
         opts.emit({
           type: "heartbeat",
-          message: text.trim()
-            ? `Finishing the answer (${sinceText}s quiet)`
-            : toolNotes.length > toolsAtStart
-              ? `Waiting on Cursor after the command (${sinceTool}s)`
-              : `Cursor is thinking (${sinceText}s)`,
+          message:
+            toolsInFlight > 0
+              ? "Waiting for you to Approve"
+              : afterCmd && !textAfterTools()
+                ? `Waiting on Cursor after the command (${sinceTool}s)`
+                : text.trim()
+                  ? `Finishing the answer (${sinceText}s quiet)`
+                  : `Cursor is thinking (${sinceText}s)`,
         });
         continue;
+      }
+      pendingNext = undefined;
+      if (raced.kind === "err") {
+        throw raced.err instanceof Error ? raced.err : new Error(String(raced.err));
       }
       if (raced.v.done) break;
       const e = raced.v.value as {
@@ -201,20 +237,22 @@ export async function runCursorChat(opts: {
     return text || result.result || "";
   }
 
+  async function hopFromOutput(): Promise<string> {
+    opts.emit({ type: "delta", text: "\n(Answering from device output.)\n" });
+    return oneShot(continuePrompt());
+  }
+
   try {
+    let hopped = false;
     try {
       const text = await oneShot(prompt);
       if (text.trim() || !toolNotes.length) return text;
+      hopped = true;
+      return await hopFromOutput();
     } catch (err) {
-      if (!toolNotes.length || opts.signal.aborted) throw err;
-      opts.emit({
-        type: "delta",
-        text: `\n(Cursor went quiet after the command. Not starting another think loop.)\n`,
-      });
-      return "";
+      if (!toolNotes.length || opts.signal.aborted || hopped) throw err;
+      return await hopFromOutput();
     }
-    opts.emit({ type: "delta", text: "\n(Answering from device output.)\n" });
-    return await oneShot(continuePrompt());
   } finally {
     try {
       await agent?.[Symbol.asyncDispose]?.();
