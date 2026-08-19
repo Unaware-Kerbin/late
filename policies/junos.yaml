@@ -1,0 +1,11 @@
+vendor: junos
+aliases:
+  sh: show
+  sho: show
+allow: [show, ping, traceroute, monitor, op, test, file list, file show]
+deny: [configure, edit, commit, rollback, load, save, request, restart, start, clear, set, delete, rename, copy, activate, deactivate, exit, quit]
+deny_substrings: [start shell, start network-service]
+allow_pipes: [match, except, find, count, display, trim, compare]
+deny_pipes: [save]
+unrestricted: false
+allow_always_allow: true

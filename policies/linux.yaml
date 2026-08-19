@@ -1,0 +1,9 @@
+vendor: linux
+aliases: {}
+allow: []
+deny: []
+deny_substrings: []
+allow_pipes: []
+deny_pipes: []
+unrestricted: true
+allow_always_allow: false

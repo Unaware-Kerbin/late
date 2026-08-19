@@ -1,0 +1,10 @@
+vendor: panos
+aliases:
+  sh: show
+allow: [show, ping, traceroute, test, request system]
+deny: [configure, set, delete, commit, load, save, debug, scp, ftp, tftp, less, tail, run]
+deny_substrings: [debug software shell, debug system, request restart]
+allow_pipes: [match, except]
+deny_pipes: []
+unrestricted: false
+allow_always_allow: true

@@ -1,0 +1,23 @@
+[package]
+name = "late-desktop"
+version = "0.1.0"
+description = "Late — Local AI Terminal Emulator"
+authors = ["Late"]
+edition = "2021"
+
+[lib]
+name = "late_desktop_lib"
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

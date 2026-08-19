@@ -1,0 +1,91 @@
+# Late local inference — Intel Arc Pro B70 (2× Battlemage), iGPU excluded.
+#
+# Pin: intel/llm-scaler-vllm:0.21.0-b3 (Aug 2026, current Hub tag).
+# Fallback if that tag 404s: intel/llm-scaler-vllm:0.14.0-b8.2.1
+#   (first release with official Arc Pro B70 support; also tagged 1.4)
+#
+# Tensor parallel: TP=2 (both cards). If you hit Battlemage BCS-reset /
+# XPU instability, run TP=1 (container XPU indices are 0,1 — never pass the
+# host ZE_AFFINITY_MASK such as 0,2 into this service):
+#   TP=1 docker compose -f docker/compose.yml up
+#
+# This image's ENTRYPOINT is already:
+#   bash -c 'exec vllm serve "$@"' --
+# Do not source /opt/intel/oneapi/setvars.sh — that file is not in 0.21.0-b3
+# and was crash-looping the container.
+#
+# TP-in-Docker (intel/ipex-llm#12990): oneCCL workers need privileged + the
+# /dev/dri/by-path volume. `--device /dev/dri` does not include that directory,
+# so opendir fails with ze_fd_manager.cpp "could not open device directory".
+
+name: late-vllm
+
+services:
+  vllm:
+    image: ${VLLM_IMAGE:-intel/llm-scaler-vllm:0.21.0-b3}
+    container_name: late-vllm
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    # group_add is generated at launch into compose.gids.yml (unique GIDs only).
+    ipc: host
+    shm_size: "32gb"
+    environment:
+      # Host detect-gpus.sh mask (e.g. 0,2) skips the iGPU hole in *host*
+      # Level Zero order. This image only enumerates the two B70s as 0,1 —
+      # passing the host mask leaves a single XPU and TP=2 dies with
+      # "device index must be in [0, 1), but got 1". Do not list
+      # ZE_AFFINITY_MASK here.
+      ZE_FLAT_DEVICE_HIERARCHY: FLAT
+      VLLM_WORKER_MULTIPROC_METHOD: spawn
+      VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+      VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT: "1"
+      HF_HOME: /root/.cache/huggingface
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      MODEL_PATH: ${MODEL_PATH:-Qwen/Qwen3-8B}
+      SERVED_NAME: ${SERVED_NAME:-local}
+      TP: ${TP:-1}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-8192}
+      # oneCCL / XPU IPC for tensor-parallel workers inside Docker.
+      CCL_ZE_IPC_EXCHANGE: sockets
+      CCL_ZE_CACHE_OPEN_IPC_HANDLES: "0"
+      CCL_ATL_TRANSPORT: ofi
+      # Do not set FI_PROVIDER=shm — that failed ATL init in the sandbox.
+      # Persistent SYCL disk cache: first TP=2 xccl allreduce segfaulted in
+      # sycl::detail::PersistentDeviceCodeCache::getItemFromDisc
+      # → ProgramManager::getBuiltURProgram → arc_ll256_allreduce
+      # (late-vllm ~17:12 local, SYCL_CACHE_PERSISTENT=1).
+      SYCL_CACHE_PERSISTENT: "0"
+      SYCL_CACHE_DIR: /tmp/empty-sycl-cache
+      # Not set: CCL_SYCL_ALLREDUCE_SIMPLE_THRESHOLD / ALLGATHERV (vllm#50545).
+      # Intel's own note: raising those to 1GiB selects Low Latency kernels
+      # (arc_ll256) instead of Simple — that is the crashing symbol, not a bypass.
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${LATE_MODEL_DIR:-./models}:/models
+      - ${HF_HOME:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+      # device mapping of /dev/dri does not include by-path; oneCCL opendir needs it.
+      - /dev/dri/by-path:/dev/dri/by-path
+    command:
+      - ${MODEL_PATH:-Qwen/Qwen3-8B}
+      - --served-model-name
+      - ${SERVED_NAME:-local}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --tensor-parallel-size
+      - "${TP:-1}"
+      - --dtype
+      - ${DTYPE:-float16}
+      - --enforce-eager
+      - --trust-remote-code
+      - --gpu-memory-utilization
+      - "0.9"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - hermes
+      - --max-model-len
+      - "${MAX_MODEL_LEN:-8192}"
+    restart: on-failure:3

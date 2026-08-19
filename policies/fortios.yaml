@@ -1,0 +1,11 @@
+vendor: fortios
+aliases:
+  sh: show
+  get: get
+allow: [show, get, diagnose, execute ping, execute traceroute]
+deny: [config, edit, set, unset, delete, end, execute restore, execute reboot, execute shutdown]
+deny_substrings: [execute restore, execute reboot]
+allow_pipes: [grep]
+deny_pipes: []
+unrestricted: false
+allow_always_allow: true

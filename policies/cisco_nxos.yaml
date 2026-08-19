@@ -1,0 +1,17 @@
+vendor: cisco_nxos
+aliases:
+  sh: show
+  sho: show
+  shw: show
+  wr: write
+  wri: write
+  p: ping
+  tr: traceroute
+  conf: configure
+allow: [show, ping, traceroute, dir, more, terminal, where, undebug]
+deny: [configure, conf, enable, disable, write, copy, delete, erase, format, archive, boot, reload, reset, clear, logout, exit, quit, end, tclsh, tclquit, debug, event, run, python, source, guestshell, bash]
+deny_substrings: [tclsh, guestshell, app-hosting, event manager, run bash, python]
+allow_pipes: [include, exclude, begin, section, count, format]
+deny_pipes: [redirect, tee, append]
+unrestricted: false
+allow_always_allow: true

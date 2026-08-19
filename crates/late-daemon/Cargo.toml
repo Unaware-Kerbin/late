@@ -1,0 +1,27 @@
+[package]
+name = "late-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "late-daemon"
+path = "src/main.rs"
+
+[dependencies]
+late-core = { path = "../late-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+base64.workspace = true
+tokio-stream = "0.1"
+dashmap = "6"
+clap = { version = "4", features = ["derive"] }

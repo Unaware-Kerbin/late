@@ -1,0 +1,9 @@
+vendor: routeros
+aliases: {}
+allow: [/ip, /interface, /system resource, /system identity, /routing, /ping, /tool traceroute]
+deny: [/system reboot, /system shutdown, /user, /file remove, /export]
+deny_substrings: [reboot, shutdown, password]
+allow_pipes: [where, print]
+deny_pipes: []
+unrestricted: false
+allow_always_allow: true

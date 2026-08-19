@@ -1,0 +1,21 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install libudev (serialport)
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev
+      - name: Test late-core
+        run: cargo test -p late-core
+      - name: Build late-daemon
+        run: cargo build -p late-daemon
+      - name: Isolation check (script)
+        run: bash scripts/isolation-check.sh
+      - name: Isolation check (crate)
+        run: cargo run -p isolation-check

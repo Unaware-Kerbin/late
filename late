@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+src="${BASH_SOURCE[0]}"
+while [[ -L "$src" ]]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  [[ "$src" != /* ]] && src="$dir/$src"
+done
+exec "$(cd -P "$(dirname "$src")" && pwd)/scripts/late" "$@"

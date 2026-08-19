@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Late — start daemon, sidecar, UI, and open the native window.
+set -euo pipefail
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+unset ELECTRON_RUN_AS_NODE || true
+
+# Follow this script through symlinks (e.g. ~/.local/bin/late → repo/scripts/late).
+resolve_root() {
+  local src="${BASH_SOURCE[0]}"
+  while [[ -L "$src" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  (cd -P "$(dirname "$src")/.." && pwd)
+}
+ROOT="$(resolve_root)"
+export LATE_ROOT="$ROOT"
+export LATE_ROOT="$ROOT"
+cd "$ROOT"
+if [[ ! -f "$ROOT/Cargo.toml" ]]; then
+  echo "late: project root not found (resolved to $ROOT)" >&2
+  exit 1
+fi
+
+INSTALL_PREFIX="${HOME}/.local"
+
+usage() {
+  cat <<EOF
+Late — Local AI Terminal Emulator
+
+Usage:
+  late              Start the app (daemon + sidecar + window)
+  late --install    Install 'late' to ${INSTALL_PREFIX}/bin and a desktop entry
+  late --help       Show this help
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${1:-}" == "--install" ]]; then
+  mkdir -p "${INSTALL_PREFIX}/bin" \
+    "${HOME}/.local/share/applications" \
+    "${HOME}/.local/share/icons/hicolor/128x128/apps"
+  ln -sfn "$ROOT/scripts/late" "${INSTALL_PREFIX}/bin/late"
+  chmod +x "$ROOT/scripts/late"
+  icon_src="$ROOT/apps/desktop/src-tauri/icons/128x128.png"
+  if [[ -f "$icon_src" ]]; then
+    cp "$icon_src" "${HOME}/.local/share/icons/hicolor/128x128/apps/late.png"
+  fi
+  cat > "${HOME}/.local/share/applications/late.desktop" <<DESK
+[Desktop Entry]
+Type=Application
+Name=Late
+Comment=Local AI Terminal Emulator
+Exec=${INSTALL_PREFIX}/bin/late
+Icon=late
+Terminal=false
+Categories=Network;System;
+StartupNotify=true
+DESK
+  echo "Installed ${INSTALL_PREFIX}/bin/late"
+  echo "Desktop entry: ~/.local/share/applications/late.desktop"
+  echo "Make sure ${INSTALL_PREFIX}/bin is on your PATH."
+  exit 0
+fi
+
+find_daemon() {
+  local p
+  for p in \
+    "$ROOT/target/release/late-daemon" \
+    "$ROOT/target/debug/late-daemon"
+  do
+    [[ -x "$p" ]] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+up() {
+  curl -sf -m 1 "$1" >/dev/null 2>&1
+}
+
+wait_up() {
+  local url="$1" name="$2" n=0
+  while ! up "$url"; do
+    n=$((n + 1))
+    if [[ "$n" -gt 40 ]]; then
+      echo "late: timed out waiting for $name at $url" >&2
+      return 1
+    fi
+    sleep 0.25
+  done
+}
+
+started=()
+cleanup() {
+  local pid
+  for pid in "${started[@]+"${started[@]}"}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT INT TERM
+
+echo "late: building daemon…"
+cargo build -p late-daemon --manifest-path "$ROOT/Cargo.toml" --quiet
+DAEMON_BIN="$ROOT/target/debug/late-daemon"
+if [[ -x "$ROOT/target/release/late-daemon" ]] && [[ "$ROOT/target/release/late-daemon" -nt "$DAEMON_BIN" ]]; then
+  DAEMON_BIN="$ROOT/target/release/late-daemon"
+fi
+if [[ ! -x "$DAEMON_BIN" ]]; then
+  echo "late: daemon build finished but $DAEMON_BIN is missing" >&2
+  exit 1
+fi
+
+# UI hot-reloads; the daemon does not. Always replace whatever owns :7420.
+echo "late: replacing daemon on :7420"
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k 7420/tcp >/dev/null 2>&1 || true
+fi
+pkill -f -- '--bind 127.0.0.1:7420' >/dev/null 2>&1 || true
+pkill -f 'target/.*/late-daemon' >/dev/null 2>&1 || true
+sleep 0.4
+echo "late: daemon :7420"
+"$DAEMON_BIN" --bind 127.0.0.1:7420 &
+started+=($!)
+wait_up "http://127.0.0.1:7420/health" "daemon"
+if ! curl -sf "http://127.0.0.1:7420/health" | grep -q pcap.edgeshark; then
+  echo "late: warning: daemon health did not report pcap.edgeshark — still a stale binary?" >&2
+fi
+
+if ! up "http://127.0.0.1:7430/health"; then
+  echo "late: sidecar :7430"
+  npm run start -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
+  started+=($!)
+  sleep 0.4
+  if ! up "http://127.0.0.1:7430/health"; then
+    npm run dev -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
+    started+=($!)
+  fi
+  wait_up "http://127.0.0.1:7430/health" "sidecar"
+fi
+
+UI_URL="http://127.0.0.1:5173"
+if ! up "$UI_URL"; then
+  if [[ -f "$ROOT/apps/desktop/dist/index.html" ]]; then
+    UI_URL="http://127.0.0.1:4173"
+    if ! up "$UI_URL"; then
+      echo "late: UI preview :4173"
+      npm run preview -w late-desktop >/tmp/late-ui.log 2>&1 &
+      started+=($!)
+    fi
+  else
+    echo "late: Vite :5173"
+    npm run dev -w late-desktop >/tmp/late-ui.log 2>&1 &
+    started+=($!)
+    UI_URL="http://127.0.0.1:5173"
+  fi
+  wait_up "$UI_URL" "UI"
+fi
+
+ELECTRON_BIN="$ROOT/node_modules/electron/dist/electron"
+if [[ ! -x "$ELECTRON_BIN" ]]; then
+  ELECTRON_BIN="$ROOT/apps/desktop/node_modules/electron/dist/electron"
+fi
+if [[ ! -x "$ELECTRON_BIN" ]]; then
+  echo "late: opening $UI_URL in the browser (Electron not installed)"
+  xdg-open "$UI_URL" >/dev/null 2>&1 || true
+  echo "late: services running. Ctrl+C to stop processes this launcher started."
+  wait
+  exit 0
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+export LATE_DEV_URL="$UI_URL"
+# Intel Arc + Wayland GPU compositing blanks Electron. Force software + X11.
+export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-x11}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+echo "late: opening window"
+"$ELECTRON_BIN" --no-sandbox --disable-gpu --disable-gpu-compositing --disable-gpu-vsync --log-level=3 \
+  "$ROOT/apps/desktop/electron/main.cjs" >>/tmp/late-electron.log 2>&1
+# Window closed — cleanup only what we started.

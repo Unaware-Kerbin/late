@@ -1,0 +1,9 @@
+[package]
+name = "isolation-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "isolation-check"
+path = "src/main.rs"

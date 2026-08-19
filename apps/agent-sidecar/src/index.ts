@@ -1,0 +1,140 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { cancelAll, decide, listPending } from "./approvals.js";
+import { runCursorChat } from "./cursor-loop.js";
+import { daemon } from "./daemon.js";
+import { listLocalModels, runLocalChat } from "./openai-loop.js";
+import { SIDECAR_PORT, type ApprovalDecision, type ChatMessage, type SseEvent } from "./types.js";
+
+const runs = new Map<string, AbortController>();
+
+function cors(res: ServerResponse) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw.trim()) return {};
+  return JSON.parse(raw);
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown) {
+  cors(res);
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+function writeSse(res: ServerResponse, event: SseEvent) {
+  res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+const server = createServer(async (req, res) => {
+  cors(res);
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+  const url = new URL(req.url ?? "/", `http://127.0.0.1:${SIDECAR_PORT}`);
+  try {
+    if (req.method === "GET" && url.pathname === "/health") {
+      sendJson(res, 200, { ok: true, daemon: await daemon.health() });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/models") {
+      sendJson(res, 200, {
+        local: await listLocalModels(),
+        cursor: ["composer-2.5", "auto"],
+        backends: ["local", "cursor"],
+      });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/pending") {
+      sendJson(res, 200, { pending: listPending() });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/approve") {
+      const body = (await readJson(req)) as ApprovalDecision;
+      if (!body?.proposalId) {
+        sendJson(res, 400, { error: "proposalId required" });
+        return;
+      }
+      const ok = decide({
+        proposalId: body.proposalId,
+        allow: Boolean(body.allow),
+        alwaysAllow: Boolean(body.alwaysAllow),
+        answer: body.answer,
+      });
+      sendJson(res, ok ? 200 : 404, { ok });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/stop") {
+      const body = (await readJson(req)) as { conversationId?: string };
+      if (body.conversationId) {
+        runs.get(body.conversationId)?.abort();
+        runs.delete(body.conversationId);
+      } else {
+        for (const c of runs.values()) c.abort();
+        runs.clear();
+      }
+      cancelAll("stopped");
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/chat") {
+      const body = (await readJson(req)) as {
+        messages?: ChatMessage[];
+        backend?: "local" | "cursor";
+        model?: string;
+        conversationId?: string;
+      };
+      const conversationId = body.conversationId ?? crypto.randomUUID();
+      const ac = new AbortController();
+      runs.get(conversationId)?.abort();
+      runs.set(conversationId, ac);
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+      });
+      const emit = (e: SseEvent) => writeSse(res, e);
+      try {
+        const text =
+          body.backend === "cursor"
+            ? await runCursorChat({
+                messages: body.messages ?? [],
+                model: body.model,
+                conversationId,
+                emit,
+                signal: ac.signal,
+              })
+            : await runLocalChat({
+                messages: body.messages ?? [],
+                model: body.model,
+                conversationId,
+                emit,
+                signal: ac.signal,
+              });
+        emit({ type: "done", message: text });
+      } catch (err) {
+        emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      } finally {
+        runs.delete(conversationId);
+        res.end();
+      }
+      return;
+    }
+    sendJson(res, 404, { error: "not found" });
+  } catch (err) {
+    sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+server.listen(SIDECAR_PORT, "127.0.0.1", () => {
+  console.log(`late-agent-sidecar http://127.0.0.1:${SIDECAR_PORT}`);
+});
