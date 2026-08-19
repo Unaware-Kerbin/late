@@ -119,6 +119,8 @@ Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`POST /chat`, `GET /
 
 Safety: dual-gate command/API proposals (permit list + click). Host-key and approval modals cannot be dismissed with Enter, Escape, or click-outside. Linux sessions never get always-allow. The sidecar does not touch the keyring, russh, or secret files.
 
+When you ask a specific question, the agent proposes the show/display/GET needed to answer it. After you Approve, it sends the command, reads the device output, and continues. If it finds a problem, it also proposes the specific command to implement the fix (still dual-gated).
+
 ### Native window
 
 The UI is a React app. Two native shells wrap it:

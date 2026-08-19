@@ -165,6 +165,15 @@ function ApprovalModal() {
             Permit list denied: {approval.policyReason || "vendor permit list rejected this command"}
           </div>
         )}
+        {typeof approval.detail?.reason === "string" && approval.detail.reason && (
+          <p className="hint">{String(approval.detail.reason)}</p>
+        )}
+        {approval.detail?.intent === "remediate" && (
+          <div className="banner">This is a suggested fix. It will change device state if you Approve.</div>
+        )}
+        {approval.detail?.intent === "investigate" && (
+          <p className="hint">Read-only gather step so the agent can answer your question. Still requires Approve.</p>
+        )}
         <pre className="fp">{JSON.stringify({ ...approval.detail, expanded: approval.expanded }, null, 2)}</pre>
         {approval.kind === "ask" && (
           <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer" />

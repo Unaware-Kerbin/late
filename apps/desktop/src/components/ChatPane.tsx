@@ -210,6 +210,10 @@ export function ChatPane() {
             ]);
           } else if (e.type === "error") {
             setStatus(e.message);
+            setMessages((cur) => [
+              ...cur,
+              { id: newId(), role: "system", content: `Agent stopped: ${e.message}` },
+            ]);
           } else if (e.type === "round") {
             setStatus(`round ${e.n}/${e.max}`);
           } else if (e.type === "done") {
@@ -283,6 +287,7 @@ export function ChatPane() {
           ))}
         </select>
       </div>
+      {backend === "local" && (
       <div className={`chat-models${modelsExpanded ? " expanded" : ""}`}>
         <div className="row" style={{ marginBottom: 8 }}>
           <span className="meta" style={{ flex: 1 }}>Models</span>
@@ -437,6 +442,7 @@ export function ChatPane() {
           </button>
         </div>
       </div>
+      )}
       {backend === "cursor" && (
         <p className="hint" style={{ padding: "0 8px" }}>
           Add a Cursor key in the app: click <button className="linkish" type="button" onClick={() => setState({ keysOpen: true })}>API keys</button>
@@ -456,7 +462,11 @@ export function ChatPane() {
             {m.content}
           </div>
         ))}
-        {approval && <div className="banner">Waiting for dual-gate approval…</div>}
+        {approval && (
+          <div className="banner">
+            Agent proposed a command to {approval.detail?.intent === "remediate" ? "implement a fix" : "answer your question"} — Approve to run it
+          </div>
+        )}
       </div>
       {attached.length > 0 && (
         <div className="meta" style={{ padding: "4px 8px" }}>
@@ -466,7 +476,7 @@ export function ChatPane() {
       <div className="composer">
         <textarea
           value={input}
-          placeholder="Ask about an open session by name…"
+          placeholder="Ask a question — the agent will propose the commands needed (Approve to run)…"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

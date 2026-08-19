@@ -120,12 +120,25 @@ async function runCompatChat(opts: {
   ];
 
   let assistantText = "";
+  let gathered = "";
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     if (opts.signal.aborted) throw new Error("stopped");
     opts.emit({ type: "round", n: round, max: MAX_ROUNDS });
-    messages[1] = { role: "system", content: await liveSessionContext() };
+    // Do not re-attach full live scrollback every round — that plus command
+    // output blows small vLLM contexts and kills the loop after one tool.
 
-    const completion = await chatCompletions(label, base, model, messages, opts.signal);
+    let completion: Awaited<ReturnType<typeof chatCompletions>>;
+    try {
+      completion = await chatCompletions(label, base, model, messages, opts.signal);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (gathered) {
+        const note = `\n\n(model follow-up failed after a command ran: ${msg}. Answering from the output already gathered.)`;
+        opts.emit({ type: "delta", text: note });
+        return `${assistantText}${note}\n\n${gathered.slice(-4000)}`;
+      }
+      throw err;
+    }
     const choice = completion.choices?.[0];
     if (!choice) throw new Error(`${label} returned no choices`);
 
@@ -148,16 +161,23 @@ async function runCompatChat(opts: {
       signal: opts.signal,
     };
     for (const call of toolCalls) {
-      const result = await executeTool(call.function.name, call.function.arguments ?? "{}", ctx);
+      const result = clipToolResult(
+        await executeTool(call.function.name, call.function.arguments ?? "{}", ctx),
+      );
+      if (/"executed"\s*:\s*true/.test(result)) gathered = result;
       messages.push({
         role: "tool",
         tool_call_id: call.id || randomUUID(),
-        name: call.function.name,
         content: result,
       });
     }
   }
   throw new Error(`agent hit the ${MAX_ROUNDS}-round cap`);
+}
+
+function clipToolResult(s: string, n = 4000): string {
+  if (s.length <= n) return s;
+  return `${s.slice(0, 1200)}\n…[truncated ${s.length - n} chars]…\n${s.slice(-(n - 1400))}`;
 }
 
 async function defaultModel(kind: CompatKind, base: string): Promise<string> {

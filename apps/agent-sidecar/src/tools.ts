@@ -36,12 +36,21 @@ export const OPENAI_TOOLS: OpenAiTool[] = [
     function: {
       name: "propose_command",
       description:
-        "Propose a CLI command on a session. The vendor permit list runs first, then the operator must click Approve. This tool never executes by itself.",
+        "Propose a CLI command on a session. Use this whenever you need live device output to answer a question (intent=investigate) or to implement a fix (intent=remediate). The vendor permit list runs first, then the operator must click Approve. After Approve, this tool sends the command and returns the new scrollback. It never executes by itself.",
       parameters: {
         type: "object",
         properties: {
           session_id: { type: "string" },
           command: { type: "string" },
+          reason: {
+            type: "string",
+            description: "One sentence: why this command answers the question or implements the fix",
+          },
+          intent: {
+            type: "string",
+            enum: ["investigate", "remediate"],
+            description: "investigate = gather facts; remediate = suggested change to implement",
+          },
         },
         required: ["session_id", "command"],
         additionalProperties: false,
@@ -53,12 +62,13 @@ export const OPENAI_TOOLS: OpenAiTool[] = [
     function: {
       name: "propose_api_get",
       description:
-        "Propose a GET request to a host-pinned API session. FortiManager JSON-RPC is rejected. Operator must click Approve.",
+        "Propose a GET request to a host-pinned API session when you need live API data to answer a question. FortiManager JSON-RPC is rejected. Operator must click Approve. After Approve, the response body is returned.",
       parameters: {
         type: "object",
         properties: {
           session_id: { type: "string" },
           path: { type: "string", description: "Path or full URL on the pinned host" },
+          reason: { type: "string", description: "Why this GET answers the operator's question" },
         },
         required: ["session_id", "path"],
         additionalProperties: false,
@@ -192,6 +202,42 @@ function str(args: Record<string, unknown>, key: string): string {
   return v;
 }
 
+function opt(args: Record<string, unknown>, key: string): string {
+  const camel = key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+  const v = args[key] ?? args[camel];
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function waitMs(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error("stopped"));
+      return;
+    }
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        reject(new Error("stopped"));
+      },
+      { once: true },
+    );
+  });
+}
+
+async function readSessionTail(sessionId: string): Promise<string> {
+  const raw = await daemon.call<{ text?: string }>("session.scrollback", {
+    id: sessionId,
+    sessionId,
+    session_id: sessionId,
+    redacted: true,
+  });
+  const text = (raw?.text ?? "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
+  if (text.length <= 4000) return text;
+  return text.slice(-4000);
+}
+
 function waitAbort(signal: AbortSignal): Promise<never> {
   return new Promise((_, reject) => {
     if (signal.aborted) {
@@ -248,9 +294,15 @@ async function dispatch(name: string, args: Record<string, unknown>, ctx: ToolCt
     case "ask_user":
       return askUser(str(args, "question"), ctx);
     case "propose_command":
-      return proposeCommand(str(args, "session_id"), str(args, "command"), ctx);
+      return proposeCommand(
+        str(args, "session_id"),
+        str(args, "command"),
+        opt(args, "reason"),
+        opt(args, "intent") === "remediate" ? "remediate" : "investigate",
+        ctx,
+      );
     case "propose_api_get":
-      return proposeApi(str(args, "session_id"), str(args, "path"), ctx);
+      return proposeApi(str(args, "session_id"), str(args, "path"), opt(args, "reason"), ctx);
     default:
       return { error: `unknown tool ${name} — only the six Late tools exist` };
   }
@@ -284,7 +336,13 @@ async function askUser(question: string, ctx: ToolCtx) {
   return { answered: true, answer: decision.answer ?? "" };
 }
 
-async function proposeCommand(sessionId: string, command: string, ctx: ToolCtx) {
+async function proposeCommand(
+  sessionId: string,
+  command: string,
+  reason: string,
+  intent: "investigate" | "remediate",
+  ctx: ToolCtx,
+) {
   const sessions = await snapshotSessions();
   const sess = sessions.find((s) => s.id === sessionId);
   if (sess && (sess.kind === "local" || sess.kind === "sftp")) {
@@ -314,6 +372,17 @@ async function proposeCommand(sessionId: string, command: string, ctx: ToolCtx) 
     allowed &&
     !linux &&
     (policy.allowAlwaysAllow ?? policy.allow_always_allow) !== false;
+  const title =
+    intent === "remediate"
+      ? "Suggested fix — Approve to send"
+      : "Run to answer your question — Approve to send";
+  const detail = {
+    sessionId,
+    command,
+    expanded,
+    intent,
+    ...(reason ? { reason } : {}),
+  };
 
   if (!allowed) {
     ctx.emit({ type: "tool", name: "propose_command", status: "denied", detail: policy.reason });
@@ -322,7 +391,7 @@ async function proposeCommand(sessionId: string, command: string, ctx: ToolCtx) 
       {
         kind: "command",
         title: "Command blocked by permit list",
-        detail: { sessionId, command, expanded },
+        detail,
         linuxUnrestricted: linux,
         policyAllowed: false,
         policyReason: policy.reason ?? "permit list denied",
@@ -347,8 +416,8 @@ async function proposeCommand(sessionId: string, command: string, ctx: ToolCtx) 
       ctx,
       {
         kind: "command",
-        title: "Approve command",
-        detail: { sessionId, command, expanded },
+        title,
+        detail,
         linuxUnrestricted: linux,
         policyAllowed: true,
         policyReason: policy.reason,
@@ -366,22 +435,36 @@ async function proposeCommand(sessionId: string, command: string, ctx: ToolCtx) 
   const payload = command.endsWith("\n") ? command : `${command}\n`;
   const data = Buffer.from(payload, "utf8").toString("base64");
   await daemon.call("session.input", { sessionId, session_id: sessionId, data });
-  return { executed: true, expanded, note: "command written to session after dual gate" };
+  await waitMs(1500, ctx.signal).catch(() => undefined);
+  let output = "";
+  try {
+    output = await readSessionTail(sessionId);
+  } catch (err) {
+    output = `(command sent; could not read scrollback: ${err instanceof Error ? err.message : String(err)})`;
+  }
+  return {
+    executed: true,
+    expanded,
+    intent,
+    output,
+    note: "command sent after dual gate; output is the latest redacted scrollback",
+  };
 }
 
-async function proposeApi(sessionId: string, path: string, ctx: ToolCtx) {
+async function proposeApi(sessionId: string, path: string, reason: string, ctx: ToolCtx) {
   if (/fortimanager|fortigate|jsonrpc|json-rpc/i.test(path)) {
     return { executed: false, reason: "FortiManager JSON-RPC is human-only" };
   }
   const fingerprint = `${sessionId}::GET::${path}`;
+  const detail = { sessionId, method: "GET", path, ...(reason ? { reason } : {}) };
   let allow = isAlwaysAllowed(ctx.conversationId, "api", fingerprint, false);
   if (!allow) {
     const decision = await awaitGate(
       ctx,
       {
         kind: "api",
-        title: "Approve API GET",
-        detail: { sessionId, method: "GET", path },
+        title: "Run this GET to answer your question — Approve to send",
+        detail,
         policyAllowed: true,
       },
       (p) => p.kind === "api" && p.detail.path === path,

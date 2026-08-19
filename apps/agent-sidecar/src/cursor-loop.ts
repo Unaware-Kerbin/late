@@ -63,14 +63,25 @@ export async function runCursorChat(opts: {
     }),
   ].join("\n");
 
+  const toolNotes: string[] = [];
+  const tools = cursorToolDefs(() => ctx);
+  for (const def of Object.values(tools) as { execute?: (a: Record<string, unknown>) => Promise<string> }[]) {
+    const orig = def.execute;
+    if (!orig) continue;
+    def.execute = async (args: Record<string, unknown>) => {
+      const result = await orig(args);
+      toolNotes.push(String(result).slice(0, 4000));
+      return result;
+    };
+  }
+
   const linked = AbortSignal.any([opts.signal, AbortSignal.timeout(TURN_TIMEOUT_MS * 8)]);
   let agent: AgentHandle | undefined;
-  try {
+
+  async function oneShot(userPrompt: string): Promise<string> {
     agent = await Agent.create({
       apiKey,
       model: { id: opts.model ?? "composer-2.5" },
-      // [] disables MCP entirely, including custom Late tools. "mcp" keeps
-      // only our in-process tools (no shell/read/edit).
       tools: ["mcp"],
       disallowedTools: [
         "shell",
@@ -88,12 +99,11 @@ export async function runCursorChat(opts: {
       mcpServers: {},
       local: {
         cwd: scratch,
-        customTools: cursorToolDefs(() => ctx),
+        customTools: tools,
         settingSources: [],
       },
     });
-
-    const run = await agent.send(prompt);
+    const run = await agent.send(userPrompt);
     let text = "";
     for await (const event of run.stream()) {
       if (linked.aborted) break;
@@ -113,6 +123,20 @@ export async function runCursorChat(opts: {
     if (linked.aborted) throw new Error("stopped");
     const result = await run.wait();
     return text || result.result || "";
+  }
+
+  try {
+    try {
+      return await oneShot(prompt);
+    } catch (err) {
+      if (!toolNotes.length || opts.signal.aborted) throw err;
+      const why = err instanceof Error ? err.message : String(err);
+      const note = `\n(Cursor paused after a command: ${why}. Continuing from device output.)\n`;
+      opts.emit({ type: "delta", text: note });
+      return await oneShot(
+        `${SYSTEM_PROMPT}\n\nA command already ran after operator Approve. Continue and answer the original question. Do not ask them to paste output.\n\nOriginal question:\n${lastUser?.content ?? ""}\n\nCommand output:\n${toolNotes.join("\n\n")}\n`,
+      );
+    }
   } finally {
     try {
       await agent?.[Symbol.asyncDispose]?.();
