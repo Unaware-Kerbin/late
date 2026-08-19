@@ -2,6 +2,8 @@
 
 Linux-first terminal workspace: SSH, serial, local PTY, SFTP, REST API, and packet capture, with an investigation-only agent loop. Credentials and host keys stay in the Rust daemon; the UI and agent sidecar never hold secrets.
 
+What landed and when is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Installers (macOS, Linux, Windows)
 
 GitHub Actions builds native apps when you push a `v*` tag (or run the **Build installers** workflow):
