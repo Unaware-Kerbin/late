@@ -21,10 +21,27 @@ export async function sidecarHealth(): Promise<boolean> {
   }
 }
 
-export async function sidecarModels(): Promise<{ local: string[]; cursor: string[] }> {
+export type SidecarModels = {
+  local: string[];
+  cursor: string[];
+  ollama: string[];
+  ollamaOk?: boolean;
+  ollamaMessage?: string;
+  backends: string[];
+};
+
+export async function sidecarModels(): Promise<SidecarModels> {
   const r = await fetch(`${SIDECAR_HTTP}/models`);
   if (!r.ok) throw new Error(`sidecar ${r.status}`);
-  return r.json() as Promise<{ local: string[]; cursor: string[] }>;
+  const body = (await r.json()) as Partial<SidecarModels>;
+  return {
+    local: body.local ?? [],
+    cursor: body.cursor ?? ["composer-2.5", "auto"],
+    ollama: body.ollama ?? [],
+    ollamaOk: body.ollamaOk,
+    ollamaMessage: body.ollamaMessage,
+    backends: body.backends ?? ["local", "cursor"],
+  };
 }
 
 export async function approve(proposalId: string, allow: boolean, extra?: { alwaysAllow?: boolean; answer?: string }) {
@@ -115,7 +132,7 @@ async function attachedScrollback(): Promise<string> {
 
 export async function streamChat(opts: {
   messages: ChatMsg[];
-  backend: "local" | "cursor";
+  backend: "local" | "cursor" | "ollama";
   model?: string;
   conversationId: string;
   onEvent: (e: SidecarEvent) => void;

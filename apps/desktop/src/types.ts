@@ -130,15 +130,66 @@ export interface DiffLine {
   text: string;
 }
 
+export type ChatBackend = "local" | "cursor" | "ollama";
+
 export interface AppSettings {
   bind: string;
   vllm_base_url: string;
   vllm_model: string;
   cursor_model: string;
-  default_backend: string;
+  ollama_base_url: string;
+  ollama_model: string;
+  default_backend: ChatBackend | string;
   scrollback_lines: number;
   turn_timeout_secs: number;
   max_agent_rounds: number;
+  pcap_dir?: string;
+  log_dir?: string;
+}
+
+export function coerceChatBackend(v: unknown): ChatBackend {
+  const s = String(v ?? "").toLowerCase();
+  if (s === "cursor" || s === "ollama") return s;
+  return "local";
+}
+
+export function backendLabel(backend: ChatBackend): string {
+  if (backend === "ollama") return "Ollama";
+  if (backend === "cursor") return "Cursor SDK";
+  return "local vLLM";
+}
+
+export function coerceSettings(raw: unknown): AppSettings | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const str = (...keys: string[]): string | undefined => {
+    for (const k of keys) {
+      const v = r[k];
+      if (typeof v === "string" && v) return v;
+    }
+    return undefined;
+  };
+  const num = (...keys: string[]): number | undefined => {
+    for (const k of keys) {
+      const v = r[k];
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+    }
+    return undefined;
+  };
+  return {
+    bind: str("bind") ?? "127.0.0.1:7420",
+    vllm_base_url: str("vllm_base_url", "vllmBaseUrl") ?? "http://127.0.0.1:8000/v1",
+    vllm_model: str("vllm_model", "vllmModel") ?? "local",
+    cursor_model: str("cursor_model", "cursorModel") ?? "composer-2.5",
+    ollama_base_url: str("ollama_base_url", "ollamaBaseUrl") ?? "http://127.0.0.1:11434/v1",
+    ollama_model: str("ollama_model", "ollamaModel") ?? "",
+    default_backend: coerceChatBackend(str("default_backend", "defaultBackend")),
+    scrollback_lines: num("scrollback_lines", "scrollbackLines") ?? 32_000,
+    turn_timeout_secs: num("turn_timeout_secs", "turnTimeoutSecs") ?? 90,
+    max_agent_rounds: num("max_agent_rounds", "maxAgentRounds") ?? 50,
+    pcap_dir: str("pcap_dir", "pcapDir"),
+    log_dir: str("log_dir", "logDir"),
+  };
 }
 
 export type SplitDir = "right" | "down";

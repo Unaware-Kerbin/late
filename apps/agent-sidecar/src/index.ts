@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { cancelAll, decide, listPending } from "./approvals.js";
 import { runCursorChat } from "./cursor-loop.js";
 import { daemon } from "./daemon.js";
-import { listLocalModels, runLocalChat } from "./openai-loop.js";
+import { listLocalModels, listOllamaModels, runLocalChat, runOllamaChat } from "./openai-loop.js";
 import { SIDECAR_PORT, type ApprovalDecision, type ChatMessage, type SseEvent } from "./types.js";
 
 const runs = new Map<string, AbortController>();
@@ -45,10 +45,14 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/models") {
+      const ollama = await listOllamaModels();
       sendJson(res, 200, {
         local: await listLocalModels(),
         cursor: ["composer-2.5", "auto"],
-        backends: ["local", "cursor"],
+        ollama: ollama.models,
+        ollamaOk: ollama.ok,
+        ollamaMessage: ollama.message,
+        backends: ["local", "cursor", "ollama"],
       });
       return;
     }
@@ -87,7 +91,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/chat") {
       const body = (await readJson(req)) as {
         messages?: ChatMessage[];
-        backend?: "local" | "cursor";
+        backend?: "local" | "cursor" | "ollama";
         model?: string;
         conversationId?: string;
       };
@@ -104,22 +108,19 @@ const server = createServer(async (req, res) => {
       });
       const emit = (e: SseEvent) => writeSse(res, e);
       try {
+        const chatOpts = {
+          messages: body.messages ?? [],
+          model: body.model,
+          conversationId,
+          emit,
+          signal: ac.signal,
+        };
         const text =
           body.backend === "cursor"
-            ? await runCursorChat({
-                messages: body.messages ?? [],
-                model: body.model,
-                conversationId,
-                emit,
-                signal: ac.signal,
-              })
-            : await runLocalChat({
-                messages: body.messages ?? [],
-                model: body.model,
-                conversationId,
-                emit,
-                signal: ac.signal,
-              });
+            ? await runCursorChat(chatOpts)
+            : body.backend === "ollama"
+              ? await runOllamaChat(chatOpts)
+              : await runLocalChat(chatOpts);
         emit({ type: "done", message: text });
       } catch (err) {
         emit({ type: "error", message: err instanceof Error ? err.message : String(err) });

@@ -384,13 +384,30 @@ function SettingsModal() {
   const [bind, setBind] = useState(settings?.bind ?? "127.0.0.1:7420");
   const [vllm, setVllm] = useState(settings?.vllm_base_url ?? "http://127.0.0.1:8000/v1");
   const [model, setModel] = useState(settings?.vllm_model ?? "local");
+  const [ollama, setOllama] = useState(settings?.ollama_base_url ?? "http://127.0.0.1:11434/v1");
+  const [ollamaModel, setOllamaModel] = useState(settings?.ollama_model ?? "");
+  const [defaultBackend, setDefaultBackend] = useState(settings?.default_backend ?? "local");
   return (
     <div className="modal-root" onMouseDown={() => setState({ settingsOpen: false })}>
       <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
         <label>Daemon bind<input value={bind} onChange={(e) => setBind(e.target.value)} /></label>
         <label>vLLM base URL<input value={vllm} onChange={(e) => setVllm(e.target.value)} /></label>
-        <label>Local model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
+        <label>Local vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
+        <label>Ollama base URL<input value={ollama} onChange={(e) => setOllama(e.target.value)} /></label>
+        <label>Ollama model (optional)<input value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} placeholder="first pulled model" /></label>
+        <label>
+          Default chat backend
+          <select value={defaultBackend} onChange={(e) => setDefaultBackend(e.target.value)}>
+            <option value="local">local vLLM</option>
+            <option value="ollama">Ollama</option>
+            <option value="cursor">Cursor SDK</option>
+          </select>
+        </label>
+        <p className="hint">
+          Ollama is not bundled. Install from <a href="https://ollama.com" target="_blank" rel="noreferrer">ollama.com</a>,
+          start it, then <code>ollama pull &lt;model&gt;</code>. Late never pulls models for you.
+        </p>
         <label>
           UI scale ({Math.round(uiScale * 100)}%)
           <input
@@ -514,10 +531,14 @@ function SettingsModal() {
                 vllm_base_url: vllm,
                 vllm_model: model,
                 cursor_model: settings?.cursor_model ?? "composer-2.5",
-                default_backend: settings?.default_backend ?? "local",
+                ollama_base_url: ollama,
+                ollama_model: ollamaModel,
+                default_backend: defaultBackend,
                 scrollback_lines: settings?.scrollback_lines ?? 32000,
                 turn_timeout_secs: settings?.turn_timeout_secs ?? 90,
                 max_agent_rounds: settings?.max_agent_rounds ?? 50,
+                pcap_dir: settings?.pcap_dir,
+                log_dir: settings?.log_dir,
               })
             }
           >

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { sidecarHealth, sidecarModels, stopChat, streamChat } from "../lib/sidecar";
+import { sidecarHealth, sidecarModels, stopChat, streamChat, type SidecarModels } from "../lib/sidecar";
 import {
   downloadInference,
   inferenceStatus,
@@ -10,7 +10,7 @@ import {
   type InferenceStatus,
   type LocalModel,
 } from "../store";
-import { newId, type ChatMsg } from "../types";
+import { backendLabel, coerceChatBackend, newId, type ChatBackend, type ChatMsg } from "../types";
 
 function fmtSize(n: number) {
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)} GB`;
@@ -35,12 +35,18 @@ export function ChatPane() {
   const approval = useApp((s) => s.approval);
   const agentSeed = useApp((s) => s.agentSeed);
   const sessions = useApp((s) => s.sessions);
+  const settings = useApp((s) => s.settings);
   const attached = (sessions ?? []).filter((s) => String(s.kind).toLowerCase() !== "sftp");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
-  const [backend, setBackend] = useState<"local" | "cursor">("local");
+  const [backend, setBackend] = useState<ChatBackend>("local");
   const [model, setModel] = useState("");
-  const [models, setModels] = useState<{ local: string[]; cursor: string[] }>({ local: [], cursor: [] });
+  const [models, setModels] = useState<SidecarModels>({
+    local: [],
+    cursor: [],
+    ollama: [],
+    backends: ["local", "cursor", "ollama"],
+  });
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("sidecar idle");
   const [gpu, setGpu] = useState({
@@ -64,11 +70,20 @@ export function ChatPane() {
   const [modelsExpanded, setModelsExpanded] = useState(false);
   const conv = useRef(newId());
   const abort = useRef<AbortController>();
+  const backendRef = useRef(backend);
+  backendRef.current = backend;
+  const settingsApplied = useRef(false);
 
   async function refreshModels() {
     const m = await sidecarModels();
     setModels(m);
-    setModel((cur) => cur || m.local[0] || "local" || m.cursor[0] || "");
+    setModel((cur) => {
+      if (cur) return cur;
+      const b = backendRef.current;
+      if (b === "ollama") return m.ollama[0] || "";
+      if (b === "cursor") return m.cursor[0] || "composer-2.5";
+      return m.local[0] || "local";
+    });
   }
 
   useEffect(() => {
@@ -95,6 +110,7 @@ export function ChatPane() {
             return next;
           });
           if (s.running && s.models?.length) void refreshModels().catch(() => undefined);
+          else if (backendRef.current === "ollama") void refreshModels().catch(() => undefined);
         })
         .catch(() =>
           setGpu((g) => ({
@@ -110,7 +126,7 @@ export function ChatPane() {
     return () => window.clearInterval(id);
   }, []);
 
-  function resetChat(opts?: { backend?: "local" | "cursor"; model?: string; label?: string }) {
+  function resetChat(opts?: { backend?: ChatBackend; model?: string; label?: string }) {
     abort.current?.abort();
     void stopChat(conv.current);
     conv.current = newId();
@@ -120,14 +136,25 @@ export function ChatPane() {
     setState({ approval: null });
     const b = opts?.backend ?? backend;
     if (opts?.backend) {
-      if (b === "local") setModel(opts.model || models.local[0] || "local");
+      if (b === "ollama") setModel(opts.model || models.ollama[0] || "");
+      else if (b === "local") setModel(opts.model || models.local[0] || "local");
       else setModel(opts.model || models.cursor[0] || "composer-2.5");
     } else if (opts?.model) {
       setModel(opts.model);
     }
-    const name = opts?.label || (b === "local" ? "local vLLM" : "Cursor SDK");
+    const name = opts?.label || backendLabel(b);
     setStatus(`new chat · ${name}`);
   }
+
+  useEffect(() => {
+    if (settingsApplied.current || !settings) return;
+    settingsApplied.current = true;
+    const next = coerceChatBackend(settings.default_backend);
+    setBackend(next);
+    if (next === "ollama") setModel(settings.ollama_model || models.ollama[0] || "");
+    else if (next === "cursor") setModel(settings.cursor_model || models.cursor[0] || "composer-2.5");
+    else setModel(settings.vllm_model || models.local[0] || "local");
+  }, [settings, models.cursor, models.local, models.ollama]);
 
   useEffect(() => {
     if (!agentSeed?.text) return;
@@ -229,12 +256,13 @@ export function ChatPane() {
         <select
           value={backend}
           onChange={(e) => {
-            const next = e.target.value as "local" | "cursor";
+            const next = coerceChatBackend(e.target.value);
             setBackend(next);
-            resetChat({ backend: next, label: next === "local" ? "local vLLM" : "Cursor SDK" });
+            resetChat({ backend: next, label: backendLabel(next) });
           }}
         >
           <option value="local">local vLLM</option>
+          <option value="ollama">Ollama</option>
           <option value="cursor">Cursor SDK</option>
         </select>
         <select
@@ -245,11 +273,13 @@ export function ChatPane() {
             if (next !== model) resetChat({ model: next, label: next });
           }}
         >
-          {(backend === "local"
-            ? (models.local.length ? models.local : ["local"])
-            : (models.cursor.length ? models.cursor : ["composer-2.5", "auto"])
+          {(backend === "ollama"
+            ? (models.ollama.length ? models.ollama : ["(no Ollama models)"])
+            : backend === "local"
+              ? (models.local.length ? models.local : ["local"])
+              : (models.cursor.length ? models.cursor : ["composer-2.5", "auto"])
           ).map((m) => (
-            <option key={m} value={m}>{m}</option>
+            <option key={m} value={m} disabled={m.startsWith("(")}>{m}</option>
           ))}
         </select>
       </div>
@@ -411,6 +441,12 @@ export function ChatPane() {
         <p className="hint" style={{ padding: "0 8px" }}>
           Add a Cursor key in the app: click <button className="linkish" type="button" onClick={() => setState({ keysOpen: true })}>API keys</button>
           {" "}(paste or import a file). Env <code>CURSOR_API_KEY</code> still overrides if set.
+        </p>
+      )}
+      {backend === "ollama" && (
+        <p className="hint" style={{ padding: "0 8px" }}>
+          {models.ollamaMessage ||
+            "Ollama is optional. Install from https://ollama.com, run `ollama pull <model>`, then select a model here. Late does not install Ollama or download weights."}
         </p>
       )}
       <div className="log">

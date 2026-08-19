@@ -85,7 +85,7 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 - `crates/isolation-check` — sidecar firewall grep
 - `policies/` — vendor YAML permit lists
 - `apps/desktop` — Vite + React + xterm.js UI (Tauri 2 shell)
-- `apps/agent-sidecar` — six-tool agent (vLLM or Cursor SDK)
+- `apps/agent-sidecar` — six-tool agent (vLLM, Ollama, or Cursor SDK)
 - `docker/` — vLLM only
 
 ## Frontend + sidecar
@@ -115,7 +115,7 @@ npm run dev:sidecar
 
 UI talks to the daemon at `http://127.0.0.1:7420` (`GET /health`, `WS /ws` JSON-RPC). Connection errors surface in the status bar and toasts — the views are wired even if the daemon is still catching up.
 
-Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`POST /chat`, `GET /models`, `POST /approve`, `POST /stop`). Local models: OpenAI-compatible `http://127.0.0.1:8000/v1`. Cursor: `@cursor/sdk` with `tools: []` and six `local.customTools`. If the SDK import fails, the sidecar returns a clear error.
+Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`POST /chat`, `GET /models`, `POST /approve`, `POST /stop`). Local vLLM: OpenAI-compatible `http://127.0.0.1:8000/v1`. Ollama: OpenAI-compatible `http://127.0.0.1:11434/v1` (not bundled). Cursor: `@cursor/sdk` with `tools: []` and six `local.customTools`. If the SDK import fails, the sidecar returns a clear error.
 
 Safety: dual-gate command/API proposals (permit list + click). Host-key and approval modals cannot be dismissed with Enter, Escape, or click-outside. Linux sessions never get always-allow. The sidecar does not touch the keyring, russh, or secret files.
 
@@ -149,4 +149,14 @@ docker compose -f docker/compose.yml up
 ```
 
 Default TP=2. Fallback: `TP=1 ZE_AFFINITY_MASK=1`. Image pin `intel/llm-scaler-vllm:0.21.0-b3` (fallback `0.14.0-b8.2.1` / `intel/llm-scaler-vllm`).
+
+### Ollama (optional)
+
+Late does not install Ollama or pull models. Install from [ollama.com](https://ollama.com), start the app, then:
+
+```bash
+ollama pull llama3.2
+```
+
+In the Agent pane choose **Ollama**. Default API: `http://127.0.0.1:11434/v1` (change under Settings if needed). If Ollama is not running, the pane shows an install/pull hint instead of silently failing.
 

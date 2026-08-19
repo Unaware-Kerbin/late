@@ -58,6 +58,7 @@ export const TURN_TIMEOUT_MS = 90_000;
 export const DAEMON_HTTP = process.env.LATE_DAEMON_HTTP ?? "http://127.0.0.1:7420";
 export const DAEMON_WS = process.env.LATE_DAEMON_WS ?? "ws://127.0.0.1:7420/ws";
 export const VLLM_BASE = process.env.LATE_VLLM_BASE ?? "http://127.0.0.1:8000/v1";
+export const OLLAMA_BASE = process.env.LATE_OLLAMA_BASE ?? "http://127.0.0.1:11434/v1";
 export const SIDECAR_PORT = Number(process.env.LATE_SIDECAR_PORT ?? 7430);
 
 export const SYSTEM_PROMPT = `You are Late's investigation assistant for a local network terminal.

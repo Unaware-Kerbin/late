@@ -4,11 +4,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppSettings {
     pub bind: String,
     pub vllm_base_url: String,
     pub vllm_model: String,
     pub cursor_model: String,
+    pub ollama_base_url: String,
+    pub ollama_model: String,
     pub default_backend: String,
     pub scrollback_lines: usize,
     pub turn_timeout_secs: u64,
@@ -25,6 +28,8 @@ impl Default for AppSettings {
             vllm_base_url: "http://127.0.0.1:8000/v1".into(),
             vllm_model: "local".into(),
             cursor_model: "composer-2.5".into(),
+            ollama_base_url: "http://127.0.0.1:11434/v1".into(),
+            ollama_model: String::new(),
             default_backend: "local".into(),
             scrollback_lines: 32_000,
             turn_timeout_secs: 90,
@@ -112,4 +117,43 @@ pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<()> {
         toml::to_string_pretty(settings).map_err(|e| LateError::Config(e.to_string()))?,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_ollama_fields_use_defaults() {
+        let raw = r#"
+bind = "127.0.0.1:7420"
+vllm_base_url = "http://127.0.0.1:8000/v1"
+vllm_model = "local"
+cursor_model = "composer-2.5"
+default_backend = "local"
+scrollback_lines = 32000
+turn_timeout_secs = 90
+max_agent_rounds = 50
+pcap_dir = "/tmp/pcap"
+log_dir = "/tmp/logs"
+"#;
+        let s: AppSettings = toml::from_str(raw).expect("legacy settings.toml must still load");
+        assert_eq!(s.ollama_base_url, "http://127.0.0.1:11434/v1");
+        assert_eq!(s.ollama_model, "");
+        assert_eq!(s.default_backend, "local");
+        assert_eq!(s.vllm_base_url, "http://127.0.0.1:8000/v1");
+    }
+
+    #[test]
+    fn ollama_backend_round_trips() {
+        let mut s = AppSettings::default();
+        s.default_backend = "ollama".into();
+        s.ollama_base_url = "http://127.0.0.1:11434/v1".into();
+        s.ollama_model = "llama3.2".into();
+        let raw = toml::to_string_pretty(&s).unwrap();
+        let back: AppSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(back.default_backend, "ollama");
+        assert_eq!(back.ollama_model, "llama3.2");
+        assert_eq!(back.ollama_base_url, "http://127.0.0.1:11434/v1");
+    }
 }
