@@ -2,6 +2,12 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-20 12:13
+
+**Fix installer CI (`npm ci` lockfile) and make from-source the supported install.**
+
+- Regenerated `package-lock.json` so GitHub can install dependencies on Linux, macOS, and Windows. Prebuilt apps still come from those runners — this Linux machine cannot emit a Mac `.dmg` or Windows `.exe`.
+
 ## 2026-08-20 12:08
 
 **Publish installers on the GitHub Releases page.**

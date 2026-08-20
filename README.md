@@ -8,52 +8,26 @@ What changed recently: [CHANGELOG.md](CHANGELOG.md) (also [copied below](#change
 
 ## Install
 
-You want the **download** path if a release exists. Use **from source** only if Releases is empty or you want the latest code.
+Prebuilt Windows / macOS / Linux installers are built by GitHub when a version tag is pushed. Until those files show up on [Releases](https://github.com/Unaware-Kerbin/late/releases), **install from source** — that is the supported way for everyone, including Windows.
 
-### Download the app (easiest)
+You cannot produce a Mac `.dmg` or Windows `.exe` on a Linux PC (the daemon is a native binary for that OS). GitHub’s Mac and Windows runners do that job.
 
-1. Open [github.com/Unaware-Kerbin/late/releases](https://github.com/Unaware-Kerbin/late/releases).
-2. Download the file that matches your computer (newest release at the top).
-3. Install or open that file:
+### Install from source (works on your computer)
 
-| Your computer | File to get | What to do |
-|---|---|---|
-| **Windows** | installer `.exe` (or portable `.exe`) | Double-click and follow the prompts. If Windows SmartScreen says it is unrecognized, click **More info** → **Run anyway**. Installers are not code-signed yet. |
-| **macOS** | `.dmg` (or `.zip`) | Open the disk image and drag Late into Applications. The first time, **right-click** Late → **Open** (it is unsigned). |
-| **Linux** | `.AppImage` or `.deb` | **AppImage:** make it executable (right-click → Properties → “Allow executing file as program”, or `chmod +x` the file), then double-click it. **Debian/Ubuntu:** double-click the `.deb`. In a terminal, from the folder you downloaded to: `sudo apt install ./the-file-you-downloaded.deb` |
+Plan for several minutes the first time. Install these **once**, then **close and reopen** the terminal:
 
-If that page has no files yet, GitHub is still building them (about 10–20 minutes after a `v*` tag) or you can [run from source](#run-from-source-linux-and-macos).
-
-The download includes the window, the local daemon, and the agent helper. It still uses the `ssh` program already on your computer.
-
-**Linux extras** (optional, only if you need them):
-
-- SSH: usually already installed (`openssh-client`)
-- Serial ports: `libudev`
-- Packet capture: `tcpdump` (or Wireshark’s dumpcap)
-
-On Ubuntu or Debian:
+1. [Git](https://git-scm.com/downloads) — copies the project. On Windows, the installer includes **Git Bash**; use that for the commands below.
+2. [Node.js 22 LTS](https://nodejs.org/) — choose the LTS installer.
+3. [Rust](https://rustup.rs/) — run the command on that page and accept the defaults. On Windows, pick the MSVC toolchain if asked.
+4. On Ubuntu or Debian, also install:
 
 ```bash
-sudo apt install openssh-client libudev1 tcpdump
+sudo apt install pkg-config libudev-dev build-essential openssh-client libudev1 tcpdump
 ```
 
-### Run from source (Linux and macOS)
+On macOS, Xcode command-line tools (`xcode-select --install`) cover the compiler. On Windows, serial/pcap extras are optional (Npcap/Wireshark if you want capture).
 
-This copies the project and builds it on your machine. Plan for several minutes the first time. Windows users should prefer the [download](#download-the-app-easiest).
-
-**One-time tools** (install each, then close and reopen the terminal):
-
-1. [Git](https://git-scm.com/downloads) — copies the project.
-2. [Node.js 22 LTS](https://nodejs.org/) — pick the “LTS” installer, not an odd-numbered “Current” release if you have a choice.
-3. [Rust](https://rustup.rs/) — copy the command from that page, run it, and answer the prompts with the defaults.
-4. On Ubuntu or Debian, also install build packages:
-
-```bash
-sudo apt install pkg-config libudev-dev build-essential
-```
-
-**Then, once:**
+**Then:**
 
 ```bash
 git clone https://github.com/Unaware-Kerbin/late.git
@@ -78,17 +52,29 @@ After that you can type `late` in a terminal or find **Late** in the application
 
 | Message or symptom | Try this |
 |---|---|
-| `git: command not found` | Install Git, then open a **new** terminal. |
+| `git: command not found` | Install Git, then open a **new** terminal (Windows: Git Bash). |
 | `npm: command not found` | Install Node.js 22, then open a **new** terminal. |
 | `cargo: command not found` | Finish the rustup install, then open a **new** terminal. |
-| Compiles, then no window | Check `/tmp/late-electron.log`. You can still open the URL the script prints in a browser. |
-| Serial or capture missing | Install the [Linux extras](#download-the-app-easiest) above. |
+| Compiles, then no window | Check `/tmp/late-electron.log` (Linux/macOS). You can still open the URL the script prints in a browser. |
+| Serial or capture missing | Install the extras in step 4 above. |
 
 ### After Late opens
 
 1. In the left sidebar, add an SSH (or serial) session and connect. The first time, confirm the host key when asked.
 2. The Agent pane is optional. For local AI, the simplest path is [Ollama](https://ollama.com): install it, start it, choose **Ollama** in Late, then click **Pull** and pick a model.
 3. Cloud chat (Cursor and non-loopback URLs) stays off until Settings → **Allow cloud agent backends**. Session text may then leave this computer.
+
+### Download a prebuilt app (when Releases has files)
+
+When [github.com/Unaware-Kerbin/late/releases](https://github.com/Unaware-Kerbin/late/releases) lists a version, download the file for your computer:
+
+| Your computer | File to get | What to do |
+|---|---|---|
+| **Windows** | installer `.exe` (or portable `.exe`) | Double-click and follow the prompts. If Windows SmartScreen says it is unrecognized, click **More info** → **Run anyway**. Installers are not code-signed yet. |
+| **macOS** | `.dmg` (or `.zip`) | Open the disk image and drag Late into Applications. The first time, **right-click** Late → **Open** (it is unsigned). |
+| **Linux** | `.AppImage` or `.deb` | **AppImage:** make it executable (right-click → Properties → “Allow executing file as program”, or `chmod +x` the file), then double-click it. **Debian/Ubuntu:** double-click the `.deb`. In a terminal, from the folder you downloaded to: `sudo apt install ./the-file-you-downloaded.deb` |
+
+The download includes the window, the local daemon, and the agent helper. It still uses the `ssh` program already on your computer. Builds take 10–20 minutes after a `v*` tag; if the page is empty, use [from source](#install-from-source-works-on-your-computer).
 
 ## For developers
 
@@ -246,6 +232,12 @@ Default API: `http://127.0.0.1:8080/v1`. Gated Hub repos need `HF_TOKEN` in the 
 ## Changelog
 
 Dates and times are from git commits (America/New_York). Newest first. Same notes as [CHANGELOG.md](CHANGELOG.md).
+
+### 2026-08-20 12:13
+
+**Fix installer CI (`npm ci` lockfile) and make from-source the supported install.**
+
+- Regenerated `package-lock.json` so GitHub can install dependencies on Linux, macOS, and Windows. Prebuilt apps still come from those runners — this Linux machine cannot emit a Mac `.dmg` or Windows `.exe`.
 
 ### 2026-08-20 12:08
 
