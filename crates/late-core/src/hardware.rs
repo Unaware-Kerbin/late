@@ -6,8 +6,9 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Popular instruct checkpoints with approximate BF16 weight size (GB).
-/// This is a model-size catalog, not a GPU list.
+/// Popular SFW instruct checkpoints with approximate BF16 weight size (GB).
+/// Catalog only — any valid Hub id can still be typed in Download.
+/// No uncensored / abliterated / NSFW fine-tunes.
 const LIBRARY: &[(&str, u32, &str)] = &[
     ("Qwen/Qwen3-1.7B", 4, "Tiny smoke test"),
     ("Qwen/Qwen3-4B", 8, "Small tool-calling"),
@@ -27,11 +28,27 @@ const LIBRARY: &[(&str, u32, &str)] = &[
         37,
         "FP8 MoE, needs ~37GB or TP=2",
     ),
-    ("meta-llama/Llama-3.1-8B-Instruct", 16, "Llama 8B instruct"),
+    ("google/gemma-3-1b-it", 3, "Gemma 3 tiny instruct (gated Hub)"),
+    ("google/gemma-3-4b-it", 8, "Gemma 3 small instruct (gated Hub)"),
+    ("google/gemma-3-12b-it", 24, "Gemma 3 12B instruct (gated Hub)"),
+    ("google/gemma-3-27b-it", 54, "Gemma 3 27B, needs ~54GB (gated Hub)"),
+    ("google/gemma-2-2b-it", 5, "Gemma 2 tiny instruct (gated Hub)"),
+    ("google/gemma-2-9b-it", 18, "Gemma 2 9B instruct (gated Hub)"),
+    ("meta-llama/Llama-3.2-1B-Instruct", 3, "Llama 3.2 tiny (gated Hub)"),
+    ("meta-llama/Llama-3.2-3B-Instruct", 7, "Llama 3.2 3B instruct (gated Hub)"),
+    ("meta-llama/Llama-3.1-8B-Instruct", 16, "Llama 8B instruct (gated Hub)"),
     (
         "mistralai/Mistral-7B-Instruct-v0.3",
         14,
         "Mistral 7B instruct",
+    ),
+    ("mistralai/Ministral-8B-Instruct-2410", 16, "Ministral 8B instruct"),
+    ("microsoft/Phi-4-mini-instruct", 8, "Phi-4 mini instruct"),
+    ("microsoft/phi-4", 28, "Phi-4, needs ~32GB"),
+    (
+        "ibm-granite/granite-3.3-8b-instruct",
+        16,
+        "Granite 3.3 8B instruct",
     ),
 ];
 
@@ -86,6 +103,25 @@ pub fn probe() -> GpuProfile {
         _ => false,
     };
     summarize(&vendor, cards, tp_ok)
+}
+
+/// `docker/compose.yml` is an Intel XPU example. NVIDIA/AMD Start must not pull that image.
+pub fn allow_intel_xpu_compose(vendor: &str) -> bool {
+    vendor.eq_ignore_ascii_case("intel")
+}
+
+pub fn intel_xpu_compose_refuse(vendor: &str) -> String {
+    match vendor.to_ascii_lowercase().as_str() {
+        "nvidia" => {
+            "This Start button runs the optional Intel XPU Docker example, not CUDA. Use Ollama, llama.cpp, or your own vLLM at http://127.0.0.1:8000/v1. Set LATE_VLLM_FORCE=1 only if you mean to run docker/compose.yml anyway.".into()
+        }
+        "amd" => {
+            "This Start button runs the optional Intel XPU Docker example, not ROCm. Use Ollama, llama.cpp, or your own vLLM at http://127.0.0.1:8000/v1. Set LATE_VLLM_FORCE=1 only if you mean to run docker/compose.yml anyway.".into()
+        }
+        _ => {
+            "No Intel discrete GPU for docker/compose.yml. Use Ollama, llama.cpp, or your own vLLM on loopback. Set LATE_VLLM_FORCE=1 only if you mean to run that Intel example anyway.".into()
+        }
+    }
 }
 
 fn probe_nvidia() -> Vec<GpuCard> {
@@ -146,8 +182,7 @@ fn probe_drm() -> Vec<GpuCard> {
             "1002" => "amd",
             other => other,
         };
-        // Intel iGPU is always function 00:02.0 on the CPU complex.
-        let igpu = vendor_id == "8086" && pci.contains("00:02.0");
+        let igpu = vendor_id == "8086" && intel_drm_is_igpu(&pci);
         let vram = read_vram_sysfs(&dev)
             .or_else(|| lspci_prefetch_bytes(&pci))
             .unwrap_or(0);
@@ -164,6 +199,12 @@ fn probe_drm() -> Vec<GpuCard> {
     }
     cards.sort_by(|a, b| a.pci.cmp(&b.pci));
     cards
+}
+
+/// Missing PCI basename fail-closes as iGPU so compose Start cannot treat an
+/// unresolved Intel DRM node as a discrete XPU.
+fn intel_drm_is_igpu(pci: &str) -> bool {
+    pci.is_empty() || pci.contains("00:02.0")
 }
 
 fn read_hex(path: &Path) -> String {
@@ -299,7 +340,13 @@ fn summarize(vendor: &str, cards: Vec<GpuCard>, tp_ok: bool) -> GpuProfile {
         })
         .collect();
     let summary = if discrete.is_empty() {
-        "No discrete GPU found. Local vLLM needs a dedicated GPU.".into()
+        "No discrete GPU found. Use llama.cpp on CPU, Ollama, or point Local at a server on loopback.".into()
+    } else if vendor != "intel" {
+        format!(
+            "{} discrete GPU(s): {} — Late's Start button is the optional Intel XPU Docker example. Use Ollama, llama.cpp, or your own CUDA/ROCm vLLM instead.",
+            discrete_count,
+            names.join(", ")
+        )
     } else if vendor == "intel" && discrete_count >= 2 && !tp_ok {
         format!(
             "{} × {} — using one-card recommendations (Intel XPU tensor-parallel is opt-in via LATE_VLLM_ALLOW_TP=1).",
@@ -441,9 +488,26 @@ mod tests {
         assert!(rec
             .iter()
             .any(|r| r.id == "Qwen/Qwen3-14B" && r.recommended));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "google/gemma-3-12b-it" && r.recommended));
         assert!(!rec.iter().any(|r| r.id.contains("32B") && r.recommended));
         let d = default_model(&intel_32x2());
-        assert!(d.contains("14B") || d.contains("8B"));
+        assert!(
+            d.contains("12b") || d.contains("14B") || d.contains("8B") || d.contains("phi-4"),
+            "unexpected default {d}"
+        );
+    }
+
+    #[test]
+    fn catalog_includes_sfw_families_not_uncensored() {
+        let ids: String = LIBRARY.iter().map(|(id, _, _)| *id).collect::<Vec<_>>().join(" ");
+        assert!(ids.contains("google/gemma-3-4b-it"));
+        assert!(ids.contains("meta-llama/Llama-3.2-3B-Instruct"));
+        assert!(ids.contains("microsoft/Phi-4-mini-instruct"));
+        assert!(!ids.to_ascii_lowercase().contains("uncensored"));
+        assert!(!ids.to_ascii_lowercase().contains("abliterat"));
+        assert!(!ids.to_ascii_lowercase().contains("dolphin"));
     }
 
     #[test]
@@ -461,5 +525,23 @@ mod tests {
         assert!(rec
             .iter()
             .any(|r| r.id == "Qwen/Qwen3-32B" && r.recommended && r.tp == 2));
+    }
+
+    #[test]
+    fn intel_compose_is_not_the_nvidia_path() {
+        assert!(allow_intel_xpu_compose("intel"));
+        assert!(allow_intel_xpu_compose("Intel"));
+        assert!(!allow_intel_xpu_compose("nvidia"));
+        assert!(!allow_intel_xpu_compose("amd"));
+        assert!(!allow_intel_xpu_compose("none"));
+        assert!(intel_xpu_compose_refuse("nvidia").contains("CUDA"));
+        assert!(intel_xpu_compose_refuse("amd").contains("ROCm"));
+    }
+
+    #[test]
+    fn missing_pci_basename_does_not_count_intel_as_discrete() {
+        assert!(intel_drm_is_igpu(""));
+        assert!(intel_drm_is_igpu("0000:00:02.0"));
+        assert!(!intel_drm_is_igpu("0000:03:00.0"));
     }
 }

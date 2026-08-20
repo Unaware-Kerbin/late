@@ -1,4 +1,5 @@
 import { loadProviderKeys } from "./provider-keys.js";
+import { assertChatAllowed } from "./openai-loop.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,7 @@ export async function runCursorChat(opts: {
   emit: (e: SseEvent) => void;
   signal: AbortSignal;
 }): Promise<string> {
+  await assertChatAllowed("cursor");
   const stored = await loadProviderKeys();
   const apiKey = process.env.CURSOR_API_KEY || process.env.CURSOR_API_KEY || stored.cursor;
   if (!apiKey) {

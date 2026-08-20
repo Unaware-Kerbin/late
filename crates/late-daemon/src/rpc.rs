@@ -100,17 +100,46 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             app.delete_provider_key(&req_str(&params, &["name", "provider"])?)?;
             Ok(json!({"ok": true}))
         }
-        "inference.status" => Ok(serde_json::to_value(late_core::inference::status())?),
-        "inference.start" => {
-            let model = pstr(&params, &["model", "serve_model", "id"])
-                .unwrap_or_else(|| app.settings().vllm_model.clone());
-            Ok(serde_json::to_value(late_core::inference::start(&model)?)?)
+        "inference.status" => {
+            let engine = late_core::weights::parse_engine(
+                &pstr(&params, &["engine", "backend"]).unwrap_or_default(),
+            )?;
+            Ok(serde_json::to_value(late_core::weights::status_for(
+                engine,
+                &app.settings(),
+            ))?)
         }
-        "inference.stop" => Ok(serde_json::to_value(late_core::inference::stop()?)?),
+        "inference.start" => {
+            let engine = late_core::weights::parse_engine(
+                &pstr(&params, &["engine", "backend"]).unwrap_or_default(),
+            )?;
+            let settings = app.settings();
+            let model = pstr(&params, &["model", "serve_model", "id"]).unwrap_or_else(|| {
+                match engine {
+                    late_core::weights::Engine::Vllm => settings.vllm_model.clone(),
+                    late_core::weights::Engine::LlamaCpp => settings.llama_cpp_model.clone(),
+                    late_core::weights::Engine::Ollama => settings.ollama_model.clone(),
+                }
+            });
+            Ok(serde_json::to_value(late_core::weights::start(
+                engine, &model, &settings,
+            )?)?)
+        }
+        "inference.stop" => {
+            let engine = late_core::weights::parse_engine(
+                &pstr(&params, &["engine", "backend"]).unwrap_or_default(),
+            )?;
+            Ok(serde_json::to_value(late_core::weights::stop(engine)?)?)
+        }
         "inference.download" => {
+            let engine = late_core::weights::parse_engine(
+                &pstr(&params, &["engine", "backend"]).unwrap_or_default(),
+            )?;
             let model = req_str(&params, &["model", "id"])?;
-            Ok(serde_json::to_value(late_core::inference::download(
+            Ok(serde_json::to_value(late_core::weights::download(
+                engine,
                 &model,
+                &app.settings(),
             )?)?)
         }
         "session.open" => {

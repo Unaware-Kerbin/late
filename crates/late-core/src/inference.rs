@@ -40,6 +40,12 @@ pub struct InferenceStatus {
     pub serve_model: Option<String>,
     pub gpu: crate::hardware::GpuProfile,
     pub detail: String,
+    /// True when Start/Download may run the optional Intel XPU compose (discrete Intel or LATE_VLLM_FORCE=1).
+    #[serde(default)]
+    pub allow_intel_compose: bool,
+    /// True when Late started this process (llama-server child / verified pid).
+    #[serde(default)]
+    pub late_owned: bool,
 }
 
 #[derive(Default)]
@@ -175,8 +181,10 @@ pub fn status() -> InferenceStatus {
         container
             .as_deref()
             .map(|s| format!("container: {s}"))
-            .unwrap_or_else(|| "vLLM is not running on 127.0.0.1:8000".into())
+            .unwrap_or_else(|| idle_inference_detail(&gpu))
     };
+    let allow_intel_compose = force_intel_compose()
+        || crate::hardware::allow_intel_xpu_compose(&gpu.vendor);
     InferenceStatus {
         running,
         starting,
@@ -188,6 +196,8 @@ pub fn status() -> InferenceStatus {
         serve_model,
         gpu,
         detail,
+        allow_intel_compose,
+        late_owned: false,
     }
 }
 
@@ -493,6 +503,26 @@ fn upsert_dotenv(path: &Path, updates: &[(&str, String)]) -> Result<()> {
     Ok(())
 }
 
+fn force_intel_compose() -> bool {
+    std::env::var("LATE_VLLM_FORCE").ok().as_deref() == Some("1")
+}
+
+fn require_intel_compose(gpu: &crate::hardware::GpuProfile) -> Result<()> {
+    if force_intel_compose() || crate::hardware::allow_intel_xpu_compose(&gpu.vendor) {
+        return Ok(());
+    }
+    Err(LateError::Message(crate::hardware::intel_xpu_compose_refuse(
+        &gpu.vendor,
+    )))
+}
+
+fn idle_inference_detail(gpu: &crate::hardware::GpuProfile) -> String {
+    if crate::hardware::allow_intel_xpu_compose(&gpu.vendor) {
+        return "optional Intel XPU compose is not running on 127.0.0.1:8000. Point local vLLM at that URL, or Start below if this machine has a discrete Intel GPU.".into();
+    }
+    crate::hardware::intel_xpu_compose_refuse(&gpu.vendor)
+}
+
 fn vllm_image() -> String {
     std::env::var("VLLM_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.into())
 }
@@ -505,6 +535,7 @@ pub fn start(model: &str) -> Result<InferenceStatus> {
     };
     validate_model(&model)?;
     let gpu = crate::hardware::probe();
+    require_intel_compose(&gpu)?;
     if let Err(why) = crate::hardware::fits(&model, &gpu) {
         return Err(LateError::Message(why));
     }
@@ -672,6 +703,7 @@ pub fn stop() -> Result<InferenceStatus> {
 /// The cache directory is often root-owned, so this uses the vLLM image as root.
 pub fn download(model: &str) -> Result<InferenceStatus> {
     validate_model(model)?;
+    require_intel_compose(&crate::hardware::probe())?;
     {
         let mut j = job().lock().unwrap_or_else(|e| e.into_inner());
         if j.downloading {

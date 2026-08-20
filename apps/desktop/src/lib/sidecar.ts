@@ -1,6 +1,6 @@
 import { rpc } from "./rpc";
 import { lateAuthHeaders, lateLocalToken } from "./localToken";
-import type { ApprovalPrompt, ChatMsg, SessionInfo } from "../types";
+import type { ApprovalPrompt, ChatBackend, ChatMsg, SessionInfo } from "../types";
 
 export const SIDECAR_HTTP = "http://127.0.0.1:7430";
 
@@ -34,6 +34,9 @@ export type SidecarModels = {
   ollama: string[];
   ollamaOk?: boolean;
   ollamaMessage?: string;
+  llamacpp: string[];
+  llamacppOk?: boolean;
+  llamacppMessage?: string;
   backends: string[];
 };
 
@@ -47,7 +50,10 @@ export async function sidecarModels(): Promise<SidecarModels> {
     ollama: body.ollama ?? [],
     ollamaOk: body.ollamaOk,
     ollamaMessage: body.ollamaMessage,
-    backends: body.backends ?? ["local", "cursor"],
+    llamacpp: body.llamacpp ?? [],
+    llamacppOk: body.llamacppOk,
+    llamacppMessage: body.llamacppMessage,
+    backends: body.backends ?? ["local", "llamacpp", "ollama", "cursor"],
   };
 }
 
@@ -139,7 +145,7 @@ async function attachedScrollback(): Promise<string> {
 
 export async function streamChat(opts: {
   messages: ChatMsg[];
-  backend: "local" | "cursor" | "ollama";
+  backend: ChatBackend;
   model?: string;
   conversationId: string;
   onEvent: (e: SidecarEvent) => void;

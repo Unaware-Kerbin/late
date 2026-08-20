@@ -25,6 +25,7 @@ pub mod session;
 pub mod sftp;
 pub mod ssh;
 pub mod types;
+pub mod weights;
 
 pub use config::{AppSettings, LatePaths};
 pub use error::{LateError, Result};

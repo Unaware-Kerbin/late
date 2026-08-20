@@ -1,13 +1,12 @@
-# Late local inference — Intel Arc Pro B70 (2× Battlemage), iGPU excluded.
+# Optional Intel Arc / XPU vLLM example. NVIDIA and AMD should use Ollama,
+# llama.cpp, or a CUDA/ROCm vLLM install instead of this file.
 #
 # Pin: intel/llm-scaler-vllm:0.21.0-b3 (Aug 2026, current Hub tag).
 # Fallback if that tag 404s: intel/llm-scaler-vllm:0.14.0-b8.2.1
-#   (first release with official Arc Pro B70 support; also tagged 1.4)
 #
-# Tensor parallel: TP=2 (both cards). If you hit Battlemage BCS-reset /
-# XPU instability, run TP=1 (container XPU indices are 0,1 — never pass the
-# host ZE_AFFINITY_MASK such as 0,2 into this service):
-#   TP=1 docker compose -f docker/compose.yml up
+# Tensor parallel: default TP=1. For two discrete XPUs, TP=2 (container
+# indices are 0,1 — never pass a host ZE_AFFINITY_MASK such as 0,2):
+#   TP=2 docker compose -f docker/compose.yml up
 #
 # This image's ENTRYPOINT is already:
 #   bash -c 'exec vllm serve "$@"' --
@@ -31,9 +30,9 @@ services:
     ipc: host
     shm_size: "32gb"
     environment:
-      # Host detect-gpus.sh mask (e.g. 0,2) skips the iGPU hole in *host*
-      # Level Zero order. This image only enumerates the two B70s as 0,1 —
-      # passing the host mask leaves a single XPU and TP=2 dies with
+      # Host detect-gpus.sh mask (e.g. 0,2) skips an iGPU hole in *host*
+      # Level Zero order. This image enumerates discrete XPUs as 0,1 —
+      # passing the host mask can leave a single XPU and TP=2 dies with
       # "device index must be in [0, 1), but got 1". Do not list
       # ZE_AFFINITY_MASK here.
       ZE_FLAT_DEVICE_HIERARCHY: FLAT

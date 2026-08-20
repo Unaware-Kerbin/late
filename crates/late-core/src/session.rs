@@ -131,8 +131,42 @@ impl App {
     }
 
     pub fn set_settings(&self, settings: AppSettings) -> Result<()> {
+        self.validate_pcap_dir(&settings.pcap_dir)?;
+        let mut settings = settings;
+        if !settings.cloud_chat_enabled
+            && settings.default_backend.eq_ignore_ascii_case("cursor")
+        {
+            settings.default_backend = "local".into();
+        }
+        let prev_cloud = self.settings.lock().cloud_chat_enabled;
         save_settings(&self.paths.settings(), &settings)?;
-        *self.settings.lock() = settings;
+        *self.settings.lock() = settings.clone();
+        if prev_cloud != settings.cloud_chat_enabled {
+            let _ = crate::audit::append_detail(
+                &self.paths,
+                "settings.cloud_chat",
+                true,
+                serde_json::json!({ "enabled": settings.cloud_chat_enabled }),
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_pcap_dir(&self, pcap: &PathBuf) -> Result<()> {
+        if pcap.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let mut roots = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home);
+        }
+        roots.push(self.paths.data.clone());
+        roots.push(self.paths.config.clone());
+        if pcap.is_dir() {
+            confine::confine_dir(pcap, &roots)?;
+        } else {
+            confine::confine_under_roots(pcap, &roots, false)?;
+        }
         Ok(())
     }
 
@@ -533,10 +567,6 @@ impl App {
         }
         roots.push(self.paths.data.clone());
         roots.push(self.paths.config.clone());
-        let pcap = self.settings.lock().pcap_dir.clone();
-        if !pcap.as_os_str().is_empty() {
-            roots.push(pcap);
-        }
         roots
     }
 

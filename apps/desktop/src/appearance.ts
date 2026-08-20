@@ -34,8 +34,8 @@ export const RADII: { id: RadiusId; name: string }[] = [
 ];
 
 export const FONTS: { id: FontId; name: string; hint: string }[] = [
-  { id: "plex", name: "IBM Plex", hint: "Default UI + mono" },
-  { id: "atkinson", name: "Atkinson", hint: "Hyperlegible, a11y" },
+  { id: "plex", name: "System UI", hint: "OS UI font (no web fonts)" },
+  { id: "atkinson", name: "Accessible", hint: "Segoe / system, a11y" },
   { id: "mono", name: "All mono", hint: "Operator console" },
 ];
 

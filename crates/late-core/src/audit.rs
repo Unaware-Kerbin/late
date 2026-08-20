@@ -41,6 +41,15 @@ pub fn should_log(method: &str) -> bool {
 }
 
 pub fn append(paths: &LatePaths, method: &str, ok: bool) -> Result<()> {
+    append_detail(paths, method, ok, serde_json::Value::Null)
+}
+
+pub fn append_detail(
+    paths: &LatePaths,
+    method: &str,
+    ok: bool,
+    extra: serde_json::Value,
+) -> Result<()> {
     if !should_log(method) {
         return Ok(());
     }
@@ -52,14 +61,28 @@ pub fn append(paths: &LatePaths, method: &str, ok: bool) -> Result<()> {
     #[cfg(unix)]
     opts.mode(0o600);
     let mut f = opts.open(&path)?;
-    let line = json!({
+    let mut line = json!({
         "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "event": "rpc",
         "method": method,
         "ok": ok,
+        "user": actor(),
     });
+    if let Some(obj) = extra.as_object() {
+        if let Some(map) = line.as_object_mut() {
+            for (k, v) in obj {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+    }
     writeln!(f, "{line}")?;
     Ok(())
+}
+
+fn actor() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown".into())
 }
 
 #[cfg(test)]
@@ -74,5 +97,7 @@ mod tests {
         assert!(should_log("auth.upsert"));
         assert!(should_log("providers.set"));
         assert!(should_log("sftp.download"));
+        assert!(should_log("settings.cloud_chat"));
+        assert!(should_log("chat"));
     }
 }

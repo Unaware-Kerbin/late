@@ -38,7 +38,7 @@ import {
   useApp,
 } from "../store";
 import { rpc } from "../lib/rpc";
-import { VENDORS, emptyDevice, newId, normalizeFolderPath, type AuthProfile, type Device, type DeviceKind } from "../types";
+import { VENDORS, coerceChatBackend, emptyDevice, newId, normalizeFolderPath, type AuthProfile, type Device, type DeviceKind } from "../types";
 
 function trap(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -398,29 +398,75 @@ function SettingsModal() {
   const [model, setModel] = useState(settings?.vllm_model ?? "local");
   const [ollama, setOllama] = useState(settings?.ollama_base_url ?? "http://127.0.0.1:11434/v1");
   const [ollamaModel, setOllamaModel] = useState(settings?.ollama_model ?? "");
-  const [defaultBackend, setDefaultBackend] = useState(settings?.default_backend ?? "local");
+  const [llamaCpp, setLlamaCpp] = useState(settings?.llama_cpp_base_url ?? "http://127.0.0.1:8080/v1");
+  const [llamaCppModel, setLlamaCppModel] = useState(settings?.llama_cpp_model ?? "");
+  const [defaultBackend, setDefaultBackend] = useState(() => coerceChatBackend(settings?.default_backend));
   const [insecureTls, setInsecureTls] = useState(Boolean(settings?.api_insecure_tls));
+  const [cloudChat, setCloudChat] = useState(Boolean(settings?.cloud_chat_enabled));
   return (
     <div className="modal-root" onMouseDown={() => setState({ settingsOpen: false })}>
       <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
         <label>Daemon bind<input value={bind} onChange={(e) => setBind(e.target.value)} /></label>
-        <label>vLLM base URL<input value={vllm} onChange={(e) => setVllm(e.target.value)} /></label>
-        <label>Local vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
-        <label>Ollama base URL<input value={ollama} onChange={(e) => setOllama(e.target.value)} /></label>
-        <label>Ollama model (optional)<input value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} placeholder="first pulled model" /></label>
         <label>
           Default chat backend
-          <select value={defaultBackend} onChange={(e) => setDefaultBackend(e.target.value)}>
+          <select
+            value={defaultBackend}
+            onChange={(e) => {
+              const next = coerceChatBackend(e.target.value);
+              if (next === "cursor" && !cloudChat) return;
+              setDefaultBackend(next);
+            }}
+          >
             <option value="local">local vLLM</option>
+            <option value="llamacpp">llama.cpp</option>
             <option value="ollama">Ollama</option>
-            <option value="cursor">Cursor SDK</option>
+            <option value="cursor" disabled={!cloudChat}>
+              Cursor SDK{cloudChat ? "" : " (enable cloud chat first)"}
+            </option>
           </select>
         </label>
+        <label className="row" style={{ alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={cloudChat}
+            onChange={(e) => {
+              const on = e.target.checked;
+              setCloudChat(on);
+              if (!on && defaultBackend === "cursor") setDefaultBackend("local");
+            }}
+          />
+          Allow cloud agent backends (Cursor and non-loopback OpenAI-compatible URLs). Session text may leave this machine.
+        </label>
         <p className="hint">
-          Ollama is not bundled. Install from <a href="https://ollama.com" target="_blank" rel="noreferrer">ollama.com</a>,
-          start it, then <code>ollama pull &lt;model&gt;</code>. Late never pulls models for you.
+          Off by default (ISO A.5.19 / SOC 2 CC9). Hugging Face GGUF download and Ollama Pull stay available. See{" "}
+          <a href="https://github.com/Unaware-Kerbin/late/blob/main/docs/isms/README.md" target="_blank" rel="noreferrer">
+            docs/isms
+          </a>
+          . Late is not SOC 2 or ISO 27001 certified.
         </p>
+        <label>vLLM base URL<input value={vllm} onChange={(e) => setVllm(e.target.value)} /></label>
+        <label>Local vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
+        <p className="hint">
+          Default <code>http://127.0.0.1:8000/v1</code>. NVIDIA, AMD, and Intel GPUs all work if the vLLM you run uses them. Late does not bundle a GPU runtime.
+        </p>
+        <label>llama.cpp base URL<input value={llamaCpp} onChange={(e) => setLlamaCpp(e.target.value)} /></label>
+        <label>llama.cpp model (optional)<input value={llamaCppModel} onChange={(e) => setLlamaCppModel(e.target.value)} placeholder="first listed model" /></label>
+        <p className="hint">
+          llama.cpp is not bundled. Download GGUF from Hugging Face in the Agent pane, then Start if <code>llama-server</code> is on PATH, or run it yourself on <code>127.0.0.1:8080</code>.
+          Gated Hub repos need <code>HF_TOKEN</code> (or <code>HUGGING_FACE_HUB_TOKEN</code>) in the environment.
+        </p>
+        <label>Ollama base URL<input value={ollama} onChange={(e) => setOllama(e.target.value)} /></label>
+        <label>Ollama model (optional)<input value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} placeholder="first pulled model" /></label>
+        <p className="hint">
+          Ollama is not bundled. Install from <a href="https://ollama.com" target="_blank" rel="noreferrer">ollama.com</a>
+          and start it. Pull library names or Hugging Face ids from the Agent pane.
+        </p>
+        {defaultBackend === "cursor" && (
+          <p className="hint">
+            Cursor uses the API key stored under API keys. vLLM Start/Download stay in the Agent pane when Local is selected; llama.cpp and Ollama have their own download/pull controls.
+          </p>
+        )}
         <label className="row" style={{ alignItems: "center", gap: 8 }}>
           <input type="checkbox" checked={insecureTls} onChange={(e) => setInsecureTls(e.target.checked)} />
           Allow invalid TLS certificates on API sessions (lab gear only)
@@ -550,6 +596,8 @@ function SettingsModal() {
                 cursor_model: settings?.cursor_model ?? "composer-2.5",
                 ollama_base_url: ollama,
                 ollama_model: ollamaModel,
+                llama_cpp_base_url: llamaCpp,
+                llama_cpp_model: llamaCppModel,
                 default_backend: defaultBackend,
                 scrollback_lines: settings?.scrollback_lines ?? 32000,
                 turn_timeout_secs: settings?.turn_timeout_secs ?? 90,
@@ -557,6 +605,7 @@ function SettingsModal() {
                 pcap_dir: settings?.pcap_dir,
                 log_dir: settings?.log_dir,
                 api_insecure_tls: insecureTls,
+                cloud_chat_enabled: cloudChat,
               })
             }
           >

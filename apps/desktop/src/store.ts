@@ -785,29 +785,52 @@ export type InferenceStatus = {
   serveModel?: string | null;
   gpu?: GpuProfile;
   detail: string;
+  allowIntelCompose?: boolean;
+  lateOwned?: boolean;
 };
 
-export async function inferenceStatus(): Promise<InferenceStatus> {
-  return rpc.call<InferenceStatus>("inference.status");
+export async function inferenceStatus(engine?: string): Promise<InferenceStatus> {
+  return rpc.call<InferenceStatus>("inference.status", engine ? { engine } : {});
 }
 
-export async function startInference(model?: string): Promise<InferenceStatus> {
+export async function startInference(model?: string, engine?: string): Promise<InferenceStatus> {
   const id = (model ?? "").trim();
   if (!id) {
-    throw new Error("pick Hugging Face weights in “Weights to serve”, then Start");
+    throw new Error(
+      engine === "llamacpp"
+        ? "pick a GGUF above, then Start"
+        : "pick Hugging Face weights in “Weights to serve”, then Start",
+    );
   }
-  toast("info", `starting ${id} — first load can take several minutes`);
-  return rpc.call<InferenceStatus>("inference.start", { model: id, serveModel: id });
+  toast(
+    "info",
+    engine === "llamacpp"
+      ? `starting llama-server with ${id}`
+      : `starting ${id} — first load can take several minutes`,
+  );
+  return rpc.call<InferenceStatus>("inference.start", {
+    model: id,
+    serveModel: id,
+    engine: engine || "vllm",
+  });
 }
 
-export async function stopInference(): Promise<InferenceStatus> {
-  toast("info", "stopping local vLLM");
-  return rpc.call<InferenceStatus>("inference.stop");
+export async function stopInference(engine?: string): Promise<InferenceStatus> {
+  toast("info", engine === "llamacpp" ? "stopping llama-server" : "stopping local inference");
+  return rpc.call<InferenceStatus>("inference.stop", engine ? { engine } : {});
 }
 
-export async function downloadInference(model: string): Promise<InferenceStatus> {
-  toast("info", `downloading ${model} into the Hugging Face cache`);
-  return rpc.call<InferenceStatus>("inference.download", { model });
+export async function downloadInference(model: string, engine?: string): Promise<InferenceStatus> {
+  const kind = engine || "vllm";
+  toast(
+    "info",
+    kind === "ollama"
+      ? `pulling ${model} via local Ollama`
+      : kind === "llamacpp"
+        ? `downloading ${model} GGUF from Hugging Face`
+        : `downloading ${model} into the Hugging Face cache`,
+  );
+  return rpc.call<InferenceStatus>("inference.download", { model, engine: kind });
 }
 
 export async function saveSettings(settings: AppSettings) {

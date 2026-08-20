@@ -16,8 +16,8 @@
   --info: #6cb6ff;
   --line-strong: #3a5470;
   --accent-dim: #12382d;
-  --font: "IBM Plex Sans", "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font: system-ui, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
   --accent-dim: rgba(46, 230, 166, 0.18);
   --faint: #5a6d80;
   --radius: 6px;
@@ -1266,16 +1266,16 @@ html[data-radius="round"] { --radius: 12px; }
 }
 
 html[data-font="plex"] {
-  --font: "IBM Plex Sans", "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font: system-ui, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 html[data-font="atkinson"] {
-  --font: "Atkinson Hyperlegible", "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font: "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 html[data-font="mono"] {
-  --font: "IBM Plex Mono", ui-monospace, monospace;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 
 html[data-layout="chat-left"] .body {

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { daemon } from "./daemon.js";
+import { auditEvent } from "./local-auth.js";
 import { loadProviderKeys } from "./provider-keys.js";
 import { executeTool, liveSessionContext, OPENAI_TOOLS, type ToolCtx } from "./tools.js";
 import {
+  LLAMACPP_BASE,
   MAX_ROUNDS,
   OLLAMA_BASE,
   SYSTEM_PROMPT,
@@ -13,7 +15,7 @@ import {
   type ToolCall,
 } from "./types.js";
 
-type CompatKind = "vllm" | "ollama";
+type CompatKind = "vllm" | "ollama" | "llamacpp";
 
 export type OllamaProbe = {
   models: string[];
@@ -64,6 +66,11 @@ async function resolveBase(kind: CompatKind): Promise<string> {
     const s = await loadAppSettings();
     return openaiV1(settingStr(s, "ollamaBaseUrl", "ollama_base_url") ?? OLLAMA_BASE);
   }
+  if (kind === "llamacpp") {
+    if (process.env.LATE_LLAMACPP_BASE?.trim()) return openaiV1(process.env.LATE_LLAMACPP_BASE);
+    const s = await loadAppSettings();
+    return openaiV1(settingStr(s, "llamaCppBaseUrl", "llama_cpp_base_url") ?? LLAMACPP_BASE);
+  }
   if (process.env.LATE_VLLM_BASE?.trim()) return openaiV1(process.env.LATE_VLLM_BASE);
   const s = await loadAppSettings();
   return openaiV1(settingStr(s, "vllmBaseUrl", "vllm_base_url") ?? VLLM_BASE);
@@ -72,9 +79,29 @@ async function resolveBase(kind: CompatKind): Promise<string> {
 function ollamaHelp(base: string, kind: "offline" | "empty"): string {
   const root = openaiRoot(base);
   if (kind === "empty") {
-    return `Ollama is running at ${root} but has no models. Run \`ollama pull <model>\` (for example \`ollama pull llama3.2\`). Late does not pull models for you.`;
+    return `Ollama is running at ${root} but has no models. Pull one from the Agent pane (for example qwen2.5:7b or Qwen/Qwen3-8B-GGUF).`;
   }
-  return `Ollama is not running at ${root}. Install from https://ollama.com, start it, then run \`ollama pull <model>\`. Late does not install Ollama or download models.`;
+  return `Ollama is not running at ${root}. Install from https://ollama.com and start it, then Pull a model from the Agent pane. Late does not install Ollama.`;
+}
+
+function llamaCppHelp(base: string, kind: "offline" | "empty" | "loading" | "auth"): string {
+  const root = openaiRoot(base);
+  if (kind === "empty") {
+    return `llama.cpp is running at ${root} but listed no models. Pass \`-m /path/to/model.gguf\` to llama-server, or Download a GGUF from the Agent pane and Start.`;
+  }
+  if (kind === "loading") {
+    return `llama.cpp is starting at ${root} (model still loading). Wait until llama-server /health is ready, then retry.`;
+  }
+  if (kind === "auth") {
+    return `llama.cpp at ${root} requires an API key (HTTP 401/403). Late does not send cloud provider keys to llama.cpp. Run llama-server without --api-key on loopback, or use a server that does not require a key.`;
+  }
+  return `llama.cpp (llama-server) is not running at ${root}. Download a GGUF from the Agent pane and Start, or run \`llama-server -m /path/to/model.gguf --port 8080 --host 127.0.0.1\`. Late does not install llama.cpp.`;
+}
+
+function compatLabel(kind: CompatKind): string {
+  if (kind === "ollama") return "Ollama";
+  if (kind === "llamacpp") return "llama.cpp";
+  return "vLLM";
 }
 
 export async function runLocalChat(opts: {
@@ -97,6 +124,16 @@ export async function runOllamaChat(opts: {
   return runCompatChat({ ...opts, kind: "ollama" });
 }
 
+export async function runLlamaCppChat(opts: {
+  messages: ChatMessage[];
+  model?: string;
+  conversationId: string;
+  emit: (e: SseEvent) => void;
+  signal: AbortSignal;
+}): Promise<string> {
+  return runCompatChat({ ...opts, kind: "llamacpp" });
+}
+
 async function runCompatChat(opts: {
   kind: CompatKind;
   messages: ChatMessage[];
@@ -105,11 +142,27 @@ async function runCompatChat(opts: {
   emit: (e: SseEvent) => void;
   signal: AbortSignal;
 }): Promise<string> {
-  const label = opts.kind === "ollama" ? "Ollama" : "vLLM";
+  const label = compatLabel(opts.kind);
   const base = await resolveBase(opts.kind);
+  await assertChatAllowed(opts.kind, base);
   if (opts.kind === "ollama") {
     const probe = await probeOllama(base);
     if (!probe.ok) throw new Error(probe.message);
+  }
+  if (opts.kind === "llamacpp") {
+    const probe = await probeLlamaCpp(base);
+    if (!probe.ok) throw new Error(probe.message);
+  }
+  if (opts.kind === "vllm") {
+    const listed = await listModelsAt("vllm", base);
+    if (listed.authFailed) {
+      throw new Error(`${label} at ${base} returned ${listed.status} — check the API key, if any.`);
+    }
+    if (!listed.models.length && listed.status === 0) {
+      throw new Error(
+        `${label} is not reachable at ${base}. If you just clicked Start, wait until GPU status is running — first load can take several minutes. Do not click Stop while it is starting.`,
+      );
+    }
   }
   const model = opts.model || (await defaultModel(opts.kind, base));
   const live = await liveSessionContext();
@@ -136,7 +189,9 @@ async function runCompatChat(opts: {
         });
       }, 5000);
       try {
-        completion = await chatCompletions(label, base, model, messages, opts.signal);
+        completion = await chatCompletions(opts.kind, label, base, model, messages, opts.signal);
+      } catch (err) {
+        throw describeFetchError(err, label, base);
       } finally {
         clearInterval(beat);
       }
@@ -198,14 +253,20 @@ async function defaultModel(kind: CompatKind, base: string): Promise<string> {
     if (preferred && probe.models.includes(preferred)) return preferred;
     return probe.models[0] ?? "llama3.2";
   }
-  const models = await listModelsAt(base);
+  const models = (await listModelsAt(kind, base)).models;
   const s = await loadAppSettings();
+  if (kind === "llamacpp") {
+    const preferred = settingStr(s, "llamaCppModel", "llama_cpp_model");
+    if (preferred && models.includes(preferred)) return preferred;
+    return models[0] ?? preferred ?? "local";
+  }
   const preferred = settingStr(s, "vllmModel", "vllm_model");
   if (preferred && models.includes(preferred)) return preferred;
   return models[0] ?? "local";
 }
 
 async function chatCompletions(
+  kind: CompatKind,
   label: string,
   base: string,
   model: string,
@@ -213,22 +274,29 @@ async function chatCompletions(
   signal: AbortSignal,
 ) {
   const linked = AbortSignal.any([signal, AbortSignal.timeout(TURN_TIMEOUT_MS)]);
-  const r = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(await bearerFor(base)),
-    },
-    signal: linked,
-    body: JSON.stringify({
-      model,
-      messages,
-      tools: OPENAI_TOOLS,
-      tool_choice: "auto",
-      temperature: 0.2,
-      stream: false,
-    }),
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(await bearerFor(kind, base)),
+  };
+  let r: Response;
+  try {
+    r = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers,
+      redirect: headers.Authorization ? "error" : "follow",
+      signal: linked,
+      body: JSON.stringify({
+        model,
+        messages,
+        tools: OPENAI_TOOLS,
+        tool_choice: "auto",
+        temperature: 0.2,
+        stream: false,
+      }),
+    });
+  } catch (err) {
+    throw describeFetchError(err, label, base);
+  }
   const text = await r.text();
   let json: { choices?: { message: ChatMessage }[]; error?: unknown };
   try {
@@ -240,28 +308,109 @@ async function chatCompletions(
   return json;
 }
 
-async function bearerFor(base: string): Promise<Record<string, string>> {
-  const local =
-    base.includes("127.0.0.1") || base.includes("localhost") || base.includes("::1");
-  if (local) return {};
+function isLoopbackBase(base: string): boolean {
+  try {
+    const u = new URL(base);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+function settingFlag(s: Record<string, unknown>, ...keys: string[]): boolean {
+  for (const k of keys) {
+    if (s[k] === true) return true;
+  }
+  return false;
+}
+
+async function cloudChatEnabled(): Promise<boolean> {
+  settingsCache = null;
+  const s = await loadAppSettings();
+  return settingFlag(s, "cloud_chat_enabled", "cloudChatEnabled");
+}
+
+const CLOUD_OFF =
+  "Cloud agent backends are off. Enable “Allow cloud agent backends” in Settings (session text may leave this machine).";
+
+export async function assertChatAllowed(
+  kind: "vllm" | "ollama" | "llamacpp" | "cursor",
+  base?: string,
+): Promise<void> {
+  const cloud = await cloudChatEnabled();
+  if (kind === "cursor") {
+    auditEvent("chat", { backend: "cursor", egress: "cloud", ok: cloud });
+    if (!cloud) throw new Error(CLOUD_OFF);
+    return;
+  }
+  const loop = Boolean(base && isLoopbackBase(base));
+  const ok = loop || cloud;
+  auditEvent("chat", { backend: kind, egress: loop ? "loopback" : "cloud", ok });
+  if (!ok) {
+    throw new Error(
+      `${compatLabel(kind)} at ${base} is not loopback. Enable “Allow cloud agent backends” in Settings to send session text off this machine.`,
+    );
+  }
+}
+
+function describeFetchError(err: unknown, label: string, base: string): Error {
+  const cause =
+    err instanceof Error ? (err as Error & { cause?: { code?: string } }).cause : undefined;
+  const code = cause?.code ?? "";
+  const msg = err instanceof Error ? err.message : String(err);
+  if (
+    code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_SOCKET" ||
+    /fetch failed/i.test(msg)
+  ) {
+    return new Error(
+      `${label} is not reachable at ${base}. If you just clicked Start, wait until GPU status is running — first load can take several minutes. Do not click Stop while it is starting.`,
+    );
+  }
+  return err instanceof Error ? err : new Error(`${label}: ${msg}`);
+}
+
+async function bearerFor(kind: CompatKind, base: string): Promise<Record<string, string>> {
+  if (kind === "ollama" || kind === "llamacpp") return {};
+  if (isLoopbackBase(base)) return {};
+  if (!(await cloudChatEnabled())) return {};
   const keys = await loadProviderKeys();
   const key = keys.openai || keys.openrouter || keys.groq || keys.custom;
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
-async function listModelsAt(base: string): Promise<string[]> {
+type ModelList = { models: string[]; authFailed: boolean; status: number };
+
+async function listModelsAt(kind: CompatKind, base: string): Promise<ModelList> {
   try {
-    const r = await fetch(`${base}/models`, { signal: AbortSignal.timeout(2000) });
-    if (!r.ok) return [];
+    const headers = await bearerFor(kind, base);
+    const r = await fetch(`${base}/models`, {
+      headers,
+      redirect: headers.Authorization ? "error" : "follow",
+      signal: AbortSignal.timeout(2000),
+    });
+    if (r.status === 401 || r.status === 403) {
+      return { models: [], authFailed: true, status: r.status };
+    }
+    if (!r.ok) return { models: [], authFailed: false, status: r.status };
     const body = (await r.json()) as { data?: { id: string }[] };
-    return (body.data ?? []).map((m) => m.id).filter((id) => !id.includes(":cloud"));
+    return {
+      models: (body.data ?? []).map((m) => m.id).filter((id) => !id.includes(":cloud")),
+      authFailed: false,
+      status: r.status,
+    };
   } catch {
-    return [];
+    return { models: [], authFailed: false, status: 0 };
   }
 }
 
 export async function listLocalModels(): Promise<string[]> {
-  return listModelsAt(await resolveBase("vllm"));
+  return (await listModelsAt("vllm", await resolveBase("vllm"))).models;
 }
 
 async function probeOllama(base: string): Promise<OllamaProbe> {
@@ -286,12 +435,12 @@ async function probeOllama(base: string): Promise<OllamaProbe> {
     /* try OpenAI-compatible listing next */
   }
   try {
-    const models = await listModelsAt(openaiV1(base));
-    if (models.length) {
+    const listed = await listModelsAt("ollama", openaiV1(base));
+    if (listed.models.length) {
       return {
-        models,
+        models: listed.models,
         ok: true,
-        message: `Ollama online · ${models.length} model${models.length === 1 ? "" : "s"}`,
+        message: `Ollama online · ${listed.models.length} model${listed.models.length === 1 ? "" : "s"}`,
       };
     }
     const ping = await fetch(`${root}/api/tags`, { signal: AbortSignal.timeout(1500) });
@@ -304,4 +453,38 @@ async function probeOllama(base: string): Promise<OllamaProbe> {
 
 export async function listOllamaModels(): Promise<OllamaProbe> {
   return probeOllama(await resolveBase("ollama"));
+}
+
+async function probeLlamaCpp(base: string): Promise<OllamaProbe> {
+  const listed = await listModelsAt("llamacpp", openaiV1(base));
+  if (listed.authFailed) {
+    return { models: [], ok: false, message: llamaCppHelp(base, "auth") };
+  }
+  if (listed.models.length) {
+    return {
+      models: listed.models,
+      ok: true,
+      message: `llama.cpp online · ${listed.models.length} model${listed.models.length === 1 ? "" : "s"}`,
+    };
+  }
+  try {
+    const ping = await fetch(`${openaiRoot(base)}/health`, {
+      headers: await bearerFor("llamacpp", base),
+      signal: AbortSignal.timeout(1500),
+    });
+    if (ping.status === 401 || ping.status === 403) {
+      return { models: [], ok: false, message: llamaCppHelp(base, "auth") };
+    }
+    if (ping.status === 503) {
+      return { models: [], ok: false, message: llamaCppHelp(base, "loading") };
+    }
+    if (ping.ok) return { models: [], ok: false, message: llamaCppHelp(base, "empty") };
+  } catch {
+    /* offline */
+  }
+  return { models: [], ok: false, message: llamaCppHelp(base, "offline") };
+}
+
+export async function listLlamaCppModels(): Promise<OllamaProbe> {
+  return probeLlamaCpp(await resolveBase("llamacpp"));
 }

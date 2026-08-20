@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub cursor_model: String,
     pub ollama_base_url: String,
     pub ollama_model: String,
+    pub llama_cpp_base_url: String,
+    pub llama_cpp_model: String,
     pub default_backend: String,
     pub scrollback_lines: usize,
     pub turn_timeout_secs: u64,
@@ -20,6 +22,8 @@ pub struct AppSettings {
     pub log_dir: PathBuf,
     /// Lab gear with private PKI. Default false — verify TLS.
     pub api_insecure_tls: bool,
+    /// Cursor and non-loopback OpenAI-compatible chat. Default false (local only).
+    pub cloud_chat_enabled: bool,
 }
 
 impl Default for AppSettings {
@@ -32,6 +36,8 @@ impl Default for AppSettings {
             cursor_model: "composer-2.5".into(),
             ollama_base_url: "http://127.0.0.1:11434/v1".into(),
             ollama_model: String::new(),
+            llama_cpp_base_url: "http://127.0.0.1:8080/v1".into(),
+            llama_cpp_model: String::new(),
             default_backend: "local".into(),
             scrollback_lines: 32_000,
             turn_timeout_secs: 90,
@@ -39,6 +45,7 @@ impl Default for AppSettings {
             pcap_dir: dirs.data.join("pcap"),
             log_dir: dirs.data.join("logs"),
             api_insecure_tls: false,
+            cloud_chat_enabled: false,
         }
     }
 }
@@ -69,6 +76,8 @@ impl LatePaths {
             &self.data.join("logs"),
             &self.data.join("captures"),
             &self.data.join("exports"),
+            &self.data.join("models"),
+            &self.data.join("models/gguf"),
         ] {
             crate::fsutil::mkdir_private(p)?;
         }
@@ -143,8 +152,21 @@ log_dir = "/tmp/logs"
         let s: AppSettings = toml::from_str(raw).expect("legacy settings.toml must still load");
         assert_eq!(s.ollama_base_url, "http://127.0.0.1:11434/v1");
         assert_eq!(s.ollama_model, "");
+        assert_eq!(s.llama_cpp_base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(s.llama_cpp_model, "");
         assert_eq!(s.default_backend, "local");
         assert_eq!(s.vllm_base_url, "http://127.0.0.1:8000/v1");
+        assert!(!s.cloud_chat_enabled);
+        assert!(!s.api_insecure_tls);
+    }
+
+    #[test]
+    fn cloud_chat_round_trips() {
+        let mut s = AppSettings::default();
+        s.cloud_chat_enabled = true;
+        let raw = toml::to_string_pretty(&s).unwrap();
+        let back: AppSettings = toml::from_str(&raw).unwrap();
+        assert!(back.cloud_chat_enabled);
     }
 
     #[test]
@@ -158,5 +180,18 @@ log_dir = "/tmp/logs"
         assert_eq!(back.default_backend, "ollama");
         assert_eq!(back.ollama_model, "llama3.2");
         assert_eq!(back.ollama_base_url, "http://127.0.0.1:11434/v1");
+    }
+
+    #[test]
+    fn llamacpp_backend_round_trips() {
+        let mut s = AppSettings::default();
+        s.default_backend = "llamacpp".into();
+        s.llama_cpp_base_url = "http://127.0.0.1:8080/v1".into();
+        s.llama_cpp_model = "qwen2.5-7b".into();
+        let raw = toml::to_string_pretty(&s).unwrap();
+        let back: AppSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(back.default_backend, "llamacpp");
+        assert_eq!(back.llama_cpp_model, "qwen2.5-7b");
+        assert_eq!(back.llama_cpp_base_url, "http://127.0.0.1:8080/v1");
     }
 }

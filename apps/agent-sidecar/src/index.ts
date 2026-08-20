@@ -3,7 +3,15 @@ import { cancelAll, decide, listPending } from "./approvals.js";
 import { runCursorChat } from "./cursor-loop.js";
 import { daemon } from "./daemon.js";
 import { auditEvent, authorizeLocal, corsAllowOrigin, isLoopbackHostHeader } from "./local-auth.js";
-import { listLocalModels, listOllamaModels, runLocalChat, runOllamaChat } from "./openai-loop.js";
+import {
+  assertChatAllowed,
+  listLlamaCppModels,
+  listLocalModels,
+  listOllamaModels,
+  runLlamaCppChat,
+  runLocalChat,
+  runOllamaChat,
+} from "./openai-loop.js";
 import { SIDECAR_PORT, type ApprovalDecision, type ChatMessage, type SseEvent } from "./types.js";
 
 const runs = new Map<string, AbortController>();
@@ -60,13 +68,17 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/models") {
       const ollama = await listOllamaModels();
+      const llamacpp = await listLlamaCppModels();
       sendJson(res, req, 200, {
         local: await listLocalModels(),
         cursor: ["composer-2.5", "auto"],
         ollama: ollama.models,
         ollamaOk: ollama.ok,
         ollamaMessage: ollama.message,
-        backends: ["local", "cursor", "ollama"],
+        llamacpp: llamacpp.models,
+        llamacppOk: llamacpp.ok,
+        llamacppMessage: llamacpp.message,
+        backends: ["local", "llamacpp", "ollama", "cursor"],
       });
       return;
     }
@@ -106,7 +118,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/chat") {
       const body = (await readJson(req)) as {
         messages?: ChatMessage[];
-        backend?: "local" | "cursor" | "ollama";
+        backend?: "local" | "cursor" | "ollama" | "llamacpp" | "llama.cpp" | "llama-cpp" | "llama_cpp";
         model?: string;
         conversationId?: string;
       };
@@ -136,12 +148,28 @@ const server = createServer(async (req, res) => {
           emit,
           signal: ac.signal,
         };
-        const text =
+        const backend =
           body.backend === "cursor"
-            ? await runCursorChat(chatOpts)
+            ? "cursor"
             : body.backend === "ollama"
+              ? "ollama"
+              : body.backend === "llamacpp" ||
+                  body.backend === "llama.cpp" ||
+                  body.backend === "llama-cpp" ||
+                  body.backend === "llama_cpp"
+                ? "llamacpp"
+                : "local";
+        if (backend === "cursor") {
+          await assertChatAllowed("cursor");
+        }
+        const text =
+          backend === "cursor"
+            ? await runCursorChat(chatOpts)
+            : backend === "ollama"
               ? await runOllamaChat(chatOpts)
-              : await runLocalChat(chatOpts);
+              : backend === "llamacpp"
+                ? await runLlamaCppChat(chatOpts)
+                : await runLocalChat(chatOpts);
         emit({ type: "done", message: text });
       } catch (err) {
         emit({ type: "error", message: err instanceof Error ? err.message : String(err) });

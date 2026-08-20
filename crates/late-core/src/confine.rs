@@ -158,6 +158,16 @@ mod tests {
     }
 
     #[test]
+    fn slash_is_not_under_operator_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let roots = [home.path().to_path_buf(), data.path().to_path_buf()];
+        assert!(confine_under_roots(Path::new("/"), &roots, false).is_err());
+        assert!(confine_dir(Path::new("/"), &roots).is_err());
+        assert!(confine_under_roots(Path::new("/tmp"), &roots, false).is_err());
+    }
+
+    #[test]
     fn read_requires_file_inside_root() {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("cap.pcap");

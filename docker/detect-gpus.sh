@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Map Intel discrete GPUs (Arc Pro B70 / Battlemage) to ZE_AFFINITY_MASK,
-# skipping the Arrow Lake / Meteor Lake iGPU typically at PCI 00:02.0.
+# Map Intel discrete GPUs to ZE_AFFINITY_MASK, skipping the integrated
+# GPU typically at PCI 00:02.0. This helper is only for the optional Intel
+# XPU compose stack — NVIDIA/AMD users should not run it.
 #
-# ZE_AFFINITY_MASK is the *host* Level Zero index list (skips the iGPU hole).
+# ZE_AFFINITY_MASK is the *host* Level Zero index list (skips an iGPU hole).
 # Do NOT pass it into the vLLM container — intel/llm-scaler-vllm only enumerates
 # discrete XPUs as 0,1. DOCKER_ZE_AFFINITY_MASK is that compact list; compose.yml
 # must not inject either variable into the service environment.
@@ -13,22 +14,10 @@ OUT="${1:-"$ROOT/.env"}"
 
 # Known integrated GPU PCI IDs (Arrow Lake, Meteor Lake, Lunar Lake, Raptor Lake).
 IGPU_DEVIDS="7d67 7d45 7d55 7d51 a7a0 a7a8 64a0 46a6 46a8 9a49 7dd5 6420"
-# Battlemage / Arc Pro B70-class discrete IDs (8086:e223 and siblings).
-DISCRETE_HINT="e210 e211 e212 e215 e220 e221 e222 e223 e224 e225"
-
 is_igpu_devid() {
   local id="${1,,}"
   id="${id#0x}"
   for x in $IGPU_DEVIDS; do
-    [[ "$id" == "$x" ]] && return 0
-  done
-  return 1
-}
-
-is_discrete_hint() {
-  local id="${1,,}"
-  id="${id#0x}"
-  for x in $DISCRETE_HINT; do
     [[ "$id" == "$x" ]] && return 0
   done
   return 1
@@ -126,5 +115,5 @@ GIDS_YML="$(dirname "$OUT")/compose.gids.yml"
 
 echo "late-gpu: wrote $OUT" >&2
 echo "ZE_AFFINITY_MASK=${MASK}"
-echo "late-gpu: typical dual-B70 with iGPU present => 1,2" >&2
+echo "late-gpu: typical dual discrete + iGPU => 1,2" >&2
 echo "late-gpu: if Level Zero enumerates only discrete cards => 0,1" >&2

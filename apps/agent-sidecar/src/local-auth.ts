@@ -32,9 +32,10 @@ export function auditEvent(event: string, fields: Record<string, unknown> = {}):
   try {
     const dir = lateDataDir();
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const user = process.env.USER || process.env.USERNAME || "unknown";
     appendFileSync(
       join(dir, "audit.jsonl"),
-      `${JSON.stringify({ ts: new Date().toISOString(), event, ...fields })}\n`,
+      `${JSON.stringify({ ts: new Date().toISOString(), event, user, ...fields })}\n`,
       { mode: 0o600 },
     );
   } catch {

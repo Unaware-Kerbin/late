@@ -23,7 +23,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     if (!host.current || !pane.session) return;
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "IBM Plex Mono, ui-monospace, monospace",
+      fontFamily: "ui-monospace, Cascadia Mono, SF Mono, Menlo, Consolas, monospace",
       fontSize: termFontSize,
       theme: xtermTheme(theme),
       scrollback: 50000,

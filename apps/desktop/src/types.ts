@@ -130,7 +130,7 @@ export interface DiffLine {
   text: string;
 }
 
-export type ChatBackend = "local" | "cursor" | "ollama";
+export type ChatBackend = "local" | "cursor" | "ollama" | "llamacpp";
 
 export interface AppSettings {
   bind: string;
@@ -139,6 +139,8 @@ export interface AppSettings {
   cursor_model: string;
   ollama_base_url: string;
   ollama_model: string;
+  llama_cpp_base_url: string;
+  llama_cpp_model: string;
   default_backend: ChatBackend | string;
   scrollback_lines: number;
   turn_timeout_secs: number;
@@ -146,16 +148,19 @@ export interface AppSettings {
   pcap_dir?: string;
   log_dir?: string;
   api_insecure_tls?: boolean;
+  cloud_chat_enabled?: boolean;
 }
 
 export function coerceChatBackend(v: unknown): ChatBackend {
-  const s = String(v ?? "").toLowerCase();
-  if (s === "cursor" || s === "ollama") return s;
+  const s = String(v ?? "").toLowerCase().replace(/[\s_]+/g, "-");
+  if (s === "cursor" || s === "ollama" || s === "llamacpp") return s;
+  if (s === "llama.cpp" || s === "llama-cpp") return "llamacpp";
   return "local";
 }
 
 export function backendLabel(backend: ChatBackend): string {
   if (backend === "ollama") return "Ollama";
+  if (backend === "llamacpp") return "llama.cpp";
   if (backend === "cursor") return "Cursor SDK";
   return "local vLLM";
 }
@@ -191,6 +196,8 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     cursor_model: str("cursor_model", "cursorModel") ?? "composer-2.5",
     ollama_base_url: str("ollama_base_url", "ollamaBaseUrl") ?? "http://127.0.0.1:11434/v1",
     ollama_model: str("ollama_model", "ollamaModel") ?? "",
+    llama_cpp_base_url: str("llama_cpp_base_url", "llamaCppBaseUrl") ?? "http://127.0.0.1:8080/v1",
+    llama_cpp_model: str("llama_cpp_model", "llamaCppModel") ?? "",
     default_backend: coerceChatBackend(str("default_backend", "defaultBackend")),
     scrollback_lines: num("scrollback_lines", "scrollbackLines") ?? 32_000,
     turn_timeout_secs: num("turn_timeout_secs", "turnTimeoutSecs") ?? 90,
@@ -198,6 +205,7 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     pcap_dir: str("pcap_dir", "pcapDir"),
     log_dir: str("log_dir", "logDir"),
     api_insecure_tls: flag("api_insecure_tls", "apiInsecureTls") ?? false,
+    cloud_chat_enabled: flag("cloud_chat_enabled", "cloudChatEnabled") ?? false,
   };
 }
 
