@@ -27,6 +27,9 @@ echo "late: vite UI"
 npm run build -w late-desktop
 
 echo "late: electron-builder ${TARGET:-current OS}"
-cd "$ROOT/apps/desktop"
-npx --yes electron-builder ${TARGET:+$TARGET}
+if [[ -n "$TARGET" ]]; then
+  npm exec -w late-desktop -- electron-builder --publish never "$TARGET"
+else
+  npm exec -w late-desktop -- electron-builder --publish never
+fi
 echo "late: artifacts in apps/desktop/release/"

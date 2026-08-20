@@ -2,6 +2,12 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-20 12:23
+
+**Pin Electron so GitHub can build installers.**
+
+- electron-builder requires an exact Electron version. Packaging now uses `--publish never` so a git tag does not trigger a second publisher.
+
 ## 2026-08-20 12:13
 
 **Fix installer CI (`npm ci` lockfile) and make from-source the supported install.**
