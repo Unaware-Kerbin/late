@@ -6,11 +6,23 @@ By default the helper uses a model **on this machine**. Cloud backends (Cursor a
 
 Late is **not** SOC 2 or ISO 27001 certified. The project’s security documents are in [docs/isms/](docs/isms/README.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
 
+## Download
+
+Prebuilt apps are on **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (currently [v0.1.3](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.3)), not on the green check next to a commit. That check is the **ci** workflow (Rust tests). Installers are built by **Build installers** and attached to the Release.
+
+| Your computer | File on the Release | What to do |
+|---|---|---|
+| Windows | `Late-0.1.0-win-x64.exe` | Double-click. If SmartScreen appears: **More info** → **Run anyway**. |
+| macOS (Apple Silicon) | `Late-0.1.0-mac-arm64.dmg` (or `.zip`) | Open the disk image and drag Late to Applications. First open: **right-click** Late → **Open**. |
+| Linux | `Late-0.1.0-linux-x86_64.AppImage` or `Late-0.1.0-linux-amd64.deb` | AppImage: mark as executable, then double-click. Debian/Ubuntu: install the `.deb` from the download folder. |
+
+The `0.1.0` in the filename is the app version; the GitHub tag may be newer (`v0.1.3`). Installers are unsigned. Each package includes the UI, daemon, and agent helper. SSH still uses the `ssh` program already on your computer.
+
+If Releases has no files yet, [install from source](#install-from-source).
+
 ## Install from source
 
-This is the supported way to run Late on Windows, macOS, and Linux.
-
-Install these once, then **close and reopen** the terminal:
+Build Late on your machine (Windows, macOS, or Linux). Install these once, then **close and reopen** the terminal:
 
 1. [Git](https://git-scm.com/downloads) — on Windows, use **Git Bash** for the commands below.
 2. [Node.js 22 LTS](https://nodejs.org/).
@@ -56,18 +68,6 @@ Then search for **Late**, or run `late` in a terminal. If the command is not fou
 1. In the left sidebar, add an SSH or serial session and connect. Confirm the host key the first time you are asked.
 2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
 3. To use Cursor or other cloud chat, open Settings and enable **Allow cloud agent backends**. Session text may then leave this computer.
-
-## Prebuilt downloads
-
-If a version is listed at [Releases](https://github.com/Unaware-Kerbin/late/releases), you can install that instead of building from source. Installers are unsigned.
-
-| OS | File | Notes |
-|---|---|---|
-| Windows | `.exe` | If SmartScreen appears: **More info** → **Run anyway**. |
-| macOS | `.dmg` or `.zip` | First open: **right-click** Late → **Open**. |
-| Linux | `.AppImage` or `.deb` | AppImage: mark as executable, then double-click. Debian/Ubuntu: install the `.deb` from the download folder. |
-
-Each package includes the UI, daemon, and agent helper. SSH still uses the `ssh` program already on your computer.
 
 ## Help
 
@@ -129,6 +129,8 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 
 ### Isolation CI
 
+The **ci** workflow on each push is Rust tests, isolation greps, and advisory scans. It does **not** attach `.exe` / `.dmg` / AppImage files. Those come from **Build installers** on a `v*` tag and show up under [Releases](https://github.com/Unaware-Kerbin/late/releases).
+
 `scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` for `keyring`, `russh`, and `secret` and fail if any hit is found. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
 
 ## Layout
@@ -184,7 +186,7 @@ cd apps/desktop && npx tauri dev
 
 ### Build installers
 
-GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (or **Build installers** is run). Each OS must be packed on that OS. To pack the current machine:
+GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (workflow **Build installers**). Finished files are on the Release for that tag, not in the **ci** job log. Each OS must be packed on that OS. To pack the current machine:
 
 ```bash
 npm install
