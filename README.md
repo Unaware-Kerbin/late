@@ -2,7 +2,7 @@
 
 Late is a desktop app for SSH, serial consoles, file transfer (SFTP), REST APIs, and packet capture. An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
 
-By default the helper uses a model **on this machine**. Cloud backends (Cursor and similar) stay off until you enable them in Settings. Hugging Face model downloads stay available.
+By default the helper uses a model **on your computer**. Cloud backends (Cursor and similar) stay off until they are enabled in Settings. Hugging Face model downloads stay available.
 
 Late is **not** SOC 2 or ISO 27001 certified. The project’s security documents are in [docs/isms/](docs/isms/README.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
 
@@ -67,7 +67,7 @@ Then search for **Late**, or run `late` in a terminal. If the command is not fou
 
 1. In the left sidebar, add an SSH or serial session and connect. Confirm the host key the first time you are asked.
 2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
-3. To use Cursor or other cloud chat, open Settings and enable **Allow cloud agent backends**. Session text may then leave this computer.
+3. To use Cursor or other cloud chat, open Settings and enable **Allow cloud agent backends**. Session text may then leave your computer.
 
 ## Help
 
@@ -145,7 +145,7 @@ The **ci** workflow on each push is Rust tests, isolation greps, and advisory sc
 
 ## Frontend + sidecar
 
-See [Install from source](#install-from-source) for running the app. This section is the development layout.
+See [Install from source](#install-from-source) to run the app. Development layout:
 
 Node 22. Workspaces: `apps/desktop`, `apps/agent-sidecar`.
 
@@ -186,7 +186,7 @@ cd apps/desktop && npx tauri dev
 
 ### Build installers
 
-GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (workflow **Build installers**). Finished files are on the Release for that tag, not in the **ci** job log. Each OS must be packed on that OS. To pack the current machine:
+GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (workflow **Build installers**). Finished files are on the Release for that tag, not in the **ci** job log. Pack each OS on a computer running that OS:
 
 ```bash
 npm install
@@ -216,7 +216,7 @@ docker compose -f docker/compose.yml up
 
 ### Ollama (optional — easiest local AI)
 
-Late does not install Ollama for you. On [ollama.com](https://ollama.com), download the installer for your OS, open it, and wait until Ollama is running (it stays in the background). In Late’s Agent pane choose **Ollama**, then **Pull** a name such as `gemma3:4b` or `qwen2.5:7b`. You can also Pull a Hugging Face id (`google/gemma-3-4b-it-qat-q4_0-gguf`; Late sends it as `hf.co/…`). Pull only talks to this computer. Default API: `http://127.0.0.1:11434/v1`.
+Late does not install Ollama. On [ollama.com](https://ollama.com), download the installer for your OS, open it, and wait until Ollama is running (it stays in the background). In Late’s Agent pane choose **Ollama**, then **Pull** a name such as `gemma3:4b` or `qwen2.5:7b`. A Hugging Face id also works (`google/gemma-3-4b-it-qat-q4_0-gguf`; Late sends it as `hf.co/…`). Pull only talks to the local Ollama server. Default API: `http://127.0.0.1:11434/v1`.
 
 ### llama.cpp (optional)
 
@@ -226,6 +226,6 @@ Late does not install llama.cpp. Build or install [llama.cpp](https://github.com
 llama-server -m ~/.local/share/late/models/gguf/Qwen--Qwen3-8B-GGUF/*.gguf --port 8080 --host 127.0.0.1
 ```
 
-Default API: `http://127.0.0.1:8080/v1`. Gated Hub repos need `HF_TOKEN` in the environment. vLLM Docker Start/Download stay hidden on this backend.
+Default API: `http://127.0.0.1:8080/v1`. Gated Hub repos need `HF_TOKEN` in the environment. vLLM Docker Start/Download stay hidden when llama.cpp is selected.
 
 
