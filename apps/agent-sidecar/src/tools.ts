@@ -1,5 +1,5 @@
 import { daemon } from "./daemon.js";
-import { isAlwaysAllowed, listPending, rememberAlways, requestApproval } from "./approvals.js";
+import { decide, isAlwaysAllowed, rememberAlways, requestApproval } from "./approvals.js";
 import type { ApprovalDecision, OpenAiTool, PendingApproval, SseEvent } from "./types.js";
 
 export type ToolCtx = {
@@ -62,7 +62,7 @@ export const OPENAI_TOOLS: OpenAiTool[] = [
     function: {
       name: "propose_api_get",
       description:
-        "Propose a GET request to a host-pinned API session when you need live API data to answer a question. FortiManager JSON-RPC is rejected. Operator must click Approve. After Approve, the response body is returned.",
+        "Propose a GET request to a host-pinned API session when you need live API data to answer a question. FortiManager JSON-RPC is rejected. Operator must click Approve (no always-allow). After Approve, the response body is returned.",
       parameters: {
         type: "object",
         properties: {
@@ -257,10 +257,6 @@ function waitAbort(signal: AbortSignal): Promise<never> {
   });
 }
 
-function latestPending(pred: (p: PendingApproval) => boolean): PendingApproval | undefined {
-  return [...listPending()].reverse().find(pred);
-}
-
 export async function executeTool(name: string, rawArgs: string, ctx: ToolCtx): Promise<string> {
   let args: Record<string, unknown> = {};
   try {
@@ -279,7 +275,16 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolCtx): 
       status: denied ? "denied" : "ok",
       detail: denied ? obj?.reason : undefined,
     });
-    return typeof out === "string" ? out : JSON.stringify(out);
+    let text = typeof out === "string" ? out : JSON.stringify(out);
+    if (
+      name === "read_scrollback" ||
+      name === "query_pcap" ||
+      name === "propose_command" ||
+      name === "propose_api_get"
+    ) {
+      text = `BEGIN UNTRUSTED DEVICE OUTPUT\n${text}\nEND UNTRUSTED DEVICE OUTPUT`;
+    }
+    return text;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     ctx.emit({ type: "tool", name, status: "error", detail: message });
@@ -320,12 +325,16 @@ async function dispatch(name: string, args: Record<string, unknown>, ctx: ToolCt
 async function awaitGate(
   ctx: ToolCtx,
   pending: Omit<PendingApproval, "proposalId">,
-  match: (p: PendingApproval) => boolean,
+  _match: (p: PendingApproval) => boolean,
 ): Promise<ApprovalDecision> {
-  const req = requestApproval(pending);
-  const live = latestPending(match);
-  ctx.emit({ type: "approval", pending: live ?? { ...pending, proposalId: "pending" } });
-  return Promise.race([req, waitAbort(ctx.signal)]);
+  const { proposal, promise } = requestApproval(pending);
+  ctx.emit({ type: "approval", pending: proposal });
+  try {
+    return await Promise.race([promise, waitAbort(ctx.signal)]);
+  } catch (err) {
+    decide({ proposalId: proposal.proposalId, allow: false });
+    throw err;
+  }
 }
 
 async function askUser(question: string, ctx: ToolCtx) {
@@ -334,13 +343,16 @@ async function askUser(question: string, ctx: ToolCtx) {
     title: "Agent question",
     detail: { question },
   };
-  const req = requestApproval(pending);
-  const live = latestPending((p) => p.kind === "ask" && p.detail.question === question);
-  if (live) {
-    ctx.emit({ type: "approval", pending: live });
-    ctx.emit({ type: "ask", proposalId: live.proposalId, question });
+  const { proposal, promise } = requestApproval(pending);
+  ctx.emit({ type: "approval", pending: proposal });
+  ctx.emit({ type: "ask", proposalId: proposal.proposalId, question });
+  let decision: Awaited<typeof promise>;
+  try {
+    decision = await Promise.race([promise, waitAbort(ctx.signal)]);
+  } catch (err) {
+    decide({ proposalId: proposal.proposalId, allow: false });
+    throw err;
   }
-  const decision = await Promise.race([req, waitAbort(ctx.signal)]);
   if (!decision.allow) return { answered: false, note: "operator declined to answer" };
   return { answered: true, answer: decision.answer ?? "" };
 }
@@ -422,7 +434,7 @@ async function proposeCommand(
     };
   }
 
-  let allow = isAlwaysAllowed(ctx.conversationId, "command", fingerprint, linux);
+  let allow = alwaysOk && isAlwaysAllowed(ctx.conversationId, "command", fingerprint, linux);
   if (allow) {
     ctx.emit({ type: "tool", name: "propose_command", status: "always-allow-reuse" });
   } else {
@@ -473,24 +485,19 @@ async function proposeApi(sessionId: string, path: string, reason: string, ctx: 
   if (/fortimanager|fortigate|jsonrpc|json-rpc/i.test(path)) {
     return { executed: false, reason: "FortiManager JSON-RPC is human-only" };
   }
-  const fingerprint = `${sessionId}::GET::${path}`;
   const detail = { sessionId, method: "GET", path, ...(reason ? { reason } : {}) };
-  let allow = isAlwaysAllowed(ctx.conversationId, "api", fingerprint, false);
-  if (!allow) {
-    const decision = await awaitGate(
-      ctx,
-      {
-        kind: "api",
-        title: "Run this GET to answer your question — Approve to send",
-        detail,
-        policyAllowed: true,
-      },
-      (p) => p.kind === "api" && p.detail.path === path,
-    );
-    allow = decision.allow;
-    if (decision.alwaysAllow) rememberAlways(ctx.conversationId, "api", fingerprint, false);
-  }
-  if (!allow) return { executed: false, reason: "operator denied" };
+  const decision = await awaitGate(
+    ctx,
+    {
+      kind: "api",
+      title: "Run this GET to answer your question — Approve to send",
+      detail,
+      policyAllowed: true,
+      allowAlwaysAllow: false,
+    },
+    (p) => p.kind === "api" && p.detail.path === path,
+  );
+  if (!decision.allow) return { executed: false, reason: "operator denied" };
   const result = await daemon.call("api.request", {
     sessionId,
     session_id: sessionId,

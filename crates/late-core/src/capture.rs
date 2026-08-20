@@ -20,9 +20,8 @@ impl CaptureStore {
     }
 
     pub fn save(&self, paths: &LatePaths) -> Result<()> {
-        fs::create_dir_all(&paths.data)?;
-        fs::write(
-            paths.data.join("captures.json"),
+        crate::fsutil::write_private(
+            &paths.data.join("captures.json"),
             serde_json::to_string_pretty(self)?,
         )?;
         Ok(())
@@ -78,10 +77,10 @@ pub fn export_session(
             out.push(b ^ key[i % 32]);
         }
         let dest = path.with_extension("log.xor");
-        fs::write(&dest, out)?;
+        crate::fsutil::write_private(&dest, out)?;
         Ok(dest)
     } else {
-        fs::write(&path, body)?;
+        crate::fsutil::write_private(&path, body)?;
         Ok(path)
     }
 }

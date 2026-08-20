@@ -9,6 +9,21 @@ import {
   type RadiusId,
   type ThemeId,
 } from "./appearance";
+import {
+  CHAT_H,
+  CHAT_W,
+  MODELS_H,
+  SIDE_W,
+  clampChatHeight,
+  clampModelsH,
+  clampShellWidth,
+  defaultOrder,
+  isAgentStacked,
+  layoutFromOrder,
+  loadShellOrder,
+  moveShellPane,
+  type ShellPaneId,
+} from "./shell";
 import { isHostKeyError, rpc, textToB64 } from "./lib/rpc";
 import {
   coerceAuth,
@@ -72,6 +87,11 @@ export type AppState = {
   radius: RadiusId;
   uiFont: FontId;
   layout: LayoutId;
+  shellOrder: ShellPaneId[];
+  sideW: number;
+  chatW: number;
+  chatH: number;
+  chatModelsH: number;
   providerStatus: Record<string, boolean>;
 };
 
@@ -115,7 +135,18 @@ function bootstrap(): AppState {
     termFontSize: readStored("late.termFontSize", 18, 12, 36),
     ...(() => {
       const a = loadAppearance();
-      return { theme: a.theme, density: a.density, radius: a.radius, uiFont: a.font, layout: a.layout };
+      return {
+        theme: a.theme,
+        density: a.density,
+        radius: a.radius,
+        uiFont: a.font,
+        layout: a.layout,
+        shellOrder: loadShellOrder(a.layout),
+        sideW: readStored("late.sideW", SIDE_W.fallback, SIDE_W.min, SIDE_W.max),
+        chatW: readStored("late.chatW", CHAT_W.fallback, CHAT_W.min, CHAT_W.max),
+        chatH: readStored("late.chatH", CHAT_H.fallback, CHAT_H.min, CHAT_H.max),
+        chatModelsH: readModelsH(),
+      };
     })(),
     providerStatus: {},
   };
@@ -144,6 +175,30 @@ export function applyAppearance(s: AppState = state) {
       font: s.uiFont,
       layout: s.layout,
     });
+    persistShell(s);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readModelsH(): number {
+  try {
+    const n = Number(localStorage.getItem("late.chatModelsH"));
+    if (!Number.isFinite(n)) return MODELS_H.fallback;
+    if (n <= 0) return 0;
+    return Math.min(MODELS_H.max, Math.max(MODELS_H.min, n));
+  } catch {
+    return MODELS_H.fallback;
+  }
+}
+
+function persistShell(s: AppState) {
+  try {
+    localStorage.setItem("late.sideW", String(s.sideW));
+    localStorage.setItem("late.chatW", String(s.chatW));
+    localStorage.setItem("late.chatH", String(s.chatH));
+    localStorage.setItem("late.chatModelsH", String(s.chatModelsH));
+    localStorage.setItem("late.shellOrder", s.shellOrder.join(","));
   } catch {
     /* ignore */
   }
@@ -176,7 +231,17 @@ export function resetAppearance() {
       uiFont: "plex" as const,
       layout: "chat-right" as const,
     };
-    const next = { ...s, uiScale: 1.15, termFontSize: 18, ...a };
+    const next = {
+      ...s,
+      uiScale: 1.15,
+      termFontSize: 18,
+      ...a,
+      shellOrder: defaultOrder(a.layout),
+      sideW: SIDE_W.fallback,
+      chatW: CHAT_W.fallback,
+      chatH: CHAT_H.fallback,
+      chatModelsH: MODELS_H.fallback,
+    };
     queueMicrotask(() => applyAppearance(next));
     return next;
   });
@@ -203,7 +268,79 @@ export function patchAppearance(patch: Partial<Appearance> & { uiFont?: FontId }
       radius: patch.radius ?? s.radius,
       uiFont: patch.uiFont ?? patch.font ?? s.uiFont,
       layout: patch.layout ?? s.layout,
+      shellOrder: patch.layout ? defaultOrder(patch.layout) : s.shellOrder,
     };
+    queueMicrotask(() => applyAppearance(next));
+    return next;
+  });
+}
+
+export function setShellWidth(id: "side" | "chat", px: number) {
+  setState((s) => {
+    const next = id === "chat" ? { ...s, chatW: clampShellWidth("chat", px) } : { ...s, sideW: clampShellWidth("side", px) };
+    persistShell(next);
+    return next;
+  });
+}
+
+export function setChatHeight(px: number) {
+  setState((s) => {
+    const next = { ...s, chatH: clampChatHeight(px) };
+    persistShell(next);
+    return next;
+  });
+}
+
+export function setChatModelsH(px: number) {
+  setState((s) => {
+    const chatModelsH = px <= 40 ? 0 : clampModelsH(px);
+    const next = { ...s, chatModelsH };
+    persistShell(next);
+    return next;
+  });
+}
+
+export function widenChat() {
+  const px = typeof window !== "undefined" ? Math.round(window.innerWidth * 0.52) : 720;
+  setShellWidth("chat", px);
+}
+
+export function dockAgent(where: "top" | "row") {
+  setState((s) => {
+    const layout: LayoutId = where === "top" ? "agent-top" : "chat-right";
+    const next = {
+      ...s,
+      layout,
+      shellOrder: defaultOrder(layout),
+      chatH: where === "top" ? Math.max(s.chatH, 380) : s.chatH,
+    };
+    persistShell(next);
+    queueMicrotask(() => applyAppearance(next));
+    return next;
+  });
+}
+
+export function dropShellPane(from: ShellPaneId, to: ShellPaneId) {
+  setState((s) => {
+    if (isAgentStacked(s.layout)) {
+      if (from === "chat") {
+        const row = s.shellOrder.filter((id) => id !== "chat");
+        const shellOrder = moveShellPane(["chat", ...row], "chat", to);
+        const next = { ...s, shellOrder, layout: layoutFromOrder(shellOrder) };
+        persistShell(next);
+        queueMicrotask(() => applyAppearance(next));
+        return next;
+      }
+      const row = s.shellOrder.filter((id) => id !== "chat");
+      const moved = moveShellPane(row, from, to);
+      const next = { ...s, shellOrder: (["chat", ...moved] as ShellPaneId[]) };
+      persistShell(next);
+      return next;
+    }
+    const shellOrder = moveShellPane(s.shellOrder, from, to);
+    const layout = layoutFromOrder(shellOrder);
+    const next = { ...s, shellOrder, layout };
+    persistShell(next);
     queueMicrotask(() => applyAppearance(next));
     return next;
   });
@@ -740,7 +877,7 @@ export async function runCollection(id: string) {
 export async function saveProviderKey(name: string, key: string) {
   try {
     await rpc.call("providers.set", { name, key });
-    toast("ok", `${name} key saved on this machine (0600 vault, not sent to the UI again)`);
+    toast("ok", `${name} key saved on your computer (0600 vault, not sent to the UI again)`);
     await refreshAll();
   } catch (err) {
     toast("error", errText(err));

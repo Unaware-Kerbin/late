@@ -13,8 +13,8 @@ pub fn load(paths: &LatePaths) -> Result<CollectionsFile> {
 }
 
 pub fn save(paths: &LatePaths, file: &CollectionsFile) -> Result<()> {
-    fs::write(
-        paths.collections(),
+    crate::fsutil::write_private(
+        &paths.collections(),
         toml::to_string_pretty(file).map_err(|e| LateError::Config(e.to_string()))?,
     )?;
     Ok(())

@@ -280,10 +280,9 @@ async function chatCompletions(
   };
   let r: Response;
   try {
-    r = await fetch(`${base}/chat/completions`, {
+    r = await fetchStayOnBox(`${base}/chat/completions`, {
       method: "POST",
       headers,
-      redirect: headers.Authorization ? "error" : "follow",
       signal: linked,
       body: JSON.stringify({
         model,
@@ -310,13 +309,36 @@ async function chatCompletions(
 
 function isLoopbackBase(base: string): boolean {
   try {
-    const u = new URL(base);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+    return isLoopbackUrl(new URL(base));
   } catch {
     return false;
   }
+}
+
+function isLoopbackUrl(u: URL): boolean {
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+/** Follow one same-host loopback redirect (trailing slash). Refuse off-box 302s. */
+async function fetchStayOnBox(url: string, init: RequestInit): Promise<Response> {
+  const first = await fetch(url, { ...init, redirect: "manual" });
+  if (first.status < 300 || first.status >= 400) return first;
+  const loc = first.headers.get("location");
+  if (!loc) {
+    throw new Error("redirect without Location");
+  }
+  const orig = new URL(url);
+  const next = new URL(loc, url);
+  const sameHost =
+    orig.protocol === next.protocol &&
+    orig.hostname === next.hostname &&
+    orig.port === next.port;
+  if (!sameHost || (isLoopbackUrl(orig) && !isLoopbackUrl(next))) {
+    throw new Error("refusing off-box or cross-host chat redirect");
+  }
+  return fetch(next.toString(), { ...init, redirect: "error" });
 }
 
 function settingFlag(s: Record<string, unknown>, ...keys: string[]): boolean {
@@ -333,7 +355,7 @@ async function cloudChatEnabled(): Promise<boolean> {
 }
 
 const CLOUD_OFF =
-  "Cloud agent backends are off. Enable “Allow cloud agent backends” in Settings (session text may leave this machine).";
+  "Cloud AI is off. Turn it on in Settings. Session text may then leave your computer.";
 
 export async function assertChatAllowed(
   kind: "vllm" | "ollama" | "llamacpp" | "cursor",
@@ -350,7 +372,7 @@ export async function assertChatAllowed(
   auditEvent("chat", { backend: kind, egress: loop ? "loopback" : "cloud", ok });
   if (!ok) {
     throw new Error(
-      `${compatLabel(kind)} at ${base} is not loopback. Enable “Allow cloud agent backends” in Settings to send session text off this machine.`,
+      `${compatLabel(kind)} at ${base} is not loopback. Turn on Cloud AI in Settings to send session text off your computer.`,
     );
   }
 }
@@ -380,7 +402,22 @@ async function bearerFor(kind: CompatKind, base: string): Promise<Record<string,
   if (isLoopbackBase(base)) return {};
   if (!(await cloudChatEnabled())) return {};
   const keys = await loadProviderKeys();
-  const key = keys.openai || keys.openrouter || keys.groq || keys.custom;
+  let host = "";
+  try {
+    host = new URL(base).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    return {};
+  }
+  let key = "";
+  if (host === "api.openai.com" || host.endsWith(".openai.com")) {
+    key = keys.openai ?? "";
+  } else if (host === "openrouter.ai" || host.endsWith(".openrouter.ai")) {
+    key = keys.openrouter ?? "";
+  } else if (host === "api.groq.com" || host.endsWith(".groq.com")) {
+    key = keys.groq ?? "";
+  } else {
+    key = keys.custom ?? "";
+  }
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
@@ -389,9 +426,8 @@ type ModelList = { models: string[]; authFailed: boolean; status: number };
 async function listModelsAt(kind: CompatKind, base: string): Promise<ModelList> {
   try {
     const headers = await bearerFor(kind, base);
-    const r = await fetch(`${base}/models`, {
+    const r = await fetchStayOnBox(`${base}/models`, {
       headers,
-      redirect: headers.Authorization ? "error" : "follow",
       signal: AbortSignal.timeout(2000),
     });
     if (r.status === 401 || r.status === 403) {

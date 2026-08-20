@@ -51,6 +51,18 @@ pub async fn send_request(
 ) -> Result<ApiResponse> {
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(insecure_tls)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            let Some(origin) = attempt.previous().first() else {
+                return attempt.error("redirect without origin");
+            };
+            if !host_pinned(attempt.url().as_str(), origin.as_str()) {
+                return attempt.error("redirect left the pinned host");
+            }
+            if attempt.previous().len() > 5 {
+                return attempt.error("too many redirects");
+            }
+            attempt.follow()
+        }))
         .build()
         .map_err(|e| LateError::Http(e.to_string()))?;
     let method = reqwest::Method::from_bytes(req.method.as_bytes())

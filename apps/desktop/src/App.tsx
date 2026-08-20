@@ -1,9 +1,7 @@
 import { useEffect, useState } from "react";
-import { ChatPane } from "./components/ChatPane";
 import { Modals } from "./components/Modals";
-import { Sidebar } from "./components/Sidebar";
+import { ShellLayout } from "./components/ShellLayout";
 import { StatusBar } from "./components/StatusBar";
-import { Workspace } from "./components/Workspace";
 import {
   boot,
   bumpTermFont,
@@ -21,7 +19,6 @@ import {
 export function App() {
   const tabs = useApp((s) => s.tabs);
   const activeTabId = useApp((s) => s.activeTabId);
-  const chatOpen = useApp((s) => s.chatOpen);
   const toasts = useApp((s) => s.toasts);
   const uiScale = useApp((s) => s.uiScale);
   const termFontSize = useApp((s) => s.termFontSize);
@@ -183,11 +180,7 @@ export function App() {
           Agent
         </button>
       </header>
-      <div className={`body ${chatOpen ? "" : "chat-collapsed"}`}>
-        <Sidebar />
-        <Workspace />
-        {chatOpen ? <ChatPane /> : <div />}
-      </div>
+      <ShellLayout />
       {tabMenu && (
         <div
           className="ctx-menu"

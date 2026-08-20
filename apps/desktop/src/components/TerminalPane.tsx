@@ -4,9 +4,27 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
+import { clipboardRead, clipboardWrite } from "../lib/clipboard";
 import { rpc } from "../lib/rpc";
 import { bumpTermFont, reconnectPane, resizeSession, sendBreak, sendInput, setState, useApp } from "../store";
 import type { PaneState } from "../types";
+
+function isCopyKey(e: KeyboardEvent) {
+  if (e.metaKey && !e.altKey && e.key.toLowerCase() === "c") return true;
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") return true;
+  if (e.ctrlKey && e.key === "Insert") return true;
+  return false;
+}
+
+function isPasteKey(e: KeyboardEvent) {
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "v") return true;
+  if (e.shiftKey && !e.ctrlKey && !e.metaKey && e.key === "Insert") return true;
+  return false;
+}
+
+function ptyPaste(text: string) {
+  return text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
+}
 
 export function TerminalPane({ pane, visible = true }: { pane: PaneState; visible?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
@@ -18,6 +36,14 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   const activeTabId = useApp((s) => s.activeTabId);
   const focusedPaneId = useApp((s) => s.focusedPaneId);
   const [query, setQuery] = useState("");
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [menu]);
 
   useEffect(() => {
     if (!host.current || !pane.session) return;
@@ -27,6 +53,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       fontSize: termFontSize,
       theme: xtermTheme(theme),
       scrollback: 50000,
+      rightClickSelectsWord: false,
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -74,6 +101,44 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       }
       void sendInput(pane.session!.id, data);
     });
+    const copySel = () => {
+      const sel = term.getSelection();
+      if (sel) void clipboardWrite(sel);
+      return Boolean(sel);
+    };
+    const pasteClip = async () => {
+      if (pane.disconnected || !pane.session) return;
+      const text = await clipboardRead();
+      if (text) void sendInput(pane.session.id, ptyPaste(text));
+    };
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+      if (isCopyKey(ev)) {
+        copySel();
+        return false;
+      }
+      if (isPasteKey(ev)) {
+        void pasteClip();
+        return false;
+      }
+      return true;
+    });
+    const onSel = term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (sel) void clipboardWrite(sel, "selection");
+    });
+    const onContext = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setMenu({ x: e.clientX, y: e.clientY });
+    };
+    const onAux = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      void pasteClip();
+    };
+    term.element?.addEventListener("contextmenu", onContext);
+    term.element?.addEventListener("auxclick", onAux);
     const ro = new ResizeObserver(() => fitSoon());
     ro.observe(host.current);
     window.addEventListener("resize", fitSoon);
@@ -110,6 +175,9 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     return () => {
       unsub();
       onData.dispose();
+      onSel.dispose();
+      term.element?.removeEventListener("contextmenu", onContext);
+      term.element?.removeEventListener("auxclick", onAux);
       ro.disconnect();
       window.removeEventListener("resize", fitSoon);
       window.removeEventListener("keydown", onKey);
@@ -203,6 +271,47 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
         </div>
       )}
       <div className="term-host" ref={host} />
+      {menu && (
+        <div
+          className="ctx-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            disabled={!termRef.current?.hasSelection()}
+            onClick={() => {
+              const sel = termRef.current?.getSelection();
+              if (sel) void clipboardWrite(sel);
+              setMenu(null);
+            }}
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            disabled={pane.disconnected || !pane.session}
+            onClick={() => {
+              setMenu(null);
+              if (!pane.session || pane.disconnected) return;
+              void clipboardRead().then((text) => {
+                if (text && pane.session) void sendInput(pane.session.id, ptyPaste(text));
+              });
+            }}
+          >
+            Paste
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              termRef.current?.selectAll();
+              setMenu(null);
+            }}
+          >
+            Select all
+          </button>
+        </div>
+      )}
     </>
   );
 }

@@ -1,13 +1,17 @@
 use crate::config::LatePaths;
 use crate::error::{LateError, Result};
-use crate::known_hosts::{host_port_key, HostKeyCheck, KnownHosts};
+use crate::known_hosts::{
+    host_port_key, pick_keyscan_line, sanitized_host_key_algo, HostKeyCheck, KnownHosts,
+};
 use crate::secrets::SecretStore;
 use crate::types::{AuthProfile, Device};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 use tokio::sync::{broadcast, mpsc};
 use zeroize::Zeroize;
 
@@ -24,26 +28,46 @@ pub struct SshConnectOpts {
 }
 
 pub fn probe_fingerprint(host: &str, port: u16) -> Result<String> {
-    Ok(probe_keyscan(host, port)?.1)
+    Ok(probe_keyscan(host, port)?.2)
 }
 
-fn probe_keyscan(host: &str, port: u16) -> Result<(String, String)> {
+fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
     let out = Command::new("ssh-keyscan")
-        .args(["-T", "5", "-p", &port.to_string(), host])
+        .args([
+            "-T",
+            "5",
+            "-t",
+            "ed25519,ecdsa,rsa",
+            "-p",
+            &port.to_string(),
+            host,
+        ])
         .output()
         .map_err(|e| LateError::Ssh(format!("ssh-keyscan: {e}")))?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let line = text
-        .lines()
-        .find(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .ok_or_else(|| LateError::Ssh("ssh-keyscan returned no host key".into()))?
-        .trim()
-        .to_string();
-    let fp = KnownHosts::fingerprint(line.as_bytes());
-    Ok((line, fp))
+    let line = pick_keyscan_line(&text)?;
+    let (algo, fp) = KnownHosts::fingerprint_keyscan_line(&line)?;
+    Ok((line, algo, fp))
 }
 
-fn write_openssh_known_hosts(paths: &LatePaths, host: &str, port: u16, line: &str) -> Result<PathBuf> {
+pub(crate) fn confined_identity(profile: &AuthProfile) -> Result<Option<PathBuf>> {
+    match profile
+        .key_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(key) => Ok(Some(crate::confine::confine_identity_path(key)?)),
+        None => Ok(None),
+    }
+}
+
+fn write_openssh_known_hosts(
+    paths: &LatePaths,
+    host: &str,
+    port: u16,
+    line: &str,
+) -> Result<PathBuf> {
     let dir = paths.data.join("ssh-known");
     crate::fsutil::mkdir_private(&dir)?;
     let safe: String = host
@@ -56,10 +80,10 @@ fn write_openssh_known_hosts(paths: &LatePaths, host: &str, port: u16, line: &st
 }
 
 /// OpenSSH will only connect if this host was already pinned in Late's TOML store.
-pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<PathBuf> {
+pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<(PathBuf, String)> {
     let paths = LatePaths::discover();
     let known = KnownHosts::load(&paths)?;
-    let (line, fp) = probe_keyscan(host, port)?;
+    let (line, algo, fp) = probe_keyscan(host, port)?;
     let hk = host_port_key(host, port);
     match known.check(&hk, &fp) {
         HostKeyCheck::Match => {}
@@ -68,10 +92,7 @@ pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<PathBuf> 
                 "host {hk} is not pinned; open an SSH session first"
             )));
         }
-        HostKeyCheck::Mismatch {
-            pinned,
-            presented,
-        } => {
+        HostKeyCheck::Mismatch { pinned, presented } => {
             return Err(LateError::HostKeyMismatch {
                 host: hk,
                 pinned,
@@ -79,7 +100,8 @@ pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<PathBuf> 
             });
         }
     }
-    write_openssh_known_hosts(&paths, host, port, &line)
+    let path = write_openssh_known_hosts(&paths, host, port, &line)?;
+    Ok((path, algo))
 }
 
 pub fn open_ssh(
@@ -98,7 +120,7 @@ pub fn open_ssh(
         .ok_or_else(|| LateError::Ssh("device has no host".into()))?;
     let port = device.port.unwrap_or(22);
     let hk = host_port_key(&host, port);
-    let (keyscan_line, presented) = probe_keyscan(&host, port)?;
+    let (keyscan_line, algo, presented) = probe_keyscan(&host, port)?;
     match known.check(&hk, &presented) {
         HostKeyCheck::Match => {}
         HostKeyCheck::Unknown => {
@@ -143,12 +165,12 @@ pub fn open_ssh(
 
     let mut cmd = CommandBuilder::new("ssh");
     cmd.arg("-tt");
-    apply_strict_host_opts_pty(&mut cmd, &kh);
+    apply_strict_host_opts_pty(&mut cmd, &kh, &algo);
     cmd.arg("-p");
     cmd.arg(port.to_string());
-    if let Some(key) = &profile.key_path {
+    if let Some(key) = confined_identity(profile)? {
         cmd.arg("-i");
-        cmd.arg(key);
+        cmd.arg(key.as_os_str());
     }
     if !profile.use_agent {
         cmd.arg("-o");
@@ -162,9 +184,13 @@ pub fn open_ssh(
         cmd.arg("NumberOfPasswordPrompts=1");
     }
 
-    if let Some(ref pw) = password {
-        cmd = wrap_pty_password(cmd, pw, &profile, &host, port, &kh)?;
-    }
+    let _askpass = if let Some(ref pw) = password {
+        let (wrapped, guard) = wrap_pty_password(cmd, pw)?;
+        cmd = wrapped;
+        guard
+    } else {
+        AskpassCleanup::none()
+    };
     if let Some(mut pw) = password.take() {
         pw.zeroize();
     }
@@ -284,7 +310,7 @@ pub fn exec_bytes_result(
         .arg("ConnectTimeout=8")
         .arg("-p")
         .arg(port.to_string());
-    if let Some(key) = &profile.key_path {
+    if let Some(key) = confined_identity(profile)? {
         cmd.arg("-i").arg(key);
     }
     if !profile.use_agent {
@@ -380,7 +406,7 @@ pub fn spawn_exec(
         .arg("ConnectTimeout=8")
         .arg("-p")
         .arg(port.to_string());
-    if let Some(key) = &profile.key_path {
+    if let Some(key) = confined_identity(profile)? {
         cmd.arg("-i").arg(key);
     }
     if !profile.use_agent {
@@ -433,15 +459,15 @@ impl CliSession {
                 pixel_height: 0,
             })
             .map_err(|e| LateError::Ssh(e.to_string()))?;
-        let kh = pinned_known_hosts_file(&host, port)?;
+        let (kh, algo) = pinned_known_hosts_file(&host, port)?;
         let mut cmd = CommandBuilder::new("ssh");
         cmd.arg("-tt");
-        apply_strict_host_opts_pty(&mut cmd, &kh);
+        apply_strict_host_opts_pty(&mut cmd, &kh, &algo);
         cmd.arg("-p");
         cmd.arg(port.to_string());
-        if let Some(key) = &profile.key_path {
+        if let Some(key) = confined_identity(profile)? {
             cmd.arg("-i");
-            cmd.arg(key);
+            cmd.arg(key.as_os_str());
         }
         if !profile.use_agent {
             cmd.arg("-o");
@@ -454,9 +480,13 @@ impl CliSession {
             cmd.arg("-o");
             cmd.arg("NumberOfPasswordPrompts=1");
         }
-        if let Some(ref pw) = password {
-            cmd = wrap_pty_password(cmd, pw, profile, &host, port, &kh)?;
-        }
+        let _askpass = if let Some(ref pw) = password {
+            let (wrapped, guard) = wrap_pty_password(cmd, pw)?;
+            cmd = wrapped;
+            guard
+        } else {
+            AskpassCleanup::none()
+        };
         if let Some(mut pw) = password.take() {
             pw.zeroize();
         }
@@ -617,12 +647,135 @@ mod prompt_tests {
     }
 }
 
-fn write_askpass(password: &str) -> Result<PathBuf> {
+#[cfg(test)]
+mod askpass_tests {
+    use super::*;
+
+    #[test]
+    fn askpass_guard_does_not_delete_before_ssh_can_exec() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = LatePaths {
+            config: tmp.path().to_path_buf(),
+            data: tmp.path().to_path_buf(),
+        };
+        let (script, guard) = write_askpass_in("secret", &paths).unwrap();
+        let pwfile = script.with_extension("pw");
+        assert!(script.is_file());
+        assert!(pwfile.is_file());
+        drop(guard);
+        assert!(
+            script.is_file(),
+            "ASKPASS script must still exist when connect() returns so OpenSSH can exec it"
+        );
+        assert!(pwfile.is_file());
+        remove_askpass_files(&[script.clone(), pwfile.clone()]);
+        assert!(!script.exists());
+        assert!(!pwfile.exists());
+    }
+
+    #[test]
+    fn askpass_sweep_removes_stale_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("askpass");
+        crate::fsutil::mkdir_private(&dir).unwrap();
+        let leftover = dir.join("old.pw");
+        crate::fsutil::write_private(&leftover, b"x").unwrap();
+        sweep_stale_askpass(&dir, Duration::ZERO);
+        assert!(!leftover.exists());
+    }
+}
+
+/// Password file + helper live until OpenSSH execs the script (which self-deletes)
+/// or until a delayed reap. Immediate Drop after spawn races pre-auth banners
+/// (e.g. Aruba) and yields `ssh_askpass: No such file or directory`.
+const ASKPASS_REAP: Duration = Duration::from_secs(120);
+
+struct AskpassCleanup {
+    files: Vec<PathBuf>,
+}
+
+impl AskpassCleanup {
+    fn none() -> Self {
+        Self { files: Vec::new() }
+    }
+}
+
+impl Drop for AskpassCleanup {
+    fn drop(&mut self) {
+        schedule_askpass_reap(std::mem::take(&mut self.files), ASKPASS_REAP);
+    }
+}
+
+fn remove_askpass_files(files: &[PathBuf]) {
+    for path in files {
+        let _ = fs::remove_file(path);
+    }
+}
+
+fn schedule_askpass_reap(files: Vec<PathBuf>, delay: Duration) {
+    if files.is_empty() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("late-askpass-reap".into())
+        .spawn(move || {
+            std::thread::sleep(delay);
+            remove_askpass_files(&files);
+        });
+}
+
+fn sweep_stale_askpass(dir: &Path, max_age: Duration) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for ent in rd.flatten() {
+        let path = ent.path();
+        let ext = path.extension().and_then(|e| e.to_str());
+        if ext != Some("pw") && ext != Some("sh") {
+            continue;
+        }
+        let Ok(meta) = ent.metadata() else { continue };
+        let Ok(modified) = meta.modified() else { continue };
+        if now.duration_since(modified).unwrap_or(Duration::ZERO) >= max_age {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// `Command` plus ASKPASS files reaped after a delay (or by the helper itself).
+pub(crate) struct SecretCommand {
+    cmd: Command,
+    _askpass: AskpassCleanup,
+}
+
+impl Deref for SecretCommand {
+    type Target = Command;
+    fn deref(&self) -> &Command {
+        &self.cmd
+    }
+}
+
+impl DerefMut for SecretCommand {
+    fn deref_mut(&mut self) -> &mut Command {
+        &mut self.cmd
+    }
+}
+
+fn write_askpass(password: &str) -> Result<(PathBuf, AskpassCleanup)> {
+    write_askpass_in(password, &LatePaths::discover())
+}
+
+fn write_askpass_in(password: &str, paths: &LatePaths) -> Result<(PathBuf, AskpassCleanup)> {
     let id = uuid::Uuid::new_v4();
-    let dir = LatePaths::discover().data.join("askpass");
+    let dir = paths.data.join("askpass");
     crate::fsutil::mkdir_private(&dir)?;
+    sweep_stale_askpass(&dir, ASKPASS_REAP);
     let pwfile = dir.join(format!("{id}.pw"));
     let script = dir.join(format!("{id}.sh"));
+    let guard = AskpassCleanup {
+        files: vec![pwfile.clone(), script.clone()],
+    };
     crate::fsutil::write_private(&pwfile, password.as_bytes())?;
     let body = format!(
         "#!/bin/sh\ncat \"{pw}\"\n: > \"{pw}\"\nrm -f \"{pw}\" \"$0\"\n",
@@ -636,85 +789,63 @@ fn write_askpass(password: &str) -> Result<PathBuf> {
         perms.set_mode(0o700);
         fs::set_permissions(&script, perms)?;
     }
-    Ok(script)
+    Ok((script, guard))
 }
 
 fn wrap_pty_password(
     existing: CommandBuilder,
     pw: &str,
-    profile: &AuthProfile,
-    host: &str,
-    port: u16,
-    kh: &std::path::Path,
-) -> Result<CommandBuilder> {
-    if which("sshpass") {
-        let mut c = CommandBuilder::new("sshpass");
-        c.arg("-e");
-        c.env("SSHPASS", pw);
-        c.arg("ssh");
-        c.arg("-tt");
-        apply_strict_host_opts_pty(&mut c, kh);
-        c.arg("-o");
-        c.arg("PreferredAuthentications=keyboard-interactive,password");
-        c.arg("-o");
-        c.arg("NumberOfPasswordPrompts=1");
-        c.arg("-p");
-        c.arg(port.to_string());
-        if let Some(key) = &profile.key_path {
-            c.arg("-i");
-            c.arg(key);
-        }
-        if !profile.use_agent {
-            c.arg("-o");
-            c.arg("IdentitiesOnly=yes");
-        }
-        c.arg(format!("{}@{}", profile.username, host));
-        return Ok(c);
-    }
-    let script = write_askpass(pw)?;
+) -> Result<(CommandBuilder, AskpassCleanup)> {
+    let (script, guard) = write_askpass(pw)?;
     let mut c = existing;
     c.env("SSH_ASKPASS", script.to_string_lossy().as_ref());
     c.env("SSH_ASKPASS_REQUIRE", "force");
     if std::env::var_os("DISPLAY").is_none() {
         c.env("DISPLAY", ":0");
     }
-    Ok(c)
+    Ok((c, guard))
 }
 
-pub(crate) fn ssh_command_with_secret(program: &str, password: Option<&str>) -> Result<Command> {
+pub(crate) fn ssh_command_with_secret(
+    program: &str,
+    password: Option<&str>,
+) -> Result<SecretCommand> {
     let mut cmd = Command::new(program);
-    if let Some(pw) = password {
-        if which("sshpass") {
-            let mut c = Command::new("sshpass");
-            c.arg("-e").arg(program);
-            c.env("SSHPASS", pw);
-            return Ok(c);
-        }
-        let script = write_askpass(pw)?;
+    let askpass = if let Some(pw) = password {
+        let (script, guard) = write_askpass(pw)?;
         cmd.env("SSH_ASKPASS", script.as_os_str());
         cmd.env("SSH_ASKPASS_REQUIRE", "force");
         if std::env::var_os("DISPLAY").is_none() {
             cmd.env("DISPLAY", ":0");
         }
-    }
-    Ok(cmd)
+        guard
+    } else {
+        AskpassCleanup::none()
+    };
+    Ok(SecretCommand {
+        cmd,
+        _askpass: askpass,
+    })
 }
 
 pub(crate) fn apply_strict_host_opts_std(cmd: &mut Command, host: &str, port: u16) -> Result<()> {
-    let kh = pinned_known_hosts_file(host, port)?;
-    apply_strict_std(cmd, &kh);
+    let (kh, algo) = pinned_known_hosts_file(host, port)?;
+    apply_strict_std(cmd, &kh, &algo);
     Ok(())
 }
 
-fn apply_strict_std(cmd: &mut Command, kh: &std::path::Path) {
+fn apply_strict_std(cmd: &mut Command, kh: &Path, algo: &str) {
     cmd.arg("-o").arg("StrictHostKeyChecking=yes");
     cmd.arg("-o")
         .arg(format!("UserKnownHostsFile={}", kh.display()));
     cmd.arg("-o").arg("GlobalKnownHostsFile=/dev/null");
     cmd.arg("-o").arg("UpdateHostKeys=no");
+    if let Some(a) = sanitized_host_key_algo(algo) {
+        cmd.arg("-o").arg(format!("HostKeyAlgorithms={a}"));
+    }
 }
 
-fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &std::path::Path) {
+fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &Path, algo: &str) {
     cmd.arg("-o");
     cmd.arg("StrictHostKeyChecking=yes");
     cmd.arg("-o");
@@ -723,12 +854,8 @@ fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &std::path::Path) {
     cmd.arg("GlobalKnownHostsFile=/dev/null");
     cmd.arg("-o");
     cmd.arg("UpdateHostKeys=no");
-}
-
-fn which(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    if let Some(a) = sanitized_host_key_algo(algo) {
+        cmd.arg("-o");
+        cmd.arg(format!("HostKeyAlgorithms={a}"));
+    }
 }

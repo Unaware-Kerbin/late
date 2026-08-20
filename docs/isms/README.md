@@ -5,7 +5,7 @@ This folder is **documented information** for the Late open-source project as op
 The same control set is intended to serve both:
 
 - **ISO 27001:2022** Annex A (selected controls in the Statement of Applicability)
-- **SOC 2** Trust Services Criteria CC6–CC9, C1, A1, and P when cloud chat is enabled
+- **SOC 2** Trust Services Criteria CC6–CC9, C1, A1, and P when **Cloud AI** is enabled
 
 | Document | Purpose |
 |---|---|

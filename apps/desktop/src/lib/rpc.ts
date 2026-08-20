@@ -101,8 +101,9 @@ class DaemonRpc {
     this.opening = new Promise((resolve, reject) => {
       void (async () => {
         const token = await lateLocalToken();
-        const url = token ? `${DAEMON_WS}?token=${encodeURIComponent(token)}` : DAEMON_WS;
-        const ws = new WebSocket(url);
+        const ws = token
+          ? new WebSocket(DAEMON_WS, [`late.${token}`])
+          : new WebSocket(DAEMON_WS);
         const timer = window.setTimeout(() => {
           ws.close();
           reject(new Error("daemon websocket timeout"));

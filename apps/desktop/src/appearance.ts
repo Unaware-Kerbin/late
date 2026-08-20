@@ -2,7 +2,7 @@ export type ThemeId = "midnight" | "nord" | "amber" | "forest" | "paper" | "cont
 export type DensityId = "compact" | "cozy" | "roomy";
 export type RadiusId = "sharp" | "soft" | "round";
 export type FontId = "plex" | "atkinson" | "mono";
-export type LayoutId = "chat-right" | "chat-left";
+export type LayoutId = "chat-right" | "chat-left" | "folders-right" | "agent-top" | "custom";
 
 export type Appearance = {
   theme: ThemeId;
@@ -39,9 +39,11 @@ export const FONTS: { id: FontId; name: string; hint: string }[] = [
   { id: "mono", name: "All mono", hint: "Operator console" },
 ];
 
-export const LAYOUTS: { id: LayoutId; name: string; hint: string }[] = [
-  { id: "chat-right", name: "Agent on the right", hint: "Classic Late layout" },
-  { id: "chat-left", name: "Agent on the left", hint: "Chat first, inventory last" },
+export const LAYOUTS: { id: Exclude<LayoutId, "custom">; name: string; hint: string }[] = [
+  { id: "chat-right", name: "Agent on the right", hint: "Folders · Terminal · Agent" },
+  { id: "chat-left", name: "Agent on the left", hint: "Agent · Terminal · Folders" },
+  { id: "folders-right", name: "Folders on the right", hint: "Terminal · Agent · Folders" },
+  { id: "agent-top", name: "Agent on top", hint: "Full-width Agent · Folders + Terminal below" },
 ];
 
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -68,7 +70,11 @@ export function loadAppearance(): Appearance {
     density: readEnum("late.density", DENSITIES.map((d) => d.id), "cozy"),
     radius: readEnum("late.radius", RADII.map((r) => r.id), "soft"),
     font: readEnum("late.font", FONTS.map((f) => f.id), "plex"),
-    layout: readEnum("late.layout", LAYOUTS.map((l) => l.id), "chat-right"),
+    layout: readEnum(
+      "late.layout",
+      ["chat-right", "chat-left", "folders-right", "agent-top", "custom"] as const,
+      "chat-right",
+    ),
   };
 }
 

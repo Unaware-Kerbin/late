@@ -73,8 +73,8 @@ impl InventoryStore {
     }
 
     pub fn save(&self, inv: &Inventory) -> Result<()> {
-        fs::write(
-            self.paths.inventory(),
+        crate::fsutil::write_private(
+            &self.paths.inventory(),
             toml::to_string_pretty(inv).map_err(|e| LateError::Config(e.to_string()))?,
         )?;
         Ok(())
@@ -216,8 +216,8 @@ impl InventoryStore {
         let file = AuthFile {
             profiles: profiles.to_vec(),
         };
-        fs::write(
-            self.paths.auth_profiles(),
+        crate::fsutil::write_private(
+            &self.paths.auth_profiles(),
             toml::to_string_pretty(&file).map_err(|e| LateError::Config(e.to_string()))?,
         )?;
         Ok(())

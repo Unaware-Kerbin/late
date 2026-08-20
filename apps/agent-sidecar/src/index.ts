@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { cancelAll, decide, listPending } from "./approvals.js";
 import { runCursorChat } from "./cursor-loop.js";
-import { daemon } from "./daemon.js";
 import { auditEvent, authorizeLocal, corsAllowOrigin, isLoopbackHostHeader } from "./local-auth.js";
 import {
   assertChatAllowed,
@@ -29,7 +28,17 @@ function cors(res: ServerResponse, req: IncomingMessage) {
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let n = 0;
+  const max = 2_000_000;
+  for await (const c of req) {
+    const buf = c as Buffer;
+    n += buf.length;
+    if (n > max) {
+      req.destroy();
+      throw new Error("request too large");
+    }
+    chunks.push(buf);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw.trim()) return {};
   return JSON.parse(raw);
@@ -59,7 +68,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/health") {
-      sendJson(res, req, 200, { ok: true, daemon: await daemon.health() });
+      sendJson(res, req, 200, { ok: true });
       return;
     }
     if (!authorizeLocal(req, url)) {
@@ -125,6 +134,7 @@ const server = createServer(async (req, res) => {
       const conversationId = body.conversationId ?? crypto.randomUUID();
       const ac = new AbortController();
       runs.get(conversationId)?.abort();
+      cancelAll("superseded by a new chat turn");
       runs.set(conversationId, ac);
 
       const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";

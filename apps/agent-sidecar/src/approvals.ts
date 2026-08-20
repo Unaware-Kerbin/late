@@ -36,12 +36,16 @@ export function rememberAlways(
   alwaysAllow.set(conversationId, set);
 }
 
-export function requestApproval(pending: Omit<PendingApproval, "proposalId">): Promise<ApprovalDecision> {
+export function requestApproval(pending: Omit<PendingApproval, "proposalId">): {
+  proposal: PendingApproval;
+  promise: Promise<ApprovalDecision>;
+} {
   const proposalId = randomUUID();
   const full: PendingApproval = { ...pending, proposalId };
-  return new Promise((resolve, reject) => {
+  const promise = new Promise<ApprovalDecision>((resolve, reject) => {
     waiters.set(proposalId, { pending: full, resolve, reject });
   });
+  return { proposal: full, promise };
 }
 
 export function getPending(proposalId: string): PendingApproval | undefined {

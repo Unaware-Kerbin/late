@@ -6,7 +6,7 @@ Late is a local desktop control plane. Please report vulnerabilities privately r
 
 **Please include:** Late version or commit, OS, whether daemon/sidecar were local, and a short reproduction. Do not send production secrets.
 
-**Scope:** `late-daemon`, agent sidecar, desktop shell, path jail, token/CORS, cloud-chat opt-in, Hugging Face GGUF download, vendor permit lists.
+**Scope:** `late-daemon`, agent sidecar, desktop shell, Electron IPC (`late:token`, clipboard) and Vite `/__late_token`, path jail, token/CORS, **Cloud AI** opt-in, Hugging Face GGUF download, vendor permit lists. Clipboard and token IPC are origin-checked in the main process; they are not written to `audit.jsonl`.
 
 **Out of scope:** attacking devices you do not own; social engineering the operator into Approve; issues that require already reading `sidecar.token` as the same OS user (that is the trust boundary).
 

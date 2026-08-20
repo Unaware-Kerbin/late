@@ -52,8 +52,11 @@ impl Vendor {
         }
     }
 
-    /// Banner / MOTD / `show version` text. Inventory hint is used when nothing matches.
+    /// Banner / MOTD / `show version` text. A non-Generic inventory vendor is sticky.
     pub fn infer_from_text(text: &str, hint: Self) -> Self {
+        if hint != Self::Generic {
+            return hint;
+        }
         Self::detect_from_text(text).unwrap_or(hint)
     }
 
@@ -449,6 +452,14 @@ mod tests {
         );
         assert_eq!(
             Vendor::infer_from_text("", Vendor::CiscoIos),
+            Vendor::CiscoIos
+        );
+        assert_eq!(
+            Vendor::infer_from_text("aruba aos-cx CDP neighbor", Vendor::Linux),
+            Vendor::Linux
+        );
+        assert_eq!(
+            Vendor::infer_from_text("aruba aos-cx CDP neighbor", Vendor::CiscoIos),
             Vendor::CiscoIos
         );
     }

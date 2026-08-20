@@ -28,6 +28,8 @@ pub struct VendorPolicy {
 #[derive(Debug, Clone, Default)]
 pub struct PolicyEngine {
     policies: HashMap<String, VendorPolicy>,
+    /// Builtin vendor policies, kept after YAML overlays replace `policies`.
+    builtin: HashMap<String, VendorPolicy>,
 }
 
 impl PolicyEngine {
@@ -67,11 +69,14 @@ impl PolicyEngine {
     }
 
     pub fn builtin() -> Self {
-        let mut engine = Self::default();
+        let mut policies = HashMap::new();
         for p in builtin_policies() {
-            engine.policies.insert(p.vendor.clone(), p);
+            policies.insert(p.vendor.clone(), p);
         }
-        engine
+        Self {
+            builtin: policies.clone(),
+            policies,
+        }
     }
 
     pub fn get(&self, vendor: Vendor) -> VendorPolicy {
@@ -87,7 +92,10 @@ impl PolicyEngine {
     }
 
     pub fn check(&self, vendor: Vendor, command: &str) -> PolicyDecision {
-        if command.chars().any(|c| c.is_control() || c == '\n' || c == '\r') {
+        if command
+            .chars()
+            .any(|c| c.is_control() || c == '\n' || c == '\r')
+        {
             return deny(command, "command must be a single line".into());
         }
         let policy = self.get(vendor);
@@ -104,7 +112,7 @@ impl PolicyEngine {
 
         let stages = split_pipes(&expanded);
         for (i, stage) in stages.iter().enumerate() {
-            let match_stage = strip_acl_sequence(stage);
+            let match_stage = peel_exec_prefix(strip_acl_sequence(stage));
             let token = first_token(match_stage);
             let token_l = token.to_ascii_lowercase();
             let stage_l = match_stage.to_ascii_lowercase();
@@ -119,7 +127,9 @@ impl PolicyEngine {
                 if match_stage
                     .to_ascii_lowercase()
                     .contains(&sub.to_ascii_lowercase())
-                    || stage.to_ascii_lowercase().contains(&sub.to_ascii_lowercase())
+                    || stage
+                        .to_ascii_lowercase()
+                        .contains(&sub.to_ascii_lowercase())
                 {
                     return deny(&expanded, format!("denied substring '{sub}' in stage {i}"));
                 }
@@ -159,12 +169,19 @@ impl PolicyEngine {
             }
         }
 
+        let builtin_denied = self
+            .builtin
+            .get(vendor.as_str())
+            .map(|b| command_matches_deny(b, &expanded))
+            .unwrap_or(false);
         PolicyDecision {
             allowed: true,
             reason: "permit list matched".into(),
             expanded: expanded.clone(),
             linux_unrestricted: false,
-            allow_always_allow: policy.allow_always_allow && !is_mutating(&expanded),
+            allow_always_allow: policy.allow_always_allow
+                && !is_mutating(&expanded)
+                && !builtin_denied,
         }
     }
 }
@@ -179,9 +196,47 @@ fn deny(expanded: &str, reason: String) -> PolicyDecision {
     }
 }
 
+fn command_matches_deny(policy: &VendorPolicy, expanded: &str) -> bool {
+    let stages = split_pipes(expanded);
+    for (i, stage) in stages.iter().enumerate() {
+        let match_stage = peel_exec_prefix(strip_acl_sequence(stage));
+        let token = first_token(match_stage);
+        let token_l = token.to_ascii_lowercase();
+        let stage_l = match_stage.to_ascii_lowercase();
+        if policy.deny.iter().any(|d| {
+            let dl = d.to_ascii_lowercase();
+            token_l == dl || stage_l == dl || stage_l.starts_with(&(dl.clone() + " "))
+        }) {
+            return true;
+        }
+        for sub in &policy.deny_substrings {
+            if match_stage
+                .to_ascii_lowercase()
+                .contains(&sub.to_ascii_lowercase())
+                || stage
+                    .to_ascii_lowercase()
+                    .contains(&sub.to_ascii_lowercase())
+            {
+                return true;
+            }
+        }
+        if i > 0 {
+            let pl = first_token(match_stage).to_ascii_lowercase();
+            if policy
+                .deny_pipes
+                .iter()
+                .any(|d| pl == d.to_ascii_lowercase())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn is_mutating(expanded: &str) -> bool {
     matches!(
-        first_token(strip_acl_sequence(expanded))
+        first_token(peel_exec_prefix(strip_acl_sequence(expanded)))
             .to_ascii_lowercase()
             .as_str(),
         "configure"
@@ -214,6 +269,21 @@ fn is_mutating(expanded: &str) -> bool {
             | "remark"
             | "resequence"
     )
+}
+
+/// IOS/NX-OS/AOS-CX `do <exec>` — the first token is a wrapper, not the verb.
+/// `do reload` must fail closed like `reload`.
+fn peel_exec_prefix(stage: &str) -> &str {
+    let mut rest = stage.trim();
+    loop {
+        let mut parts = rest.splitn(2, char::is_whitespace);
+        let first = parts.next().unwrap_or("");
+        let after = parts.next().unwrap_or("").trim_start();
+        if after.is_empty() || !first.eq_ignore_ascii_case("do") {
+            return rest;
+        }
+        rest = after;
+    }
 }
 
 /// `10 deny tcp any any eq 80` — sequence number is not the verb.
@@ -424,7 +494,25 @@ fn eos() -> VendorPolicy {
     VendorPolicy {
         vendor: "arista_eos".into(),
         aliases: HashMap::from([("sh".into(), "show".into())]),
-        allow: verbs(&["show", "ping", "traceroute", "bash timeout", "dir", "configure", "interface", "vlan", "ip", "ipv6", "no", "end", "access-list", "deny", "permit", "remark", "exit"]),
+        allow: verbs(&[
+            "show",
+            "ping",
+            "traceroute",
+            "bash timeout",
+            "dir",
+            "configure",
+            "interface",
+            "vlan",
+            "ip",
+            "ipv6",
+            "no",
+            "end",
+            "access-list",
+            "deny",
+            "permit",
+            "remark",
+            "exit",
+        ]),
         deny: verbs(&[
             "copy",
             "delete",
@@ -558,7 +646,14 @@ fn generic() -> VendorPolicy {
             "erase",
             "start-shell",
         ]),
-        deny_substrings: verbs(&["configure", "reload", "reboot", "write erase", "factory", "shell"]),
+        deny_substrings: verbs(&[
+            "configure",
+            "reload",
+            "reboot",
+            "write erase",
+            "factory",
+            "shell",
+        ]),
         ..Default::default()
     }
 }
@@ -631,6 +726,59 @@ mod tests {
         let d = e.check(Vendor::CiscoIos, "wr erase");
         assert!(!d.allowed, "{}", d.reason);
         assert!(d.expanded.starts_with("write"));
+    }
+
+    #[test]
+    fn cisco_do_prefix_does_not_skip_deny() {
+        let e = PolicyEngine::builtin();
+        assert!(!e.check(Vendor::CiscoIos, "do reload").allowed);
+        assert!(
+            !e.check(Vendor::CiscoIos, "do copy running-config tftp://10.0.0.1/x")
+                .allowed
+        );
+        assert!(!e.check(Vendor::CiscoIos, "do write erase").allowed);
+        assert!(!e.check(Vendor::CiscoIos, "do do reload").allowed);
+        let show = e.check(Vendor::CiscoIos, "do show version");
+        assert!(show.allowed, "{}", show.reason);
+        assert!(e.check(Vendor::CiscoIos, "do").allowed);
+        assert!(!e.check(Vendor::AosCx, "do start-shell").allowed);
+        let cfg = e.check(Vendor::CiscoIos, "do configure terminal");
+        assert!(cfg.allowed, "{}", cfg.reason);
+        assert!(!cfg.allow_always_allow);
+        let show = e.check(Vendor::CiscoIos, "do show version");
+        assert!(show.allow_always_allow);
+    }
+
+    #[test]
+    fn overlay_cannot_always_allow_builtin_denied_verb() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cisco_ios.yaml"),
+            r#"
+vendor: cisco_ios
+allow: [show, reload, do]
+deny: []
+allow_always_allow: true
+"#,
+        )
+        .unwrap();
+        let mut e = PolicyEngine::builtin();
+        e.merge_dir(dir.path()).unwrap();
+        let reload = e.check(Vendor::CiscoIos, "reload");
+        assert!(reload.allowed, "{}", reload.reason);
+        assert!(
+            !reload.allow_always_allow,
+            "overlay must not always-allow a builtin-denied verb"
+        );
+        let peeled = e.check(Vendor::CiscoIos, "do reload");
+        assert!(peeled.allowed, "{}", peeled.reason);
+        assert!(
+            !peeled.allow_always_allow,
+            "do-peel must still treat builtin deny as not always-allow"
+        );
+        let show = e.check(Vendor::CiscoIos, "show version");
+        assert!(show.allowed, "{}", show.reason);
+        assert!(show.allow_always_allow);
     }
 
     #[test]
@@ -708,7 +856,10 @@ mod tests {
     fn aos_cx_shell_and_copy_denied() {
         let e = PolicyEngine::builtin();
         assert!(!e.check(Vendor::AosCx, "start-shell").allowed);
-        assert!(!e.check(Vendor::AosCx, "copy running-config tftp://1.1.1.1/x").allowed);
+        assert!(
+            !e.check(Vendor::AosCx, "copy running-config tftp://1.1.1.1/x")
+                .allowed
+        );
         assert!(e.check(Vendor::AosCx, "show vlan").allowed);
         let acl = e.check(Vendor::AosCx, "configure terminal");
         assert!(acl.allowed, "{}", acl.reason);

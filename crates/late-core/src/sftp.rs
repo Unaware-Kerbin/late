@@ -3,7 +3,6 @@ use crate::secrets::SecretStore;
 use crate::types::AuthProfile;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SftpEntry {
@@ -24,7 +23,7 @@ fn ssh_base(
     host: &str,
     port: u16,
     secrets: &SecretStore,
-) -> Result<Command> {
+) -> Result<crate::ssh::SecretCommand> {
     let pw = if profile.has_password {
         secrets.get(&profile.id)?
     } else {
@@ -36,7 +35,7 @@ fn ssh_base(
     }
     crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port)?;
     cmd.arg("-p").arg(port.to_string());
-    if let Some(key) = &profile.key_path {
+    if let Some(key) = crate::ssh::confined_identity(profile)? {
         cmd.arg("-i").arg(key);
     }
     cmd.arg(format!("{}@{}", profile.username, host));
@@ -249,7 +248,7 @@ fn scp(
     };
     let mut cmd = crate::ssh::ssh_command_with_secret("scp", pw.as_deref())?;
     cmd.arg("-P").arg(port.to_string());
-    if let Some(key) = &profile.key_path {
+    if let Some(key) = crate::ssh::confined_identity(profile)? {
         cmd.arg("-i").arg(key);
     }
     crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port)?;

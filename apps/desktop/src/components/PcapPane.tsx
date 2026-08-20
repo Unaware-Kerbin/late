@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { clipboardWrite } from "../lib/clipboard";
 import { rpc } from "../lib/rpc";
 import { setState, toast, useApp } from "../store";
 import type { PacketSummary, PaneState, PcapFinding, SessionInfo } from "../types";
@@ -610,10 +611,10 @@ export function PcapPane({ pane }: { pane: PaneState }) {
   function copySel() {
     if (!sel) return;
     const text = `#${sel.index} ${sel.timestamp} ${sel.src} → ${sel.dst} ${sel.protocol} ${sel.info}`;
-    void navigator.clipboard.writeText(text).then(
-      () => toast("ok", "copied packet line"),
-      () => toast("error", "could not copy"),
-    );
+    void clipboardWrite(text).then((ok) => {
+      if (ok) toast("ok", "copied packet line");
+      else toast("error", "could not copy");
+    });
   }
 
   const statusBits: string[] = [];

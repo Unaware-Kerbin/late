@@ -1,6 +1,5 @@
-import { rpc } from "./rpc";
 import { lateAuthHeaders, lateLocalToken } from "./localToken";
-import type { ApprovalPrompt, ChatBackend, ChatMsg, SessionInfo } from "../types";
+import type { ApprovalPrompt, ChatBackend, ChatMsg } from "../types";
 
 export const SIDECAR_HTTP = "http://127.0.0.1:7430";
 
@@ -57,6 +56,20 @@ export async function sidecarModels(): Promise<SidecarModels> {
   };
 }
 
+export async function sidecarPending(): Promise<ApprovalPrompt[]> {
+  try {
+    const r = await fetch(`${SIDECAR_HTTP}/pending`, {
+      headers: await sidecarHeaders(),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!r.ok) return [];
+    const body = (await r.json()) as { pending?: ApprovalPrompt[] };
+    return Array.isArray(body.pending) ? body.pending : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function approve(proposalId: string, allow: boolean, extra?: { alwaysAllow?: boolean; answer?: string }) {
   const r = await fetch(`${SIDECAR_HTTP}/approve`, {
     method: "POST",
@@ -74,75 +87,6 @@ export async function stopChat(conversationId?: string) {
   });
 }
 
-async function attachedScrollback(): Promise<string> {
-  try {
-    const raw = await rpc.call<unknown>("session.list");
-    const arr = Array.isArray(raw)
-      ? raw
-      : raw && typeof raw === "object" && Array.isArray((raw as { sessions?: unknown[] }).sessions)
-        ? (raw as { sessions: unknown[] }).sessions
-        : [];
-    const sessions = arr
-      .map((item) => {
-        const s = item as Partial<SessionInfo> & Record<string, unknown>;
-        return {
-          id: String(s.id ?? s.sessionId ?? ""),
-          name: String(s.name ?? s.label ?? s.id ?? ""),
-          kind: String(s.kind ?? s.type ?? ""),
-        };
-      })
-      .filter((s) => s.id && s.kind !== "sftp");
-    if (!sessions.length) {
-      return "ATTACHED LIVE SCROLLBACK: no open sessions (SSH/serial/API/pcap/local PTY).";
-    }
-    const chunks: string[] = [
-      `Open sessions you can ask about by name: ${sessions.map((s) => s.name).join(", ")}.`,
-      "ATTACHED LIVE SCROLLBACK (redacted). This is the operator terminal. Do not ask them to paste configs.",
-    ];
-    for (const s of sessions) {
-      let text = "(empty)";
-      try {
-        if (s.kind === "pcap") {
-          let digest: unknown;
-          try {
-            digest = await rpc.call<unknown>("pcap.query", {
-              id: s.id,
-              sessionId: s.id,
-              session_id: s.id,
-              q: "findings",
-              query: "findings",
-            });
-          } catch {
-            digest = await rpc.call<unknown>("pcap.query", {
-              id: s.id,
-              sessionId: s.id,
-              session_id: s.id,
-              q: "summary",
-              query: "summary",
-            });
-          }
-          text = `PCAP FINDINGS (no payload bytes)\n${JSON.stringify(digest, null, 2)}`;
-        } else {
-          const sb = await rpc.call<{ text?: string }>("session.scrollback", {
-            id: s.id,
-            sessionId: s.id,
-            session_id: s.id,
-            redacted: true,
-          });
-          const t = (sb?.text ?? "").trim();
-          if (t) text = t.length > 12000 ? t.slice(-12000) : t;
-        }
-      } catch (err) {
-        text = `(unavailable: ${err instanceof Error ? err.message : String(err)})`;
-      }
-      chunks.push(`\n### ${s.name} id=${s.id} kind=${s.kind}\n\`\`\`\n${text}\n\`\`\``);
-    }
-    return chunks.join("\n");
-  } catch (err) {
-    return `ATTACHED LIVE SCROLLBACK unavailable: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}
-
 export async function streamChat(opts: {
   messages: ChatMsg[];
   backend: ChatBackend;
@@ -155,14 +99,7 @@ export async function streamChat(opts: {
     method: "POST",
     headers: await sidecarHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
-      messages: await (async () => {
-        const mapped = opts.messages.map((m) => ({ role: m.role, content: m.content }));
-        const live = await attachedScrollback();
-        const lastUser = [...mapped].reverse().find((m) => m.role === "user");
-        if (lastUser) lastUser.content = `${lastUser.content ?? ""}\n\n${live}`;
-        else mapped.push({ role: "user", content: live });
-        return mapped;
-      })(),
+      messages: opts.messages.map((m) => ({ role: m.role, content: m.content })),
       backend: opts.backend,
       model: opts.model,
       conversationId: opts.conversationId,
@@ -176,10 +113,8 @@ export async function streamChat(opts: {
   const reader = r.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
+  const flush = (chunk: string) => {
+    buf += chunk;
     const parts = buf.split("\n\n");
     buf = parts.pop() ?? "";
     for (const part of parts) {
@@ -190,6 +125,14 @@ export async function streamChat(opts: {
       } catch {
         /* ignore malformed */
       }
+    }
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value) flush(dec.decode(value, { stream: !done }));
+    if (done) {
+      if (buf.trim()) flush("\n\n");
+      break;
     }
   }
 }

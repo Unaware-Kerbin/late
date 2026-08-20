@@ -128,7 +128,7 @@ impl ProviderVault {
             return Ok(KeyVault::default());
         }
         let raw = fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&raw).unwrap_or_default())
+        Ok(serde_json::from_str(&raw)?)
     }
 
     fn save(&self, vault: &KeyVault) -> Result<()> {

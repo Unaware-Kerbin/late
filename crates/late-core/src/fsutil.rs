@@ -39,11 +39,30 @@ pub fn write_private(path: &Path, data: impl AsRef<[u8]>) -> Result<()> {
         f.sync_all()?;
     }
     fs::rename(&tmp, path)?;
+    chmod_private(path)
+}
+
+/// Create-or-append with 0600. Existing files are chmod'd after write.
+pub fn append_private(path: &Path, data: impl AsRef<[u8]>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        mkdir_private(parent)?;
+    }
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+    let mut f = opts.open(path)?;
+    f.write_all(data.as_ref())?;
+    chmod_private(path)
+}
+
+pub fn chmod_private(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         let mut p = fs::metadata(path)?.permissions();
         p.set_mode(0o600);
         fs::set_permissions(path, p)?;
     }
+    let _ = path;
     Ok(())
 }

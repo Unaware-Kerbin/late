@@ -2,6 +2,30 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-20 15:52
+
+**Keep SSH passwords working after device banners, fix Approve, and tighten the control plane.**
+
+SSH
+
+- Password SSH to hosts that print a pre-auth banner (Aruba “register your products”, and similar) no longer fails with `ssh_askpass: No such file or directory`. Late was deleting the ASKPASS helper as soon as `ssh` spawned; OpenSSH needs that file later, after the banner. The helper still cats the password, truncates it, and deletes itself when invoked. Leftovers are reaped after two minutes and swept on the next connect. The password is still not put in process environment (`SSHPASS` unused); files stay `0600` / `0700`.
+
+Agent and shell
+
+- Approve actually stays on screen until you Approve or Deny. Cursor is given MCP tools so `propose_command` runs; proposal ids are real UUIDs; the modal is not cleared in `finally`.
+- Host-key trust is click-only (Enter does not confirm). Stop clears a pending proposal. Always-allow reuse requires an explicit always-ok.
+- Sessions **+** menu is `position: fixed` so it is not clipped off a narrow sidebar.
+- Panes can be resized and moved. Agent dock has **Wide** / **Top**. Models list is resizable/collapsible.
+- Edit menu copy/paste is restored (clipboard stays in the main process).
+- Settings **Cloud AI** switch matches `cloud_chat_enabled` (still off by default).
+
+Control plane (ISMS aim, not a certificate)
+
+- Sidecar `/health` is `{"ok":true}` only. Chat no longer puts the sidecar token in the query string. Cursor `send()` prefixes operator text as untrusted.
+- Identity files stay under home but cannot be Late config/data or names like `sidecar.token` / `secrets.json`. Policy overlay cannot always-allow a builtin deny (including after Cisco `do`). `log_dir` is confined like `pcap_dir`. Inventory and auth profiles write `0600`.
+- Electron denies webview permissions and fails closed on framed navigation. Release workflow is `contents: read` except the tagged publish job.
+- Docs: dual-gate is sidecar-only; no BAA; Unix `0600` vs NTFS; `/health` honesty. Do not treat this as SOC 2 or ISO 27001 certification.
+
 ## 2026-08-20 12:31
 
 **Finish installer packaging for Linux, macOS, and Windows.**

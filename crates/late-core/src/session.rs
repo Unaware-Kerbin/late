@@ -131,11 +131,10 @@ impl App {
     }
 
     pub fn set_settings(&self, settings: AppSettings) -> Result<()> {
-        self.validate_pcap_dir(&settings.pcap_dir)?;
+        self.validate_settings_dir(&settings.pcap_dir)?;
+        self.validate_settings_dir(&settings.log_dir)?;
         let mut settings = settings;
-        if !settings.cloud_chat_enabled
-            && settings.default_backend.eq_ignore_ascii_case("cursor")
-        {
+        if !settings.cloud_chat_enabled && settings.default_backend.eq_ignore_ascii_case("cursor") {
             settings.default_backend = "local".into();
         }
         let prev_cloud = self.settings.lock().cloud_chat_enabled;
@@ -152,8 +151,8 @@ impl App {
         Ok(())
     }
 
-    fn validate_pcap_dir(&self, pcap: &PathBuf) -> Result<()> {
-        if pcap.as_os_str().is_empty() {
+    fn validate_settings_dir(&self, path: &PathBuf) -> Result<()> {
+        if path.as_os_str().is_empty() {
             return Ok(());
         }
         let mut roots = Vec::new();
@@ -162,10 +161,10 @@ impl App {
         }
         roots.push(self.paths.data.clone());
         roots.push(self.paths.config.clone());
-        if pcap.is_dir() {
-            confine::confine_dir(pcap, &roots)?;
+        if path.is_dir() {
+            confine::confine_dir(path, &roots)?;
         } else {
-            confine::confine_under_roots(pcap, &roots, false)?;
+            confine::confine_under_roots(path, &roots, false)?;
         }
         Ok(())
     }
@@ -386,8 +385,16 @@ impl App {
                 "host fingerprint is required to trust this host".into(),
             ));
         }
+        let (h, p) = crate::known_hosts::parse_host_port_key(host.trim())?;
+        let observed = crate::ssh::probe_fingerprint(&h, p)?;
+        if observed != fp {
+            return Err(LateError::Ssh(
+                "fingerprint does not match the host key Late just scanned".into(),
+            ));
+        }
+        let hk = crate::known_hosts::host_port_key(&h, p);
         let mut inner = self.inner.lock();
-        inner.known.pin(host.trim(), fp);
+        inner.known.pin(&hk, &observed);
         inner.known.save(&self.paths)
     }
 
@@ -661,7 +668,7 @@ impl App {
         count: Option<u32>,
     ) -> Result<serde_json::Value> {
         let dir = self.paths.data.join("pcap");
-        std::fs::create_dir_all(&dir)?;
+        crate::fsutil::mkdir_private(&dir)?;
         let file = dir.join(format!("live-{}.pcap", Utc::now().format("%Y%m%d-%H%M%S")));
         let cap = LiveCapture::start(iface, file.clone(), bpf.as_deref(), count)?;
         let info = CaptureInfo {
@@ -697,6 +704,7 @@ impl App {
                 cap.file.display()
             )));
         }
+        let _ = crate::fsutil::chmod_private(&cap.file);
         self.open_pcap(cap.file)
     }
 
@@ -765,9 +773,10 @@ impl App {
             bpf.unwrap_or(""),
         )?;
         let dir = self.paths.data.join("pcap");
-        std::fs::create_dir_all(&dir)?;
+        crate::fsutil::mkdir_private(&dir)?;
         let file = dir.join(format!("ssh-{}.pcap", Utc::now().format("%Y%m%d-%H%M%S")));
         std::fs::write(&file, &bytes)?;
+        let _ = crate::fsutil::chmod_private(&file);
         self.open_pcap(file)
     }
 
@@ -786,7 +795,7 @@ impl App {
         }
         let (device, profile) = self.resolve_ssh_device(device_id, session_id, auth_profile_id)?;
         let dir = self.paths.data.join("pcap");
-        std::fs::create_dir_all(&dir)?;
+        crate::fsutil::mkdir_private(&dir)?;
         let file = dir.join(format!("ssh-{}.pcap", Utc::now().format("%Y%m%d-%H%M%S")));
         let cap = crate::remote_pcap::start_live(
             &device,
@@ -809,7 +818,7 @@ impl App {
 
     pub fn list_pcaps(&self) -> Result<serde_json::Value> {
         let dir = self.paths.data.join("pcap");
-        std::fs::create_dir_all(&dir)?;
+        crate::fsutil::mkdir_private(&dir)?;
         let mut files = Vec::new();
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for ent in rd.flatten() {
@@ -1021,16 +1030,18 @@ impl App {
             }
         }
         let insecure_tls = self.settings.lock().api_insecure_tls;
-        http_api::send_request(req, extra, insecure_tls).await.map(|mut resp| {
-            if agent {
-                resp.body = resp.redacted_body.clone();
-                resp.headers.retain(|k, _| {
-                    let l = k.to_ascii_lowercase();
-                    !l.contains("auth") && l != "set-cookie" && l != "cookie"
-                });
-            }
-            resp
-        })
+        http_api::send_request(req, extra, insecure_tls)
+            .await
+            .map(|mut resp| {
+                if agent {
+                    resp.body = resp.redacted_body.clone();
+                    resp.headers.retain(|k, _| {
+                        let l = k.to_ascii_lowercase();
+                        !l.contains("auth") && l != "set-cookie" && l != "cookie"
+                    });
+                }
+                resp
+            })
     }
 
     pub fn open_api(&self, device_id: &str) -> Result<SessionInfo> {
@@ -1206,14 +1217,7 @@ impl App {
                         s.scrollback.drain(0..s.scrollback.len() - max);
                     }
                     if let Some(path) = &s.logging_path {
-                        let _ = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(path)
-                            .and_then(|mut f| {
-                                use std::io::Write;
-                                f.write_all(&buf)
-                            });
+                        let _ = crate::fsutil::append_private(path, &buf);
                     }
                     let _ = s.output.send(buf.clone());
                     drop(g);

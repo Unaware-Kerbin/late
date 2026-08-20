@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { dismissProposal } from "../lib/approvals-ui";
 import { approve } from "../lib/sidecar";
 import {
   DENSITIES,
@@ -71,7 +72,7 @@ export function Modals() {
   return (
     <>
       {hostKey && <HostKeyModal />}
-      {approval && <ApprovalModal />}
+      {approval && <ApprovalModal key={approval.proposalId} />}
       {paletteOpen && <Palette />}
       {importOpen && <ImportModal />}
       {settingsOpen && <SettingsModal />}
@@ -103,21 +104,9 @@ function HostKeyModal() {
     setState({ hostKey: null });
   }
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopPropagation();
-        cancel();
-      }
-      if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopPropagation();
-        void accept();
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [hostKey, busy]);
+    window.addEventListener("keydown", trap, true);
+    return () => window.removeEventListener("keydown", trap, true);
+  }, []);
   return (
     <div className="modal-root hostkey" onMouseDown={(e) => e.stopPropagation()}>
       <div className="modal" role="dialog" aria-modal="true">
@@ -143,18 +132,65 @@ function HostKeyModal() {
   );
 }
 
+function approvalSessionId(detail: Record<string, unknown>): string {
+  const v = detail.sessionId ?? detail.session_id;
+  return typeof v === "string" && v.trim() ? v : "";
+}
+
+function approvalPrimary(approval: {
+  kind: string;
+  expanded?: string;
+  detail: Record<string, unknown>;
+}): string {
+  if (approval.kind === "ask" && typeof approval.detail.question === "string") {
+    return approval.detail.question;
+  }
+  if (typeof approval.expanded === "string" && approval.expanded.trim()) return approval.expanded;
+  const d = approval.detail;
+  if (typeof d.expanded === "string" && d.expanded.trim()) return d.expanded;
+  if (typeof d.command === "string" && d.command.trim()) return d.command;
+  if (typeof d.path === "string") {
+    const method = typeof d.method === "string" ? d.method : "GET";
+    return `${method} ${d.path}`;
+  }
+  return JSON.stringify({ ...d, expanded: approval.expanded }, null, 2);
+}
+
 function ApprovalModal() {
   const approval = useApp((s) => s.approval)!;
+  const sessions = useApp((s) => s.sessions);
+  const panes = useApp((s) => s.panes);
+  const focusedPaneId = useApp((s) => s.focusedPaneId);
   const linux = Boolean(approval.linuxUnrestricted);
+  const detail = approval.detail ?? {};
   const [ack, setAck] = useState(false);
   const [always, setAlways] = useState(false);
   const [answer, setAnswer] = useState("");
+  const [wrap, setWrap] = useState(true);
   useEffect(() => {
     window.addEventListener("keydown", trap, true);
     return () => window.removeEventListener("keydown", trap, true);
   }, []);
   const blocked = approval.policyAllowed === false;
   const canAlways = !linux && !blocked && approval.kind !== "ask" && approval.allowAlwaysAllow !== false;
+  const primary = approvalPrimary({ ...approval, detail });
+  const sessionId = approvalSessionId(detail);
+  const target = sessions.find((s) => s.id === sessionId);
+  const focused = focusedPaneId ? panes[focusedPaneId] : undefined;
+  const mismatch = Boolean(sessionId && focused?.session?.id && focused.session.id !== sessionId);
+  const proposed = typeof detail.command === "string" ? detail.command : "";
+  const expanded =
+    (typeof approval.expanded === "string" && approval.expanded) ||
+    (typeof detail.expanded === "string" ? detail.expanded : "");
+  async function decide(allow: boolean) {
+    try {
+      await approve(approval.proposalId, allow, allow ? { alwaysAllow: always && canAlways, answer } : undefined);
+      dismissProposal(approval.proposalId);
+      setState({ approval: null });
+    } catch (err) {
+      toast("error", err instanceof Error ? err.message : String(err));
+    }
+  }
   return (
     <div className="modal-root" onMouseDown={(e) => e.stopPropagation()}>
       <div className="modal" role="dialog" aria-modal="true">
@@ -168,16 +204,34 @@ function ApprovalModal() {
             </div>
           </div>
         )}
-        {typeof approval.detail?.reason === "string" && approval.detail.reason && (
-          <p className="hint">{String(approval.detail.reason)}</p>
+        {sessionId && approval.kind !== "ask" && (
+          <p className="hint">
+            Target: {target?.name ?? sessionId}
+            {target ? ` (${target.kind})` : ""}
+          </p>
         )}
-        {approval.detail?.intent === "remediate" && (
+        {mismatch && (
+          <div className="banner">This command targets a different session than the focused terminal.</div>
+        )}
+        {typeof detail.reason === "string" && detail.reason && (
+          <p className="hint">{String(detail.reason)}</p>
+        )}
+        {detail.intent === "remediate" && (
           <div className="banner">This is a suggested fix. It will change device state if you Approve.</div>
         )}
-        {approval.detail?.intent === "investigate" && (
+        {detail.intent === "investigate" && (
           <p className="hint">Read-only gather step so the agent can answer your question. Still requires Approve.</p>
         )}
-        <pre className="fp">{JSON.stringify({ ...approval.detail, expanded: approval.expanded }, null, 2)}</pre>
+        {proposed && expanded && proposed !== expanded && (
+          <p className="hint">As proposed: {proposed}</p>
+        )}
+        <div className="fp-toolbar">
+          <label className="check">
+            <input type="checkbox" checked={wrap} onChange={(e) => setWrap(e.target.checked)} />
+            Wrap text
+          </label>
+        </div>
+        <pre className={wrap ? "fp wrap" : "fp nowrap"}>{primary}</pre>
         {approval.kind === "ask" && (
           <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer" />
         )}
@@ -195,10 +249,7 @@ function ApprovalModal() {
           <button
             type="button"
             className="ghost"
-            onClick={() => {
-              void approve(approval.proposalId, false);
-              setState({ approval: null });
-            }}
+            onClick={() => void decide(false)}
           >
             Cancel
           </button>
@@ -206,10 +257,7 @@ function ApprovalModal() {
             type="button"
             className="primary"
             disabled={!ack || blocked}
-            onClick={() => {
-              void approve(approval.proposalId, true, { alwaysAllow: always && canAlways, answer });
-              setState({ approval: null });
-            }}
+            onClick={() => void decide(true)}
           >
             Approve
           </button>
@@ -364,7 +412,7 @@ function KeysModal() {
       <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
         <h2>API keys</h2>
         <p className="hint">
-          Paste a key or import a small text file. Keys are written to a 0600 vault on this machine
+          Paste a key or import a small text file. Keys are written to a 0600 vault on your computer
           (<code>~/.config/late/provider-keys.json</code>), never into chat, never returned to the UI,
           and never visible to the six agent tools. Environment variables still override if set.
         </p>
@@ -422,29 +470,37 @@ function SettingsModal() {
             <option value="llamacpp">llama.cpp</option>
             <option value="ollama">Ollama</option>
             <option value="cursor" disabled={!cloudChat}>
-              Cursor SDK{cloudChat ? "" : " (enable cloud chat first)"}
+              Cursor SDK{cloudChat ? "" : " — Cloud AI is off"}
             </option>
           </select>
         </label>
-        <label className="row" style={{ alignItems: "center", gap: 8 }}>
-          <input
-            type="checkbox"
-            checked={cloudChat}
-            onChange={(e) => {
-              const on = e.target.checked;
-              setCloudChat(on);
-              if (!on && defaultBackend === "cursor") setDefaultBackend("local");
-            }}
-          />
-          Allow cloud agent backends (Cursor and non-loopback OpenAI-compatible URLs). Session text may leave this machine.
-        </label>
-        <p className="hint">
-          Off by default (ISO A.5.19 / SOC 2 CC9). Hugging Face GGUF download and Ollama Pull stay available. See{" "}
-          <a href="https://github.com/Unaware-Kerbin/late/blob/main/docs/isms/README.md" target="_blank" rel="noreferrer">
-            docs/isms
-          </a>
-          . Late is not SOC 2 or ISO 27001 certified.
-        </p>
+        <div className={cloudChat ? "setting-switch on" : "setting-switch"}>
+          <label className="setting-switch-row">
+            <span className="setting-switch-copy">
+              <strong>Cloud AI</strong>
+              <span>
+                Cursor and remote OpenAI-compatible URLs. Off by default. Hugging Face downloads and Ollama Pull stay available either way.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              aria-checked={cloudChat}
+              aria-label="Cloud AI"
+              checked={cloudChat}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setCloudChat(on);
+                if (!on && defaultBackend === "cursor") setDefaultBackend("local");
+              }}
+            />
+          </label>
+          <p className="setting-switch-note">
+            {cloudChat
+              ? "On. Session text may leave your computer. Save to apply."
+              : "Off. Agent chat stays on loopback until this is turned on and saved."}
+          </p>
+        </div>
         <label>vLLM base URL<input value={vllm} onChange={(e) => setVllm(e.target.value)} /></label>
         <label>Local vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
         <p className="hint">
@@ -467,7 +523,7 @@ function SettingsModal() {
             Cursor uses the API key stored under API keys. vLLM Start/Download stay in the Agent pane when Local is selected; llama.cpp and Ollama have their own download/pull controls.
           </p>
         )}
-        <label className="row" style={{ alignItems: "center", gap: 8 }}>
+        <label className="check">
           <input type="checkbox" checked={insecureTls} onChange={(e) => setInsecureTls(e.target.checked)} />
           Allow invalid TLS certificates on API sessions (lab gear only)
         </label>
@@ -555,6 +611,11 @@ function SettingsModal() {
             ))}
           </div>
           <h3>Layout</h3>
+          <p className="hint">
+            Drag the Sessions, Terminal, or Agent titles to rearrange. Drag the dividers between panes to resize.
+            Agent → Top puts chat across the full width (drag the bar under it for height). Agent → Wide grows the side column.
+            Inside Agent, Hide the models block or drag the bar under it so the transcript gets the room.
+          </p>
           <div className="choice-grid">
             {LAYOUTS.map((l) => (
               <button
@@ -572,7 +633,7 @@ function SettingsModal() {
             Reset look
           </button>
         </div>
-        <h3 className="hint" style={{ marginTop: 12 }}>API keys (this machine only)</h3>
+        <h3 className="hint" style={{ marginTop: 12 }}>API keys (your computer only)</h3>
         <p className="hint">
           Keys are stored in <code>~/.config/late/provider-keys.json</code> mode 0600, separate from SSH passwords.
           The UI is write-only — saved values are never read back. The agent tools cannot fetch them.
@@ -755,7 +816,7 @@ const SESSION_TYPES: { kind: DeviceKind; title: string; hint: string }[] = [
   { kind: "ssh", title: "SSH", hint: "Router, switch, Linux host — host + port 22" },
   { kind: "serial", title: "Serial", hint: "Console cable — COM / ttyUSB, baud" },
   { kind: "api", title: "API", hint: "Controller REST — base URL only" },
-  { kind: "local", title: "Local", hint: "Shell on this machine" },
+  { kind: "local", title: "Local", hint: "Shell on your computer" },
 ];
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200];

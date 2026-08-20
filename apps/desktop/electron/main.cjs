@@ -1,9 +1,10 @@
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, Menu, clipboard, session } = require("electron");
 const { spawn } = require("node:child_process");
 const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { fileURLToPath } = require("node:url");
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch("disable-gpu");
@@ -119,6 +120,10 @@ function stopBackend() {
   }
 }
 
+function packagedIndexPath() {
+  return path.resolve(__dirname, "../dist/index.html");
+}
+
 function isAllowedRendererUrl(url) {
   try {
     const u = new URL(url);
@@ -126,22 +131,43 @@ function isAllowedRendererUrl(url) {
       return u.origin === new URL(DEV_URL).origin;
     }
     if (u.protocol !== "file:") return false;
-    const filePath = path.normalize(decodeURIComponent(u.pathname));
-    return (
-      filePath.endsWith(`${path.sep}dist${path.sep}index.html`) && !filePath.includes("..")
-    );
+    const got = path.resolve(fileURLToPath(u));
+    const want = packagedIndexPath();
+    if (process.platform === "win32") {
+      return got.toLowerCase() === want.toLowerCase();
+    }
+    return got === want;
   } catch {
     return false;
   }
 }
 
+function isLoopbackHttpHost(hostname) {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+/** https anywhere, or http/https on loopback (Edgeshark). */
 function isAllowedExternal(url) {
   try {
     const u = new URL(url);
-    return u.protocol === "https:" || u.protocol === "http:";
+    if (u.protocol === "https:") return true;
+    if (u.protocol === "http:") return isLoopbackHttpHost(u.hostname);
+    return false;
   } catch {
     return false;
   }
+}
+
+function ipcFrameUrl(event) {
+  const frame = event.senderFrame;
+  if (!frame) return "";
+  return typeof frame.url === "string" ? frame.url : "";
+}
+
+function ipcAllowed(event) {
+  const url = ipcFrameUrl(event);
+  return Boolean(url) && isAllowedRendererUrl(url);
 }
 
 function lockWebContents(contents) {
@@ -151,12 +177,34 @@ function lockWebContents(contents) {
   contents.on("will-redirect", (e, url) => {
     if (!isAllowedRendererUrl(url)) e.preventDefault();
   });
+  contents.on("will-frame-navigate", (e, url) => {
+    const target = typeof url === "string" ? url : e && e.url;
+    if (!target || !isAllowedRendererUrl(target)) e.preventDefault();
+  });
+  contents.on("will-attach-webview", (e) => e.preventDefault());
   contents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternal(url)) {
-      shell.openExternal(url);
+      void shell.openExternal(url);
     }
     return { action: "deny" };
   });
+}
+
+function installAppMenu() {
+  const isMac = process.platform === "darwin";
+  const viewMenu = app.isPackaged
+    ? {
+        label: "View",
+        submenu: [{ role: "reload" }, { role: "togglefullscreen" }],
+      }
+    : { role: "viewMenu" };
+  const template = [
+    ...(isMac ? [{ role: "appMenu" }] : [{ label: "File", submenu: [{ role: "quit" }] }]),
+    { role: "editMenu" },
+    viewMenu,
+    { role: "windowMenu" },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function createWindow() {
@@ -174,11 +222,12 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: false,
+      devTools: !app.isPackaged,
       webgl: false,
       backgroundThrottling: false,
     },
   });
-  win.removeMenu();
   if (app.isPackaged) {
     win.loadFile(path.join(__dirname, "../dist/index.html"));
   } else {
@@ -195,11 +244,34 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => {
+    callback(false);
+  });
+  session.defaultSession.setPermissionCheckHandler(() => false);
   ipcMain.handle("late:token", (event) => {
-    const url = event.senderFrame?.url || event.sender.getURL();
-    if (!isAllowedRendererUrl(url)) return "";
+    if (!ipcAllowed(event)) return "";
     return readLocalToken();
   });
+  ipcMain.handle("late:clipboard-read", (event) => {
+    if (!ipcAllowed(event)) return "";
+    try {
+      return clipboard.readText().slice(0, 2_000_000);
+    } catch {
+      return "";
+    }
+  });
+  ipcMain.handle("late:clipboard-write", (event, text, which) => {
+    if (!ipcAllowed(event)) return false;
+    if (typeof text !== "string" || text.length > 2_000_000) return false;
+    const dest = which === "selection" ? "selection" : "clipboard";
+    try {
+      clipboard.writeText(text, dest);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  installAppMenu();
   await startBackend();
   createWindow();
 });

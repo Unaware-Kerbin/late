@@ -13,6 +13,7 @@ import {
   upsertFolder,
   useApp,
 } from "../store";
+import { onShellDragEnd, onShellDragStart } from "../shellDnD";
 import { folderPathIsUnder, normalizeFolderPath, type Device, type SessionKind } from "../types";
 
 type FolderNode = {
@@ -127,6 +128,25 @@ function clampMenuPos(x: number, y: number, h = 176) {
   };
 }
 
+function placeInsidePane(
+  pane: DOMRect,
+  anchor: DOMRect,
+  menuW: number,
+  menuH: number,
+): { x: number; y: number; w: number; maxH: number } {
+  const pad = 6;
+  const w = Math.min(menuW, Math.max(132, pane.width - pad * 2));
+  let x = anchor.left;
+  x = Math.min(x, pane.right - w - pad);
+  x = Math.max(pane.left + pad, x);
+  const below = pane.bottom - (anchor.bottom + 4) - pad;
+  const above = anchor.top - 4 - pane.top - pad;
+  const openDown = below >= Math.min(menuH, 120) || below >= above;
+  const y = openDown ? anchor.bottom + 4 : Math.max(pane.top + pad, anchor.top - Math.min(menuH, above) - 4);
+  const maxH = Math.min(menuH, Math.max(96, openDown ? below : above));
+  return { x, y, w, maxH };
+}
+
 function deviceHost(d: Device): string {
   if (d.kind === "ssh" && d.host) return d.port && d.port !== 22 ? `${d.host}:${d.port}` : d.host;
   if (d.kind === "serial") return d.serial_path ?? "";
@@ -193,7 +213,9 @@ export function Sidebar() {
   const inventory = useApp((s) => s.inventory);
   const selected = useApp((s) => s.selectedDeviceId);
   const [q, setQ] = useState("");
-  const [newOpen, setNewOpen] = useState(false);
+  const [newPop, setNewPop] = useState<{ x: number; y: number; w: number; maxH: number } | null>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const newBtnRef = useRef<HTMLButtonElement>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -216,19 +238,19 @@ export function Sidebar() {
   }, [folderDlg]);
 
   useEffect(() => {
-    if (!menu && !newOpen) return;
+    if (!menu && !newPop) return;
     const close = (e: Event) => {
       const t = e.target as HTMLElement | null;
-      if (t?.closest(".folder-menu, .folder-dlg, .new-menu")) return;
+      if (t?.closest(".folder-menu, .folder-dlg, .new-menu, .new-pop")) return;
       setMenu(null);
-      setNewOpen(false);
+      setNewPop(null);
     };
     const id = window.setTimeout(() => document.addEventListener("mousedown", close), 0);
     return () => {
       window.clearTimeout(id);
       document.removeEventListener("mousedown", close);
     };
-  }, [menu, newOpen]);
+  }, [menu, newPop]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -249,14 +271,29 @@ export function Sidebar() {
         setMenu(null);
         return;
       }
-      if (newOpen) {
+      if (newPop) {
         e.preventDefault();
-        setNewOpen(false);
+        setNewPop(null);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [folderDlg, menu, newOpen]);
+  }, [folderDlg, menu, newPop]);
+
+  useEffect(() => {
+    if (!newPop) return;
+    const onWin = () => {
+      const pane = sidebarRef.current?.getBoundingClientRect();
+      const btn = newBtnRef.current?.getBoundingClientRect();
+      if (!pane || !btn) {
+        setNewPop(null);
+        return;
+      }
+      setNewPop(placeInsidePane(pane, btn, 188, 236));
+    };
+    window.addEventListener("resize", onWin);
+    return () => window.removeEventListener("resize", onWin);
+  }, [newPop]);
 
   const tree = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -371,9 +408,16 @@ export function Sidebar() {
 
   function askNewFolder(parent: string) {
     setMenu(null);
-    setNewOpen(false);
+    setNewPop(null);
     setFolderName("");
     setFolderDlg({ mode: "create", parent });
+  }
+
+  function openNewSessionMenu() {
+    const pane = sidebarRef.current?.getBoundingClientRect();
+    const btn = newBtnRef.current?.getBoundingClientRect();
+    if (!pane || !btn) return;
+    setNewPop(placeInsidePane(pane, btn, 188, 236));
   }
 
   function askRename(path: string) {
@@ -666,6 +710,7 @@ export function Sidebar() {
 
   return (
     <aside
+      ref={sidebarRef}
       className="sidebar"
       onKeyDown={(e) => {
         const t = e.target as HTMLElement;
@@ -677,7 +722,15 @@ export function Sidebar() {
         setMenu(null);
       }}
     >
-      <div className="side-head">Sessions</div>
+      <div
+        className="side-head"
+        draggable
+        title="Drag to move the folder pane"
+        onDragStart={(e) => onShellDragStart(e, "side")}
+        onDragEnd={onShellDragEnd}
+      >
+        Sessions
+      </div>
       <div className="sess-toolbar">
         <button
           type="button"
@@ -711,21 +764,27 @@ export function Sidebar() {
         </button>
         <span className="new-menu">
           <button
+            ref={newBtnRef}
             type="button"
             className="sess-tb"
             title="New session"
+            aria-expanded={Boolean(newPop)}
+            aria-haspopup="menu"
             onClick={(e) => {
               e.stopPropagation();
-              setNewOpen((v) => !v);
+              if (newPop) setNewPop(null);
+              else openNewSessionMenu();
             }}
           >
             <svg viewBox="0 0 16 16" aria-hidden>
               <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" />
             </svg>
           </button>
-          {newOpen && (
+          {newPop && (
             <div
               className="new-pop"
+              role="menu"
+              style={{ left: newPop.x, top: newPop.y, width: newPop.w, maxHeight: newPop.maxH }}
               onClick={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
             >
@@ -741,7 +800,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => {
-                  setNewOpen(false);
+                  setNewPop(null);
                   startDeviceEditor(undefined, "ssh", activeFolder === "__tools__" ? "" : activeFolder);
                 }}
               >
@@ -750,7 +809,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => {
-                  setNewOpen(false);
+                  setNewPop(null);
                   startDeviceEditor(undefined, "serial", activeFolder === "__tools__" ? "" : activeFolder);
                 }}
               >
@@ -759,7 +818,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => {
-                  setNewOpen(false);
+                  setNewPop(null);
                   startDeviceEditor(undefined, "api", activeFolder === "__tools__" ? "" : activeFolder);
                 }}
               >
@@ -768,7 +827,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => {
-                  setNewOpen(false);
+                  setNewPop(null);
                   void openLocal();
                 }}
               >
@@ -777,7 +836,7 @@ export function Sidebar() {
               <button
                 type="button"
                 onClick={() => {
-                  setNewOpen(false);
+                  setNewPop(null);
                   openPcapPane();
                 }}
               >

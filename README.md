@@ -22,7 +22,7 @@ If Releases has no files yet, [install from source](#install-from-source).
 
 ## Install from source
 
-Build Late on your machine (Windows, macOS, or Linux). Install these once, then **close and reopen** the terminal:
+Build Late on your computer (Windows, macOS, or Linux). Install these once, then **close and reopen** the terminal:
 
 1. [Git](https://git-scm.com/downloads) — on Windows, use **Git Bash** for the commands below.
 2. [Node.js 22 LTS](https://nodejs.org/).
@@ -40,6 +40,8 @@ cd late
 npm install
 ./late
 ```
+
+`./late` starts Electron with `--no-sandbox` (needed on Linux for GPU/Wayland). Packaged AppImage/deb installers from Releases do not pass that flag. Keep the source launcher as-is unless you have a working Chromium sandbox helper.
 
 Without Git: on the repository page choose **Code** → **Download ZIP**, unzip it, open a terminal in that folder, then run `npm install` and `./late`.
 
@@ -67,13 +69,13 @@ Then search for **Late**, or run `late` in a terminal. If the command is not fou
 
 1. In the left sidebar, add an SSH or serial session and connect. Confirm the host key the first time you are asked.
 2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
-3. To use Cursor or other cloud chat, open Settings and enable **Allow cloud agent backends**. Session text may then leave your computer.
+3. To use Cursor or other cloud chat, open Settings and turn on **Cloud AI**. Session text may then leave your computer.
 
 ## Help
 
 - Questions and bugs: [GitHub Issues](https://github.com/Unaware-Kerbin/late/issues) — include your OS, Late version or commit, and what you expected vs what happened. Do not paste passwords, API keys, or `sidecar.token`.
 - Security reports: [SECURITY.md](SECURITY.md) (private advisory preferred).
-- Agent commands: Late checks a vendor permit list, then waits for **Approve**. Host-key and approval dialogs cannot be dismissed with Enter, Escape, or clicking outside.
+- Agent commands: Late waits for **Approve**. Network OS sessions also check a vendor permit list first; Linux CLI has no permit list (Approve every command). API GETs (`propose_api_get`) are operator click only (no vendor permit list). Host-key and approval dialogs are not dismissed by clicking outside. **Trust** and **Approve** need an explicit button click (not Enter). Escape does not Trust.
 
 ## For developers
 
@@ -89,7 +91,7 @@ cargo run -p late-daemon
 # optional: cargo run -p late-daemon -- --bind 127.0.0.1:7420
 ```
 
-Requires a Rust toolchain (`rustup`), and on Linux `pkg-config` plus `libudev-dev` (for serialport). SSH sessions spawn the system `ssh` binary via a PTY (`sshpass` is used when a password is stored). Packet capture spawns host `tcpdump`.
+Requires a Rust toolchain (`rustup`), and on Linux `pkg-config` plus `libudev-dev` (for serialport). SSH sessions spawn the system `ssh` binary via a PTY (passwords use `SSH_ASKPASS`, not the process environment). Packet capture spawns host `tcpdump`.
 
 ### HTTP / WebSocket
 
@@ -99,7 +101,7 @@ Requires a Rust toolchain (`rustup`), and on Linux `pkg-config` plus `libudev-de
 | `POST /rpc` | JSON-RPC (same methods as the socket) |
 | `WS /ws` | JSON-RPC + `session.data` events |
 
-CORS is limited to the UI loopback origins (`127.0.0.1`/`localhost` on ports 5173, 4173, and 1420, plus Tauri). `/rpc` and `/ws` require the sidecar token (`X-Late-Token` or `?token=` on the WebSocket). The Host header must be loopback. `GET /health` stays unauthenticated.
+CORS is limited to the UI loopback origins (`127.0.0.1`/`localhost` on ports 5173, 4173, and 1420, plus Tauri). `/rpc` and `/ws` require the sidecar token (`X-Late-Token`, `Authorization: Bearer`, or the WebSocket subprotocol `late.<token>` — not a query string). The Host header must be loopback unless `LATE_INSECURE_BIND=1`. Daemon `GET /health` stays unauthenticated and returns `{"ok":true}` only.
 
 Request:
 
@@ -119,11 +121,11 @@ PTY output event:
 { "event": "session.data", "sessionId": "...", "data": "<base64>" }
 ```
 
-Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the 0600 secret file and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm`, `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`.
+Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm`, `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`.
 
 Agent tools call these same session/policy/pcap/api methods. The daemon does not talk to LLMs.
 
-Config lives under `~/.config/late/` (inventory, auth profiles, known hosts, settings, collections). Secrets are `~/.config/late/secrets.json` mode 0600. Vendor permit lists ship in `policies/*.yaml` and are copied into `~/.config/late/policies/` on first boot.
+Config lives in the platform config directory named `late`: Linux `~/.config/late/`, macOS `~/Library/Application Support/late/`, Windows `%APPDATA%\late` (inventory, auth profiles, known hosts, settings, collections, `sidecar.token`, `secrets.json`). On Unix, secrets and tokens are mode 0600 and config/data dirs are 0700; Windows uses default NTFS ACLs on the config/data dirs. Session logs, captures, pcap, and `audit.jsonl` live in the platform data directory: Linux `~/.local/share/late/`, macOS `~/Library/Application Support/late/`, Windows `%APPDATA%\late`. Vendor permit lists ship in `policies/*.yaml` and are copied into the config `policies/` folder on first boot.
 
 Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encryption. Encrypt the plaintext `.log` with the `age` CLI if you need real secrecy.
 
@@ -131,7 +133,7 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 
 The **ci** workflow on each push is Rust tests, isolation greps, and advisory scans. It does **not** attach `.exe` / `.dmg` / AppImage files. Those come from **Build installers** on a `v*` tag and show up under [Releases](https://github.com/Unaware-Kerbin/late/releases).
 
-`scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` for `keyring`, `russh`, and `secret` and fail if any hit is found. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
+`scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` so it must not contain `keyring`, `russh`, or `secrets.json` vault code. That grep does not mean the sidecar never reads `sidecar.token` — it does, for auth. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
 
 ## Layout
 
@@ -139,7 +141,7 @@ The **ci** workflow on each push is Rust tests, isolation greps, and advisory sc
 - `crates/late-daemon` — Axum JSON-RPC daemon
 - `crates/isolation-check` — sidecar firewall grep
 - `policies/` — vendor YAML permit lists
-- `apps/desktop` — Vite + React + xterm.js UI (Tauri 2 shell)
+- `apps/desktop` — Vite + React + xterm.js UI (Electron is the current shell; Tauri 2 is optional)
 - `apps/agent-sidecar` — six-tool agent (vLLM, llama.cpp, Ollama, or Cursor SDK)
 - `docker/` — optional Intel XPU vLLM example only
 
@@ -160,11 +162,11 @@ npm run dev:sidecar
 
 UI talks to the daemon at `http://127.0.0.1:7420` (`GET /health`, `WS /ws` JSON-RPC). Connection errors surface in the status bar and toasts — the views are wired even if the daemon is still catching up.
 
-Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`POST /chat`, `GET /models`, `POST /approve`, `POST /stop`). local vLLM: `http://127.0.0.1:8000/v1`. llama.cpp: `http://127.0.0.1:8080/v1`. Ollama: `http://127.0.0.1:11434/v1`. Cursor: `@cursor/sdk` with `tools: []` and six `local.customTools` — only after Settings **Allow cloud agent backends**. If the SDK import fails, the sidecar returns a clear error. vLLM Start/Download stay on the local vLLM backend (Intel compose gate). llama.cpp Download/Start and Ollama Pull are in the Agent pane when those backends are selected.
+Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`GET /health` returns `{"ok":true}` only — it does not include a daemon boolean; `POST /chat`, `GET /models`, `GET /pending`, `POST /approve`, `POST /stop`). Privileged sidecar routes take the token from `X-Late-Token` or `Authorization: Bearer` (not a `?token=` query string). local vLLM: `http://127.0.0.1:8000/v1`. llama.cpp: `http://127.0.0.1:8080/v1`. Ollama: `http://127.0.0.1:11434/v1`. Cursor: `@cursor/sdk` with `tools: ["mcp"]` and six `local.customTools` — only after Settings **Cloud AI** is on. If the SDK import fails, the sidecar returns a clear error. vLLM Start/Download stay on the local vLLM backend (Intel compose gate). llama.cpp Download/Start and Ollama Pull are in the Agent pane when those backends are selected.
 
-Safety: dual-gate command/API proposals (permit list + click). Host-key and approval modals cannot be dismissed with Enter, Escape, or click-outside. Linux sessions never get always-allow. The sidecar does not touch the keyring, russh, or secret files.
+Safety: dual-gate is sidecar-only. On network OS CLI, `propose_command` runs the vendor permit list, then you click **Approve**. Linux CLI has no permit list (Approve every command). `propose_api_get` is operator click only (no vendor permit list). Always-allow (non-Linux) still re-runs the permit check. Daemon `session.input` is ungated for a client that already has the token. Host-key and approval dialogs are not dismissed by clicking outside. **Trust** and **Approve** need an explicit button click (not Enter). Escape does not Trust. The sidecar reads `sidecar.token` for auth; it must not contain keyring, russh, or `secrets.json` vault code.
 
-When the operator asks a specific question, the agent proposes the show/display/GET needed to answer it. After **Approve**, it sends the command, reads the device output, and continues. If it finds a problem, it also proposes the specific command to implement the fix (still dual-gated).
+When the operator asks a specific question, the agent proposes the show/display/GET needed to answer it. After **Approve**, it sends the command, reads the device output, and continues. If it finds a problem, it also proposes the specific command to implement the fix (still gated the same way).
 
 ### Native window
 
@@ -175,6 +177,8 @@ The UI is a React app. Two native shells wrap it:
 ```bash
 npm run native
 ```
+
+`npm run native` also passes `--no-sandbox` on every OS. Use it only with daemon, sidecar, and Vite already running. Packaged Release binaries do not set this flag.
 
 **Tauri 2** (`apps/desktop/src-tauri`) is the planned Linux-native binary. It needs GTK/WebKit headers:
 

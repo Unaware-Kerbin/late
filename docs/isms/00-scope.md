@@ -22,6 +22,6 @@
 - Payment card data (Late does not process CHD)
 - HIPAA / ePHI program (not this ISMS)
 
-**Locations:** developer workstations and GitHub-hosted CI runners. Production is the operator’s machine after they install Late.
+**Locations:** developer workstations and GitHub-hosted CI runners. Production is the operator’s computer after they install Late.
 
 **Statement:** Late aims to implement technical controls that map to ISO 27001 Annex A and SOC 2 TSC. Maintainers do not claim certification.

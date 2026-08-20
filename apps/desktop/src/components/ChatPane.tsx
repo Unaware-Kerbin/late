@@ -1,15 +1,21 @@
-import { useEffect, useRef, useState } from "react";
-import { sidecarHealth, sidecarModels, stopChat, streamChat, type SidecarModels } from "../lib/sidecar";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { isProposalDismissed } from "../lib/approvals-ui";
+import { sidecarHealth, sidecarModels, sidecarPending, stopChat, streamChat, type SidecarModels } from "../lib/sidecar";
 import {
   downloadInference,
   inferenceStatus,
+  dockAgent,
+  setChatModelsH,
   setState,
   startInference,
   stopInference,
   useApp,
+  widenChat,
   type InferenceStatus,
   type LocalModel,
 } from "../store";
+import { onShellDragEnd, onShellDragStart } from "../shellDnD";
+import { isAgentStacked, MODELS_H } from "../shell";
 import { backendLabel, coerceChatBackend, newId, type ChatBackend, type ChatMsg } from "../types";
 
 function fmtSize(n: number) {
@@ -71,6 +77,8 @@ export function ChatPane() {
   const agentSeed = useApp((s) => s.agentSeed);
   const sessions = useApp((s) => s.sessions);
   const settings = useApp((s) => s.settings);
+  const layout = useApp((s) => s.layout);
+  const stacked = isAgentStacked(layout);
   const attached = (sessions ?? []).filter((s) => String(s.kind).toLowerCase() !== "sftp");
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
@@ -107,7 +115,6 @@ export function ChatPane() {
     }
   });
   const [downloadId, setDownloadId] = useState("Qwen/Qwen3-8B");
-  const [modelsExpanded, setModelsExpanded] = useState(false);
   const conv = useRef(newId());
   const abort = useRef<AbortController>();
   const backendRef = useRef(backend);
@@ -226,6 +233,40 @@ export function ChatPane() {
   }, [settings, models.cursor, models.local, models.ollama, models.llamacpp]);
 
   useEffect(() => {
+    let stop = false;
+    let emptyTicks = 0;
+    const tick = async () => {
+      if (stop) return;
+      const pending = await sidecarPending();
+      const first = pending.find(
+        (p) => p.proposalId && p.detail && !isProposalDismissed(p.proposalId),
+      );
+      if (first) {
+        emptyTicks = 0;
+        setState((s) => {
+          if (isProposalDismissed(first.proposalId)) return {};
+          if (s.approval?.proposalId === first.proposalId) return {};
+          return { approval: first };
+        });
+        return;
+      }
+      if (!busy) {
+        emptyTicks += 1;
+        if (emptyTicks >= 8) {
+          stop = true;
+          window.clearInterval(id);
+        }
+      }
+    };
+    const id = window.setInterval(() => void tick(), 700);
+    void tick();
+    return () => {
+      stop = true;
+      window.clearInterval(id);
+    };
+  }, [busy]);
+
+  useEffect(() => {
     if (!agentSeed?.text) return;
     const seed = agentSeed;
     setState({ agentSeed: null });
@@ -241,7 +282,7 @@ export function ChatPane() {
     const text = raw.trim();
     if (!text || busy) return;
     if (backend === "cursor" && !settings?.cloud_chat_enabled) {
-      setStatus("Cloud agent backends are off. Enable them in Settings to use Cursor.");
+      setStatus("Cloud AI is off. Turn it on in Settings to use Cursor.");
       return;
     }
     if (
@@ -260,6 +301,7 @@ export function ChatPane() {
     setInput("");
     setBusy(true);
     setThinking("Thinking");
+    setState({ approval: null });
     abort.current = new AbortController();
     let assistant = "";
     const id = newId();
@@ -289,18 +331,26 @@ export function ChatPane() {
               ]);
             }
           } else if (e.type === "approval") {
-            setThinking("Waiting for you to Approve");
-            setState({ approval: e.pending });
+            if (e.pending?.proposalId && isProposalDismissed(e.pending.proposalId)) {
+              /* already Cancelled / Approved */
+            } else {
+              setThinking("Waiting for you to Approve");
+              setState({ approval: e.pending });
+            }
           } else if (e.type === "ask") {
-            setThinking("Waiting for your answer");
-            setState({
-              approval: {
-                proposalId: e.proposalId,
-                kind: "ask",
-                title: "Agent question",
-                detail: { question: e.question },
-              },
-            });
+            if (isProposalDismissed(e.proposalId)) {
+              /* already Cancelled / Approved */
+            } else {
+              setThinking("Waiting for your answer");
+              setState({
+                approval: {
+                  proposalId: e.proposalId,
+                  kind: "ask",
+                  title: "Agent question",
+                  detail: { question: e.question },
+                },
+              });
+            }
           } else if (e.type === "error") {
             setStatus(e.message);
             setThinking("");
@@ -326,7 +376,6 @@ export function ChatPane() {
     } finally {
       setBusy(false);
       setThinking("");
-      setState({ approval: null });
     }
   }
 
@@ -360,16 +409,40 @@ export function ChatPane() {
   return (
     <aside className="chat">
       <div className="chat-head">
-        Agent
+        <span
+          className="shell-drag"
+          draggable
+          title="Drag to move the agent pane"
+          onDragStart={(e) => onShellDragStart(e, "chat")}
+          onDragEnd={onShellDragEnd}
+        >
+          Agent
+        </span>
         <span className="meta">{status}</span>
+        <span className="chat-head-actions">
+          {stacked ? (
+            <button type="button" className="ghost" title="Dock agent to the side" onClick={() => dockAgent("row")}>
+              Side
+            </button>
+          ) : (
+            <>
+              <button type="button" className="ghost" title="Make the agent column wider" onClick={() => widenChat()}>
+                Wide
+              </button>
+              <button type="button" className="ghost" title="Dock agent across the top" onClick={() => dockAgent("top")}>
+                Top
+              </button>
+            </>
+          )}
+        </span>
       </div>
-      <div className="row" style={{ padding: 8 }}>
+      <div className="chat-toolbar row">
         <select
           value={backend}
           onChange={(e) => {
             const next = coerceChatBackend(e.target.value);
             if (next === "cursor" && !settings?.cloud_chat_enabled) {
-              setStatus("Enable “Allow cloud agent backends” in Settings to use Cursor.");
+              setStatus("Turn on Cloud AI in Settings to use Cursor.");
               return;
             }
             setBackend(next);
@@ -380,7 +453,7 @@ export function ChatPane() {
           <option value="llamacpp">llama.cpp</option>
           <option value="ollama">Ollama</option>
           <option value="cursor" disabled={!settings?.cloud_chat_enabled}>
-            Cursor SDK{settings?.cloud_chat_enabled ? "" : " (enable in Settings)"}
+            Cursor SDK{settings?.cloud_chat_enabled ? "" : " — Cloud AI is off"}
           </option>
         </select>
         <select
@@ -404,21 +477,18 @@ export function ChatPane() {
         </select>
       </div>
       {backend === "local" && (
-      <div className={`chat-models${modelsExpanded ? " expanded" : ""}`}>
+      <ModelsDock
+        label="vLLM"
+        status={gpu.downloading ? "downloading" : gpu.starting ? "starting" : gpu.running ? "running" : "stopped"}
+      >
+      <div className="chat-models-body">
         <p className="hint" style={{ margin: "0 0 8px" }}>
           {intelCompose
             ? "Optional Intel XPU Docker helpers. NVIDIA and AMD should use Ollama, llama.cpp, or a CUDA/ROCm server on loopback instead of Start."
-            : "Start/Download stay hidden unless this machine has a discrete Intel GPU (or LATE_VLLM_FORCE=1). NVIDIA, AMD, and CPU users: pick llama.cpp or Ollama, or point Local at a server you started."}
+            : "Start/Download stay hidden unless your computer has a discrete Intel GPU (or LATE_VLLM_FORCE=1). NVIDIA, AMD, and CPU users: pick llama.cpp or Ollama, or point Local at a server you started."}
         </p>
         <div className="row" style={{ marginBottom: 8 }}>
           <span className="meta" style={{ flex: 1 }}>Models</span>
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => setModelsExpanded((v) => !v)}
-          >
-            {modelsExpanded ? "Collapse" : "Expand"}
-          </button>
         </div>
         <div style={{ marginBottom: 6 }}>
           GPU: {gpu.downloading ? "downloading…" : gpu.starting ? "starting…" : gpu.running ? "running" : "stopped"}
@@ -432,7 +502,7 @@ export function ChatPane() {
         <>
         {(gpu.localModels ?? []).some((m) => m.recommended) && (
           <div className="model-list">
-            <span className="meta">Recommended for this machine</span>
+            <span className="meta">Recommended for your computer</span>
             {(gpu.localModels ?? []).filter((m) => m.recommended).map((m) => (
               <div key={`rec-${m.id}`} className="model-line">
                 <button
@@ -460,7 +530,7 @@ export function ChatPane() {
         )}
         {(gpu.localModels ?? []).some((m) => m.complete) && (
           <div className="model-list">
-            <span className="meta">Downloaded on this machine</span>
+            <span className="meta">Downloaded on your computer</span>
             {(gpu.localModels ?? []).filter((m) => m.complete).map((m) => (
               <div key={`disk-${m.id}`} className="model-line">
                 <button
@@ -567,6 +637,7 @@ export function ChatPane() {
         </>
         )}
       </div>
+      </ModelsDock>
       )}
       {backend === "cursor" && (
         <p className="hint" style={{ padding: "0 8px" }}>
@@ -575,15 +646,17 @@ export function ChatPane() {
         </p>
       )}
       {(backend === "llamacpp" || backend === "ollama") && (
+        <ModelsDock
+          label={backend === "llamacpp" ? "llama.cpp" : "Ollama"}
+          status={gpu.downloading ? (backend === "llamacpp" ? "downloading" : "pulling") : gpu.starting ? "starting" : gpu.running ? "running" : "stopped"}
+        >
         <WeightsPanel
           engine={backend}
           gpu={gpu}
           serveModel={serveModel}
           downloadId={downloadId}
           gpuBusy={gpuBusy}
-          modelsExpanded={modelsExpanded}
           sidecarHint={backend === "ollama" ? models.ollamaMessage : models.llamacppMessage}
-          onExpand={() => setModelsExpanded((v) => !v)}
           onPick={pickModel}
           onDownloadId={setDownloadId}
           onFetch={(id) => void fetchModel(id, backend)}
@@ -624,6 +697,7 @@ export function ChatPane() {
               .finally(() => setGpuBusy(false));
           }}
         />
+        </ModelsDock>
       )}
       <div className="log">
         {(messages ?? []).map((m) => (
@@ -679,6 +753,7 @@ export function ChatPane() {
           onClick={() => {
             abort.current?.abort();
             void stopChat(conv.current);
+            setState({ approval: null });
           }}
         >
           Stop
@@ -694,9 +769,7 @@ function WeightsPanel(props: {
   serveModel: string;
   downloadId: string;
   gpuBusy: boolean;
-  modelsExpanded: boolean;
   sidecarHint?: string;
-  onExpand: () => void;
   onPick: (id: string) => void;
   onDownloadId: (id: string) => void;
   onFetch: (id: string) => void;
@@ -715,7 +788,7 @@ function WeightsPanel(props: {
         ? "running"
         : "stopped";
   return (
-    <div className={`chat-models${props.modelsExpanded ? " expanded" : ""}`}>
+    <div className="chat-models-body">
       <p className="hint" style={{ margin: "0 0 8px" }}>
         {props.sidecarHint ||
           (llama
@@ -724,9 +797,6 @@ function WeightsPanel(props: {
       </p>
       <div className="row" style={{ marginBottom: 8 }}>
         <span className="meta" style={{ flex: 1 }}>{llama ? "GGUF" : "Ollama models"}</span>
-        <button type="button" className="ghost" onClick={props.onExpand}>
-          {props.modelsExpanded ? "Collapse" : "Expand"}
-        </button>
       </div>
       <div style={{ marginBottom: 6 }}>
         {llama ? "llama.cpp" : "Ollama"}: {statusWord}
@@ -735,7 +805,7 @@ function WeightsPanel(props: {
       <div className="meta" style={{ marginBottom: 8 }}>{props.gpu.detail}</div>
       {(props.gpu.localModels ?? []).some((m) => m.recommended) && (
         <div className="model-list">
-          <span className="meta">Recommended for this machine</span>
+          <span className="meta">Recommended for your computer</span>
           {(props.gpu.localModels ?? []).filter((m) => m.recommended).map((m) => (
             <div key={`rec-${m.id}`} className="model-line">
               <button
@@ -762,7 +832,7 @@ function WeightsPanel(props: {
       )}
       {(props.gpu.localModels ?? []).some((m) => m.complete) && (
         <div className="model-list">
-          <span className="meta">{llama ? "Downloaded on this machine" : "Pulled into Ollama"}</span>
+          <span className="meta">{llama ? "Downloaded on your computer" : "Pulled into Ollama"}</span>
           {(props.gpu.localModels ?? []).filter((m) => m.complete).map((m) => (
             <div key={`disk-${m.id}`} className="model-line">
               <button
@@ -830,6 +900,58 @@ function WeightsPanel(props: {
             Stop
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function ModelsDock(props: { label: string; status: string; children: ReactNode }) {
+  const h = useApp((s) => s.chatModelsH);
+  const lastH = useRef(h > 0 ? h : MODELS_H.fallback);
+  useEffect(() => {
+    if (h > 0) lastH.current = h;
+  }, [h]);
+  const open = h > 0;
+
+  function onGutterDown(e: MouseEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = h > 0 ? h : lastH.current;
+    const move = (ev: globalThis.MouseEvent) =>
+      setChatModelsH(Math.max(MODELS_H.min, startH + (ev.clientY - startY)));
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  return (
+    <div className={`chat-models-dock${open ? "" : " collapsed"}`}>
+      <div className="chat-models-bar">
+        <span className="meta">
+          {props.label}: {props.status}
+        </span>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => setChatModelsH(open ? 0 : lastH.current || MODELS_H.fallback)}
+        >
+          {open ? "Hide" : "Show"}
+        </button>
+      </div>
+      {open && (
+        <>
+          <div className="chat-models" style={{ height: h }}>
+            {props.children}
+          </div>
+          <div
+            className="chat-models-gutter"
+            title="Drag to resize models vs chat"
+            onMouseDown={onGutterDown}
+          />
+        </>
       )}
     </div>
   );

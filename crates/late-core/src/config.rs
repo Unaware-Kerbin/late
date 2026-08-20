@@ -18,7 +18,10 @@ pub struct AppSettings {
     pub scrollback_lines: usize,
     pub turn_timeout_secs: u64,
     pub max_agent_rounds: u32,
+    /// Serialized in Settings. Live capture always writes under Late `data/pcap`.
+    /// The value is confined on save and is not an extra jail root.
     pub pcap_dir: PathBuf,
+    /// Serialized in Settings. Not used as a session-log root.
     pub log_dir: PathBuf,
     /// Lab gear with private PKI. Default false — verify TLS.
     pub api_insecure_tls: bool,
@@ -121,10 +124,7 @@ pub fn load_settings(path: &Path) -> Result<AppSettings> {
 }
 
 pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(
+    crate::fsutil::write_private(
         path,
         toml::to_string_pretty(settings).map_err(|e| LateError::Config(e.to_string()))?,
     )?;

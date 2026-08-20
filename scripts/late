@@ -128,8 +128,8 @@ echo "late: daemon :7420"
 "$DAEMON_BIN" --bind 127.0.0.1:7420 &
 started+=($!)
 wait_up "http://127.0.0.1:7420/health" "daemon"
-if ! curl -sf "http://127.0.0.1:7420/health" | grep -q pcap.edgeshark; then
-  echo "late: warning: daemon health did not report pcap.edgeshark — still a stale binary?" >&2
+if ! curl -sf "http://127.0.0.1:7420/health" | grep -q '"ok":true'; then
+  echo "late: warning: daemon health did not report ok — still a stale binary?" >&2
 fi
 
 # Sidecar must present the daemon token. Always replace whatever owns :7430.

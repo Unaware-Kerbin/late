@@ -116,7 +116,7 @@ export function tokenEquals(presented: string, stored: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-export function presentedToken(req: IncomingMessage, url: URL): string {
+export function presentedToken(req: IncomingMessage): string {
   const header = req.headers["x-late-token"];
   if (typeof header === "string" && header.trim()) return header.trim();
   const sidecar = req.headers["x-late-sidecar-token"];
@@ -126,11 +126,11 @@ export function presentedToken(req: IncomingMessage, url: URL): string {
     const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
     if (m?.[1]) return m[1].trim();
   }
-  return (url.searchParams.get("token") ?? "").trim();
+  return "";
 }
 
 /** Token is authentication. Origin is CORS only. */
 export function authorizeLocal(req: IncomingMessage, url: URL): boolean {
   const stored = readLocalToken();
-  return tokenEquals(presentedToken(req, url), stored);
+  return tokenEquals(presentedToken(req), stored);
 }
