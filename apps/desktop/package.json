@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "description": "Late — Local AI Terminal Emulator",
-  "author": "Late contributors",
+  "author": "Late contributors <noreply@users.noreply.github.com>",
+  "homepage": "https://github.com/Unaware-Kerbin/late",
+  "desktopName": "Late",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {

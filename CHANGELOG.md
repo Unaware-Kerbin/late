@@ -2,6 +2,12 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-20 12:31
+
+**Finish installer packaging for Linux, macOS, and Windows.**
+
+- `.deb` needs homepage, author email, and maintainer. macOS needs a 512×512 icon. Windows cannot compile Unix `chmod` on the sidecar token file.
+
 ## 2026-08-20 12:23
 
 **Pin Electron so GitHub can build installers.**

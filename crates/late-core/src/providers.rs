@@ -8,7 +8,6 @@ use crate::error::{LateError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
@@ -105,12 +104,16 @@ impl ProviderVault {
     fn ensure_sidecar_token(&self) -> Result<()> {
         let path = self.paths.sidecar_token();
         if path.exists() {
-            let meta = fs::metadata(&path)?;
-            let mode = meta.permissions().mode() & 0o777;
-            if mode != 0o600 {
-                let mut p = meta.permissions();
-                p.set_mode(0o600);
-                fs::set_permissions(&path, p)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let meta = fs::metadata(&path)?;
+                let mode = meta.permissions().mode() & 0o777;
+                if mode != 0o600 {
+                    let mut p = meta.permissions();
+                    p.set_mode(0o600);
+                    fs::set_permissions(&path, p)?;
+                }
             }
             return Ok(());
         }

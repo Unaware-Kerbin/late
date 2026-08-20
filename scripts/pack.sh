@@ -10,11 +10,15 @@ cargo build -p late-daemon --release
 
 BIN_DIR="$ROOT/apps/desktop/resources/bin"
 mkdir -p "$BIN_DIR"
-if [[ -f "$ROOT/target/release/late-daemon.exe" ]]; then
-  cp "$ROOT/target/release/late-daemon.exe" "$BIN_DIR/late-daemon.exe"
-else
-  cp "$ROOT/target/release/late-daemon" "$BIN_DIR/late-daemon"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+if [[ -f "$TARGET_DIR/release/late-daemon.exe" ]]; then
+  cp "$TARGET_DIR/release/late-daemon.exe" "$BIN_DIR/late-daemon.exe"
+elif [[ -f "$TARGET_DIR/release/late-daemon" ]]; then
+  cp "$TARGET_DIR/release/late-daemon" "$BIN_DIR/late-daemon"
   chmod +x "$BIN_DIR/late-daemon"
+else
+  echo "late: daemon binary missing under $TARGET_DIR/release" >&2
+  exit 1
 fi
 
 echo "late: bundle sidecar"
