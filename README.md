@@ -1,33 +1,26 @@
 # Late — Local AI Terminal Emulator
 
-Late is a desktop app for SSH, serial consoles, file transfer (SFTP), REST calls, and packet capture, with an optional AI helper. The helper only sends commands after you click **Approve**. Passwords and keys stay on your computer.
+Late is a desktop app for SSH, serial consoles, file transfer (SFTP), REST APIs, and packet capture. An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
 
-Chat starts **local-only**. Cloud backends (Cursor and similar) stay off until you turn them on in Settings. Hugging Face model download stays available. SOC 2 and ISO 27001 are an **aim** ([docs/isms/](docs/isms/README.md)), not a certification. Report problems in [SECURITY.md](SECURITY.md).
+By default the helper uses a model **on this machine**. Cloud backends (Cursor and similar) stay off until you enable them in Settings. Hugging Face model downloads stay available.
 
-What changed recently: [CHANGELOG.md](CHANGELOG.md) (also [copied below](#changelog)).
+Late is **not** SOC 2 or ISO 27001 certified. The project’s security documents are in [docs/isms/](docs/isms/README.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
 
-## Install
+## Install from source
 
-Prebuilt Windows / macOS / Linux installers are built by GitHub when a version tag is pushed. Until those files show up on [Releases](https://github.com/Unaware-Kerbin/late/releases), **install from source** — that is the supported way for everyone, including Windows.
+This is the supported way to run Late on Windows, macOS, and Linux.
 
-You cannot produce a Mac `.dmg` or Windows `.exe` on a Linux PC (the daemon is a native binary for that OS). GitHub’s Mac and Windows runners do that job.
+Install these once, then **close and reopen** the terminal:
 
-### Install from source (works on your computer)
+1. [Git](https://git-scm.com/downloads) — on Windows, use **Git Bash** for the commands below.
+2. [Node.js 22 LTS](https://nodejs.org/).
+3. [Rust](https://rustup.rs/) — accept the defaults. On Windows, choose the MSVC toolchain if asked.
+4. Extra packages:
+   - **Ubuntu / Debian:** `sudo apt install pkg-config libudev-dev build-essential openssh-client libudev1 tcpdump`
+   - **macOS:** `xcode-select --install`
+   - **Windows:** optional [Npcap](https://npcap.com/) or Wireshark if you want packet capture.
 
-Plan for several minutes the first time. Install these **once**, then **close and reopen** the terminal:
-
-1. [Git](https://git-scm.com/downloads) — copies the project. On Windows, the installer includes **Git Bash**; use that for the commands below.
-2. [Node.js 22 LTS](https://nodejs.org/) — choose the LTS installer.
-3. [Rust](https://rustup.rs/) — run the command on that page and accept the defaults. On Windows, pick the MSVC toolchain if asked.
-4. On Ubuntu or Debian, also install:
-
-```bash
-sudo apt install pkg-config libudev-dev build-essential openssh-client libudev1 tcpdump
-```
-
-On macOS, Xcode command-line tools (`xcode-select --install`) cover the compiler. On Windows, serial/pcap extras are optional (Npcap/Wireshark if you want capture).
-
-**Then:**
+Then:
 
 ```bash
 git clone https://github.com/Unaware-Kerbin/late.git
@@ -36,49 +29,55 @@ npm install
 ./late
 ```
 
-No Git? On the GitHub page click the green **Code** button → **Download ZIP**, unzip it, open a terminal in that folder, then run `npm install` and `./late`.
+Without Git: on the repository page choose **Code** → **Download ZIP**, unzip it, open a terminal in that folder, then run `npm install` and `./late`.
 
-A Late window should open. The first run compiles the backend and can look idle for a few minutes. If Electron is missing, the script may open the UI in your browser instead.
+The first start compiles the backend and can take several minutes. A Late window should open. If it does not, the launcher may print a local URL — open that in a browser.
 
-**Put Late in the app menu (Linux):**
+**Linux application menu:**
 
 ```bash
 ./late --install
 ```
 
-After that you can type `late` in a terminal or find **Late** in the application menu. If `late` is “not found”, log out and back in, or add `~/.local/bin` to your PATH.
+Then search for **Late**, or run `late` in a terminal. If the command is not found, log out and back in, or add `~/.local/bin` to your PATH.
 
-**If it fails**
+### Common problems
 
-| Message or symptom | Try this |
+| What you see | What to do |
 |---|---|
-| `git: command not found` | Install Git, then open a **new** terminal (Windows: Git Bash). |
-| `npm: command not found` | Install Node.js 22, then open a **new** terminal. |
-| `cargo: command not found` | Finish the rustup install, then open a **new** terminal. |
-| Compiles, then no window | Check `/tmp/late-electron.log` (Linux/macOS). You can still open the URL the script prints in a browser. |
-| Serial or capture missing | Install the extras in step 4 above. |
+| `git: command not found` | Install Git and open a new terminal (Windows: Git Bash). |
+| `npm: command not found` | Install Node.js 22 and open a new terminal. |
+| `cargo: command not found` | Finish the rustup install and open a new terminal. |
+| Compiles, but no window | On Linux/macOS check `/tmp/late-electron.log`, or open the URL printed in the terminal. |
+| Serial ports or capture unavailable | Install the extras in step 4. |
 
-### After Late opens
+## First launch
 
-1. In the left sidebar, add an SSH (or serial) session and connect. The first time, confirm the host key when asked.
-2. The Agent pane is optional. For local AI, the simplest path is [Ollama](https://ollama.com): install it, start it, choose **Ollama** in Late, then click **Pull** and pick a model.
-3. Cloud chat (Cursor and non-loopback URLs) stays off until Settings → **Allow cloud agent backends**. Session text may then leave this computer.
+1. In the left sidebar, add an SSH or serial session and connect. Confirm the host key the first time you are asked.
+2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
+3. To use Cursor or other cloud chat, open Settings and enable **Allow cloud agent backends**. Session text may then leave this computer.
 
-### Download a prebuilt app (when Releases has files)
+## Prebuilt downloads
 
-When [github.com/Unaware-Kerbin/late/releases](https://github.com/Unaware-Kerbin/late/releases) lists a version, download the file for your computer:
+If a version is listed at [Releases](https://github.com/Unaware-Kerbin/late/releases), you can install that instead of building from source. Installers are unsigned.
 
-| Your computer | File to get | What to do |
+| OS | File | Notes |
 |---|---|---|
-| **Windows** | installer `.exe` (or portable `.exe`) | Double-click and follow the prompts. If Windows SmartScreen says it is unrecognized, click **More info** → **Run anyway**. Installers are not code-signed yet. |
-| **macOS** | `.dmg` (or `.zip`) | Open the disk image and drag Late into Applications. The first time, **right-click** Late → **Open** (it is unsigned). |
-| **Linux** | `.AppImage` or `.deb` | **AppImage:** make it executable (right-click → Properties → “Allow executing file as program”, or `chmod +x` the file), then double-click it. **Debian/Ubuntu:** double-click the `.deb`. In a terminal, from the folder you downloaded to: `sudo apt install ./the-file-you-downloaded.deb` |
+| Windows | `.exe` | If SmartScreen appears: **More info** → **Run anyway**. |
+| macOS | `.dmg` or `.zip` | First open: **right-click** Late → **Open**. |
+| Linux | `.AppImage` or `.deb` | AppImage: mark as executable, then double-click. Debian/Ubuntu: install the `.deb` from the download folder. |
 
-The download includes the window, the local daemon, and the agent helper. It still uses the `ssh` program already on your computer. Builds take 10–20 minutes after a `v*` tag; if the page is empty, use [from source](#install-from-source-works-on-your-computer).
+Each package includes the UI, daemon, and agent helper. SSH still uses the `ssh` program already on your computer.
+
+## Help
+
+- Questions and bugs: [GitHub Issues](https://github.com/Unaware-Kerbin/late/issues) — include your OS, Late version or commit, and what you expected vs what happened. Do not paste passwords, API keys, or `sidecar.token`.
+- Security reports: [SECURITY.md](SECURITY.md) (private advisory preferred).
+- Agent commands: Late checks a vendor permit list, then waits for **Approve**. Host-key and approval dialogs cannot be dismissed with Enter, Escape, or clicking outside.
 
 ## For developers
 
-### Backend (this crate)
+### Daemon
 
 The daemon is a JSON-RPC service on **127.0.0.1:7420**.
 
@@ -144,9 +143,9 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 
 ## Frontend + sidecar
 
-Everyday install is in [Install](#install) (`./late` or a downloaded app). This section is the developer wiring.
+See [Install from source](#install-from-source) for running the app. This section is the development layout.
 
-Node 22 (`$HOME/.local/bin` on PATH). Workspaces: `apps/desktop`, `apps/agent-sidecar`.
+Node 22. Workspaces: `apps/desktop`, `apps/agent-sidecar`.
 
 ```bash
 npm install
@@ -163,7 +162,7 @@ Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`POST /chat`, `GET /
 
 Safety: dual-gate command/API proposals (permit list + click). Host-key and approval modals cannot be dismissed with Enter, Escape, or click-outside. Linux sessions never get always-allow. The sidecar does not touch the keyring, russh, or secret files.
 
-When you ask a specific question, the agent proposes the show/display/GET needed to answer it. After you Approve, it sends the command, reads the device output, and continues. If it finds a problem, it also proposes the specific command to implement the fix (still dual-gated).
+When the operator asks a specific question, the agent proposes the show/display/GET needed to answer it. After **Approve**, it sends the command, reads the device output, and continues. If it finds a problem, it also proposes the specific command to implement the fix (still dual-gated).
 
 ### Native window
 
@@ -185,16 +184,14 @@ cd apps/desktop && npx tauri dev
 
 ### Build installers
 
-GitHub Actions builds packages when you push a `v*` tag (or run **Build installers**). To pack on the machine you are sitting at:
+GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (or **Build installers** is run). Each OS must be packed on that OS. To pack the current machine:
 
 ```bash
 npm install
-./scripts/pack.sh          # current OS
-./scripts/pack.sh --linux  # AppImage + deb
+./scripts/pack.sh
 ```
 
-Output lands in `apps/desktop/release/`. Cross-building Windows/macOS from Linux is what CI is for.
-
+Artifacts land in `apps/desktop/release/`.
 ### Local inference (any GPU)
 
 Late does not bundle CUDA, ROCm, oneAPI, Ollama, llama.cpp, or model weights. The agent talks to a local vLLM (or llama.cpp / Ollama) on loopback. NVIDIA, AMD, and Intel are all fine if the server you run uses that GPU.
@@ -228,121 +225,5 @@ llama-server -m ~/.local/share/late/models/gguf/Qwen--Qwen3-8B-GGUF/*.gguf --por
 ```
 
 Default API: `http://127.0.0.1:8080/v1`. Gated Hub repos need `HF_TOKEN` in the environment. vLLM Docker Start/Download stay hidden on this backend.
-
-## Changelog
-
-Dates and times are from git commits (America/New_York). Newest first. Same notes as [CHANGELOG.md](CHANGELOG.md).
-
-### 2026-08-20 12:13
-
-**Fix installer CI (`npm ci` lockfile) and make from-source the supported install.**
-
-- Regenerated `package-lock.json` so GitHub can install dependencies on Linux, macOS, and Windows. Prebuilt apps still come from those runners — this Linux machine cannot emit a Mac `.dmg` or Windows `.exe`.
-
-### 2026-08-20 12:08
-
-**Publish installers on the GitHub Releases page.**
-
-- Tagging `v*` now attaches Linux / macOS / Windows packages to a Release (the old workflow only stored Actions artifacts, which is why `/releases` was empty). First tagged build is `v0.1.0`. Installers are still unsigned.
-
-### 2026-08-20 11:45
-
-**SOC 2 / ISO 27001 ISMS (aim, not a certificate) and local-only chat by default.**
-
-- Documented ISMS in [docs/isms/](docs/isms/README.md) (scope, policy, risk, SoA mapping Annex A to SOC 2 TSC, assets, suppliers, access, change, incident). Report issues via [SECURITY.md](SECURITY.md). Do not treat this as SOC 2 or ISO 27001 certification.
-- `cloud_chat_enabled` defaults to false. Settings checkbox enables Cursor and non-loopback OpenAI-compatible chat; the toggle is audited. Hugging Face GGUF download and Ollama Pull stay available.
-- `/chat` is audited (backend + loopback vs cloud, no bodies). `pcap_dir` cannot expand the path jail. Downloaded GGUF files must start with the `GGUF` magic. Google Fonts dropped from the UI CSP.
-
-### 2026-08-20 11:13
-
-**Recommend more SFW Hub families (Gemma, Llama, Mistral, Phi, Granite) alongside Qwen.**
-
-- Agent pane catalogs for local vLLM, llama.cpp GGUF, and Ollama Pull include Google Gemma, Meta Llama, Mistral, Microsoft Phi, and IBM Granite instruct ids, plus Qwen. Uncensored/NSFW fine-tunes stay out of the list. Any other Hub id can still be typed. Gemma and Llama are gated — set `HF_TOKEN` after accepting the license.
-
-### 2026-08-20 10:47
-
-**Hugging Face download for llama.cpp, and Ollama Pull (including Hub ids).**
-
-- llama.cpp Agent pane can Download GGUF from Hugging Face into `~/.local/share/late/models/gguf/` (no Intel Docker). Optional Start/Stop if `llama-server` is on PATH.
-- Ollama Agent pane can Pull library names or Hugging Face ids (`hf.co/…`) through the local Ollama API on loopback. Late still does not install Ollama or llama.cpp.
-
-### 2026-08-20 09:10
-
-**Vendor-agnostic local inference, llama.cpp, and hide GPU controls when unused.**
-
-- Docs no longer headline a specific Intel Arc card. NVIDIA, AMD, and Intel GPUs all work if the server you run uses them. `docker/compose.yml` is an optional Intel XPU vLLM example only.
-- Agent pane and Settings show vLLM / GPU start-stop / Hugging Face download only when **local vLLM** is selected. Ollama, llama.cpp, and Cursor hide those personal-runtime controls. *(Superseded for llama.cpp Download and Ollama Pull by 10:47.)*
-- Start / Download refuse NVIDIA and AMD (they would have pulled `intel/llm-scaler-vllm`). Use Ollama, llama.cpp, or your own CUDA/ROCm server. `LATE_VLLM_FORCE=1` overrides.
-- First-class **llama.cpp** backend (`llama-server` at `http://127.0.0.1:8080/v1`). Ollama, Cursor SDK, and local vLLM remain available. Late still does not bundle CUDA, ROCm, llama.cpp, Ollama, or model weights.
-
-### 2026-08-20 08:59
-
-**Compact session tree, loopback auth, and ACL permit lists.**
-
-Inventory
-
-- Session manager is a one-line tree under **Sessions** (folder / host name), with a toolbar (connect, new folder, new session, properties, delete, expand/collapse).
-- Filter matches name, host, folder, or tag (`Alt+I`). Arrow keys move; Enter connects; double-click connects.
-- Local PTY, packet capture, and Edgeshark sit in a **Tools** group instead of crowding the device list.
-- Vendor / OS is on the session form (not only under extra options).
-
-Agent and permit lists
-
-- Open SSH/serial sessions no longer default to a deny-all Generic list. Generic allows `show` / `ping` / `traceroute` until the MOTD or `show version` identifies the OS (Aruba AOS-CX, Cisco, Arista, and others).
-- AOS-CX and Cisco allowlists include config needed for ACLs (`configure`, `access-list` / `acl`, `apply`, numbered ACEs like `10 deny tcp any any eq 80`). Destructive verbs (`start-shell`, `copy`, `reload`, `write erase`) stay denied. Config lines cannot be always-allowed.
-- If the permit list still blocks a line, Late will not send it, but the agent is told to print the full CLI for you to paste.
-
-Security
-
-- Daemon `/rpc` and `/ws` and sidecar `/chat` `/approve` `/pending` `/models` `/stop` require the sidecar token. Origin is CORS only (it is not authentication).
-- Host header must be loopback. Non-loopback `--bind` is refused unless `LATE_INSECURE_BIND=1`.
-- SSH uses `StrictHostKeyChecking=yes` against a pinned OpenSSH known_hosts file after Late’s TOFU pin.
-- Secrets and tokens are written mode `0600` atomically; config directories are `0700`.
-- Electron stays on the app origin for navigation and `late:token` IPC. Desktop CSP limits `connect-src` to loopback.
-- Path jail under home / Late data; local PTY is bash/zsh/fish/sh only; remote tcpdump BPF is quoted.
-- Append-only `audit.jsonl` for privileged RPC and Approve/Deny. API TLS is verified by default.
-- `./late` always restarts the sidecar on `:7430` with the token (fixes chat dying against a leftover sidecar).
-
-### 2026-08-19 16:23
-
-**Stop Cursor hangs after a command, and let Settings scroll.**
-
-- Cursor idle timer no longer treats pre-tool “I’ll check…” text as the answer, and no longer closes the stream while Approve is pending.
-- Stream iterator is no longer polled twice at once (that deadlock froze the agent).
-- After a silent stall, one hop writes the answer from device output.
-- Vendor permit check is fail-closed (`allowed === true` required).
-- Settings (and other tall dialogs) scroll inside the viewport.
-
-### 2026-08-19 14:57 — `3bfa1c4`
-
-**Add nested inventory folders so devices can be grouped by site.**
-
-- Inventory sidebar is a collapsible tree (SecureCRT-style). Paths like `NYC/Core` nest by `/`.
-- Create, rename, and delete folders from an in-app form (Electron has no `window.prompt`).
-- Drag devices onto folders or Ungrouped. New SSH/serial/API sessions inherit the selected folder.
-- Empty folders stay in the tree for site planning. Rename refuses collisions and moving a folder into itself.
-- Cursor agent stops looping after it has an answer instead of proposing extra `show` commands.
-- Local PTY, Packet capture, and Edgeshark sit idle on the sidebar background; hover/focus gets the light grey highlight.
-
-### 2026-08-19 12:10 — `f8e8aa6`
-
-**Keep the agent going after an approved command and hide vLLM when using Cursor.**
-
-- After you Approve a command, the agent reads device output and continues the answer (still dual-gated).
-- When the chat backend is Cursor SDK, the local vLLM model list is hidden.
-
-### 2026-08-19 11:34 — `aa132e2`
-
-**Add optional Ollama backend without bundling GPU runtimes.**
-
-- First-class Ollama option in the agent pane (`http://127.0.0.1:11434/v1`).
-- Installers still do not ship vLLM, llama.cpp, CUDA, or Ollama itself.
-
-### 2026-08-19 11:12 — `c505bef`
-
-**Add cross-platform Late installers and GitHub Actions.**
-
-- Electron packages the UI, `late-daemon`, and agent sidecar.
-- CI builds Linux (AppImage/deb), macOS, and Windows artifacts on `v*` tags.
 
 
