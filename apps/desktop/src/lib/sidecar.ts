@@ -1,7 +1,13 @@
 import { rpc } from "./rpc";
+import { lateAuthHeaders, lateLocalToken } from "./localToken";
 import type { ApprovalPrompt, ChatMsg, SessionInfo } from "../types";
 
 export const SIDECAR_HTTP = "http://127.0.0.1:7430";
+
+async function sidecarHeaders(base?: Record<string, string>): Promise<Record<string, string>> {
+  await lateLocalToken();
+  return lateAuthHeaders(base);
+}
 
 export type SidecarEvent =
   | { type: "delta"; text: string }
@@ -32,7 +38,7 @@ export type SidecarModels = {
 };
 
 export async function sidecarModels(): Promise<SidecarModels> {
-  const r = await fetch(`${SIDECAR_HTTP}/models`);
+  const r = await fetch(`${SIDECAR_HTTP}/models`, { headers: await sidecarHeaders() });
   if (!r.ok) throw new Error(`sidecar ${r.status}`);
   const body = (await r.json()) as Partial<SidecarModels>;
   return {
@@ -48,7 +54,7 @@ export async function sidecarModels(): Promise<SidecarModels> {
 export async function approve(proposalId: string, allow: boolean, extra?: { alwaysAllow?: boolean; answer?: string }) {
   const r = await fetch(`${SIDECAR_HTTP}/approve`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await sidecarHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ proposalId, allow, alwaysAllow: extra?.alwaysAllow, answer: extra?.answer }),
   });
   if (!r.ok) throw new Error(`approve failed (${r.status})`);
@@ -57,7 +63,7 @@ export async function approve(proposalId: string, allow: boolean, extra?: { alwa
 export async function stopChat(conversationId?: string) {
   await fetch(`${SIDECAR_HTTP}/stop`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await sidecarHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ conversationId }),
   });
 }
@@ -141,7 +147,7 @@ export async function streamChat(opts: {
 }): Promise<void> {
   const r = await fetch(`${SIDECAR_HTTP}/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await sidecarHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       messages: await (async () => {
         const mapped = opts.messages.map((m) => ({ role: m.role, content: m.content }));
@@ -157,6 +163,9 @@ export async function streamChat(opts: {
     }),
     signal: opts.signal,
   });
+  if (r.status === 401) {
+    throw new Error("sidecar rejected chat (401). Restart the sidecar after the daemon token change.");
+  }
   if (!r.ok || !r.body) throw new Error(`sidecar chat ${r.status}: ${await r.text()}`);
   const reader = r.body.getReader();
   const dec = new TextDecoder();

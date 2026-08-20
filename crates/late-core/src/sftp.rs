@@ -19,7 +19,12 @@ pub struct DirListing {
     pub entries: Vec<SftpEntry>,
 }
 
-fn ssh_base(profile: &AuthProfile, host: &str, port: u16, secrets: &SecretStore) -> Result<Command> {
+fn ssh_base(
+    profile: &AuthProfile,
+    host: &str,
+    port: u16,
+    secrets: &SecretStore,
+) -> Result<Command> {
     let pw = if profile.has_password {
         secrets.get(&profile.id)?
     } else {
@@ -29,7 +34,7 @@ fn ssh_base(profile: &AuthProfile, host: &str, port: u16, secrets: &SecretStore)
     if !profile.has_password {
         cmd.arg("-o").arg("BatchMode=yes");
     }
-    crate::ssh::apply_trusted_host_opts_std(&mut cmd);
+    crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port)?;
     cmd.arg("-p").arg(port.to_string());
     if let Some(key) = &profile.key_path {
         cmd.arg("-i").arg(key);
@@ -79,10 +84,10 @@ pub fn parse_ls(dir: &str, text: &str) -> Vec<SftpEntry> {
         }
         let name_idx = if parts.len() >= 9 { 8 } else { 7 };
         let name = parts[name_idx..].join(" ");
-        if name.is_empty() || name == "." {
+        if name.is_empty() || name == "." || name == ".." {
             continue;
         }
-        if name == ".." {
+        if name.contains('/') || name.contains('\\') || name.contains('\0') {
             continue;
         }
         let is_dir = mode.starts_with('d') || (mode.starts_with('l') && line.ends_with('/'));
@@ -122,7 +127,12 @@ pub fn list_local(path: &str) -> Result<DirListing> {
     if !p.is_dir() {
         return Err(LateError::Sftp(format!("not a directory: {}", p.display())));
     }
-    let canon = p.canonicalize().unwrap_or(p);
+    let canon = p.canonicalize().unwrap_or(p.clone());
+    let mut roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        roots.push(home);
+    }
+    crate::confine::confine_dir(&canon, &roots).map_err(|e| LateError::Sftp(e.to_string()))?;
     let mut entries = Vec::new();
     let rd = std::fs::read_dir(&canon).map_err(|e| LateError::Sftp(e.to_string()))?;
     for ent in rd.flatten() {
@@ -149,9 +159,11 @@ pub fn list_local(path: &str) -> Result<DirListing> {
 
 fn sort_entries(entries: &mut [SftpEntry]) {
     entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()))
+        b.is_dir.cmp(&a.is_dir).then_with(|| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        })
     });
 }
 
@@ -205,9 +217,7 @@ pub fn upload(
     remote: &str,
 ) -> Result<()> {
     if !Path::new(local).is_file() {
-        return Err(LateError::Sftp(format!(
-            "local file not found: {local}"
-        )));
+        return Err(LateError::Sftp(format!("local file not found: {local}")));
     }
     scp(profile, secrets, host, port, local, remote, true)
 }
@@ -242,7 +252,7 @@ fn scp(
     if let Some(key) = &profile.key_path {
         cmd.arg("-i").arg(key);
     }
-    crate::ssh::apply_trusted_host_opts_std(&mut cmd);
+    crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port)?;
     cmd.arg(&from).arg(&to);
     let out = cmd.output().map_err(|e| LateError::Sftp(e.to_string()))?;
     if !out.status.success() {
@@ -332,7 +342,8 @@ drwxr-xr-x 2 lab lab 64 2024-01-01 12:00:00 bin
 
     #[test]
     fn list_local_tmp() {
-        let dir = tempfile::tempdir().unwrap();
+        let home = dirs::home_dir().expect("home");
+        let dir = tempfile::TempDir::new_in(&home).unwrap();
         std::fs::write(dir.path().join("a.txt"), b"hi").unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let listing = list_local(dir.path().to_str().unwrap()).unwrap();

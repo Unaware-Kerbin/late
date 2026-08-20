@@ -1,0 +1,9 @@
+vendor: generic
+aliases: {}
+allow: [show, ping, traceroute, display, get, dir, more, terminal]
+deny: [configure, config, reload, reboot, write, commit, copy, erase, start-shell]
+deny_substrings: [configure, reload, reboot, write erase, factory, shell]
+allow_pipes: []
+deny_pipes: []
+unrestricted: false
+allow_always_allow: true

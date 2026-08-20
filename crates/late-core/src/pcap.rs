@@ -57,13 +57,21 @@ pub fn validate_bpf(bpf: &str) -> Result<()> {
     if bpf.len() > 200 {
         return Err(LateError::Pcap("filter too long".into()));
     }
-    if bpf
-        .chars()
-        .any(|c| matches!(c, ';' | '|' | '&' | '`' | '$' | '\n' | '\r' | '"' | '\'' | '\\'))
-    {
+    if !bpf.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, ' ' | '\t' | '.' | ':' | '/' | '(' | ')' | '=' | '!' | '-' | '>' | '<' | '\\')
+    }) {
         return Err(LateError::Pcap("filter contains unsafe characters".into()));
     }
     Ok(())
+}
+
+fn bpf_argv(bpf: &str) -> Result<String> {
+    validate_bpf(bpf)?;
+    let t = bpf.trim();
+    if t.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!(" '{}'", t.replace('\'', "")))
 }
 
 pub fn looks_like_pcap(bytes: &[u8]) -> bool {
@@ -92,7 +100,8 @@ pub fn explain_remote_capture_failure(stdout: &[u8], stderr: &str) -> String {
         || blob.contains("junos")
         || blob.contains("arista")
     {
-        return "unix tcpdump is not available on this SSH CLI; trying the device capture command".into();
+        return "unix tcpdump is not available on this SSH CLI; trying the device capture command"
+            .into();
     }
     let cleaned: String = stderr
         .lines()
@@ -227,7 +236,12 @@ fn drain_stderr(child: &mut Child) {
 }
 
 impl LiveCapture {
-    pub fn start(iface: &str, outfile: PathBuf, bpf: Option<&str>, count: Option<u32>) -> Result<Self> {
+    pub fn start(
+        iface: &str,
+        outfile: PathBuf,
+        bpf: Option<&str>,
+        count: Option<u32>,
+    ) -> Result<Self> {
         validate_iface(iface)?;
         if let Some(f) = bpf {
             validate_bpf(f)?;
@@ -266,7 +280,11 @@ impl LiveCapture {
     pub fn wait_or_timeout(&mut self, timeout: std::time::Duration) {
         let start = std::time::Instant::now();
         while start.elapsed() < timeout {
-            match self.child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            match self
+                .child
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten())
+            {
                 Some(_) => {
                     self.child = None;
                     return;
@@ -292,7 +310,9 @@ impl LiveCapture {
             match w.join() {
                 Ok(Ok(())) | Err(_) => {}
                 Ok(Err(e)) => {
-                    if !self.file.is_file() || self.file.metadata().map(|m| m.len()).unwrap_or(0) < 24 {
+                    if !self.file.is_file()
+                        || self.file.metadata().map(|m| m.len()).unwrap_or(0) < 24
+                    {
                         return Err(e);
                     }
                 }
@@ -351,10 +371,12 @@ pub fn list_interfaces() -> Vec<String> {
         nics.insert(0, "any".into());
     }
     let def = default_route_iface();
-    nics.sort_by(|a, b| match iface_rank(a, def.as_deref()).cmp(&iface_rank(b, def.as_deref())) {
-        Ordering::Equal => a.cmp(b),
-        o => o,
-    });
+    nics.sort_by(
+        |a, b| match iface_rank(a, def.as_deref()).cmp(&iface_rank(b, def.as_deref())) {
+            Ordering::Equal => a.cmp(b),
+            o => o,
+        },
+    );
     if nics.is_empty() {
         vec!["any".into()]
     } else {
@@ -782,9 +804,15 @@ impl Analyzer {
         let names = tcp_flag_names(flags);
         summary.protocol = "tcp".into();
         summary.info = format!("{src}:{sport} → {dst}:{dport} {names} seq={seq} win={window}");
-        summary.fields.insert("tcp.srcport".into(), sport.to_string());
-        summary.fields.insert("tcp.dstport".into(), dport.to_string());
-        summary.fields.insert("tcp.window".into(), window.to_string());
+        summary
+            .fields
+            .insert("tcp.srcport".into(), sport.to_string());
+        summary
+            .fields
+            .insert("tcp.dstport".into(), dport.to_string());
+        summary
+            .fields
+            .insert("tcp.window".into(), window.to_string());
         summary.fields.insert("tcp.seq".into(), seq.to_string());
         summary.fields.insert("tcp.flags".into(), names.clone());
         let ev = format!("{src}:{sport} → {dst}:{dport} {names} seq={seq}");
@@ -792,9 +820,10 @@ impl Analyzer {
             self.hits.refused.push((idx, format!("{ev} (RST)")));
         }
         if window == 0 && !rst && !syn {
-            self.hits
-                .zero_win
-                .push((idx, format!("{src}:{sport} → {dst}:{dport} win=0 {}", names)));
+            self.hits.zero_win.push((
+                idx,
+                format!("{src}:{sport} → {dst}:{dport} win=0 {}", names),
+            ));
         }
         if payload_len > 0 || syn || fin {
             let key = (src.clone(), dst.clone(), sport, dport);
@@ -821,7 +850,8 @@ impl Analyzer {
             summary.fields.insert("tls.alert".into(), desc.to_string());
         }
         if (sport == 80 || dport == 80) && !payload.is_empty() {
-            let peek = String::from_utf8_lossy(&payload[..payload.len().min(240)]).to_ascii_lowercase();
+            let peek =
+                String::from_utf8_lossy(&payload[..payload.len().min(240)]).to_ascii_lowercase();
             if peek.contains("authorization:") || peek.contains("password=") {
                 self.hits.cleartext.push((
                     idx,
@@ -852,8 +882,12 @@ impl Analyzer {
         };
         summary.protocol = "udp".into();
         summary.info = format!("{src}:{sport} → {dst}:{dport}");
-        summary.fields.insert("udp.srcport".into(), sport.to_string());
-        summary.fields.insert("udp.dstport".into(), dport.to_string());
+        summary
+            .fields
+            .insert("udp.srcport".into(), sport.to_string());
+        summary
+            .fields
+            .insert("udp.dstport".into(), dport.to_string());
         if sport != 53 && dport != 53 {
             return;
         }
@@ -880,7 +914,11 @@ impl Analyzer {
                 idx,
                 format!(
                     "{src}:{sport} → {dst}:{dport} {} rcode={rcode} {}",
-                    if qname.is_empty() { "query" } else { qname.as_str() },
+                    if qname.is_empty() {
+                        "query"
+                    } else {
+                        qname.as_str()
+                    },
                     dns_rcode_name(rcode)
                 ),
             ));
@@ -963,10 +1001,9 @@ impl Analyzer {
         summary.fields.insert("arp.sha".into(), sha.clone());
         if let Some(prev) = self.arp_map.get(&spa) {
             if prev != &sha {
-                self.hits.arp_conflict.push((
-                    idx,
-                    format!("{spa} claimed by {prev} and {sha}"),
-                ));
+                self.hits
+                    .arp_conflict
+                    .push((idx, format!("{spa} claimed by {prev} and {sha}")));
             }
         } else {
             self.arp_map.insert(spa, sha);
@@ -975,7 +1012,12 @@ impl Analyzer {
 
     fn findings(self) -> Vec<PcapFinding> {
         let mut out = Vec::new();
-        push_finding(&mut out, "retransmit", "TCP retransmissions", &self.hits.retrans);
+        push_finding(
+            &mut out,
+            "retransmit",
+            "TCP retransmissions",
+            &self.hits.retrans,
+        );
         push_finding(
             &mut out,
             "zero_window",
@@ -988,7 +1030,12 @@ impl Analyzer {
             "DNS failures (nonzero rcode)",
             &self.hits.dns_fail,
         );
-        push_finding(&mut out, "tls_alert", "TLS alert records", &self.hits.tls_alert);
+        push_finding(
+            &mut out,
+            "tls_alert",
+            "TLS alert records",
+            &self.hits.tls_alert,
+        );
         push_finding(
             &mut out,
             "refused",
@@ -1198,13 +1245,8 @@ pub fn ui_packets(packets: &[PacketSummary]) -> Vec<PacketSummary> {
 
 pub fn remote_tcpdump_sh(iface: &str, count: u32, bpf: &str) -> Result<String> {
     validate_iface(iface)?;
-    validate_bpf(bpf)?;
+    let extra = bpf_argv(bpf)?;
     let count = count.clamp(1, 2_000);
-    let extra = if bpf.trim().is_empty() {
-        String::new()
-    } else {
-        format!(" {}", bpf.trim())
-    };
     Ok(format!(
         "F=/tmp/late-pcap.$$; \
          run() {{ if command -v timeout >/dev/null 2>&1; then timeout 18 \"$@\"; else \"$@\"; fi; }}; \
@@ -1227,16 +1269,11 @@ pub fn remote_tcpdump_sh(iface: &str, count: u32, bpf: &str) -> Result<String> {
 /// Stream pcap on stdout until SSH is killed (Start/Stop).
 pub fn remote_tcpdump_live_sh(iface: &str, bpf: &str) -> Result<String> {
     validate_iface(iface)?;
-    validate_bpf(bpf)?;
-    let extra = if bpf.trim().is_empty() {
+    let extra = bpf_argv(bpf)?;
+    let dumpcap_f = if extra.is_empty() {
         String::new()
     } else {
-        format!(" {}", bpf.trim())
-    };
-    let dumpcap_f = if bpf.trim().is_empty() {
-        String::new()
-    } else {
-        format!(" -f '{}'", bpf.trim().replace('\'', ""))
+        format!(" -f{extra}")
     };
     Ok(format!(
         "if command -v tcpdump >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then \
@@ -1343,11 +1380,7 @@ mod tests {
             eth_ipv4(6, b, a, &tcp(80, 1234, 50, 0x10, 64, b"")),
         ]);
         assert!(kinds(&r).contains(&"retransmit"), "{:?}", r.findings);
-        let re = r
-            .findings
-            .iter()
-            .find(|f| f.kind == "retransmit")
-            .unwrap();
+        let re = r.findings.iter().find(|f| f.kind == "retransmit").unwrap();
         assert_eq!(re.packet_indexes, vec![1]);
         assert!(re.evidence.contains("seq=100"));
     }
@@ -1356,7 +1389,9 @@ mod tests {
     fn zero_window_rst_dns_tls_icmp() {
         let a = [10, 0, 0, 1];
         let b = [10, 0, 0, 2];
-        let mut dns = vec![0x12, 0x34, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let mut dns = vec![
+            0x12, 0x34, 0x81, 0x83, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         dns.extend_from_slice(&[7]);
         dns.extend_from_slice(b"example");
         dns.extend_from_slice(&[3]);
@@ -1387,7 +1422,11 @@ mod tests {
         assert!(dns_f.evidence.contains("NXDOMAIN") || dns_f.evidence.contains("example.com"));
         let tls_f = r.findings.iter().find(|f| f.kind == "tls_alert").unwrap();
         assert!(tls_f.evidence.contains("handshake_failure") || tls_f.evidence.contains("TLS"));
-        let icmp_f = r.findings.iter().find(|f| f.kind == "icmp_unreach").unwrap();
+        let icmp_f = r
+            .findings
+            .iter()
+            .find(|f| f.kind == "icmp_unreach")
+            .unwrap();
         assert!(icmp_f.evidence.contains("8.8.8.8") || icmp_f.evidence.contains("port"));
     }
 
@@ -1409,5 +1448,14 @@ mod tests {
         assert!(s.contains("cleartext") || r.findings.iter().any(|f| f.kind == "cleartext_creds"));
         let blob = serde_json::to_string(&v).unwrap();
         assert!(!blob.contains("POST /login"));
+    }
+
+    #[test]
+    fn bpf_quotes_and_rejects_shell_meta() {
+        assert!(validate_bpf("host 1.1.1.1").is_ok());
+        assert!(validate_bpf("tcp; id").is_err());
+        assert!(validate_bpf("port 22 | cat").is_err());
+        let sh = remote_tcpdump_sh("eth0", 10, "host 1.1.1.1").unwrap();
+        assert!(sh.contains("'host 1.1.1.1'"), "{sh}");
     }
 }

@@ -33,8 +33,12 @@ pub async fn handle(app: &App, raw: &str) -> String {
             .to_string();
     }
     match dispatch(app, &req.method, to_snake(req.params)).await {
-        Ok(result) => json!({"id": req.id, "result": to_camel(result)}).to_string(),
+        Ok(result) => {
+            let _ = late_core::audit::append(&app.paths, &req.method, true);
+            json!({"id": req.id, "result": to_camel(result)}).to_string()
+        }
         Err(e) => {
+            let _ = late_core::audit::append(&app.paths, &req.method, false);
             let mut err = json!({"code": e.rpc_code(), "message": e.to_string()});
             if let Some(data) = e.rpc_data() {
                 err["data"] = data;
@@ -63,7 +67,9 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
         "inventory.folder.rename" => {
             let from = req_str(&params, &["from", "old", "path"])?;
             let to = req_str(&params, &["to", "new", "name"])?;
-            Ok(serde_json::to_value(app.inventory.rename_folder(&from, &to)?)?)
+            Ok(serde_json::to_value(
+                app.inventory.rename_folder(&from, &to)?,
+            )?)
         }
         "inventory.folder.delete" => {
             let path = req_str(&params, &["path", "folder"])?;
@@ -96,15 +102,16 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
         }
         "inference.status" => Ok(serde_json::to_value(late_core::inference::status())?),
         "inference.start" => {
-            let model = pstr(&params, &["model", "serve_model", "id"]).unwrap_or_else(|| {
-                app.settings().vllm_model.clone()
-            });
+            let model = pstr(&params, &["model", "serve_model", "id"])
+                .unwrap_or_else(|| app.settings().vllm_model.clone());
             Ok(serde_json::to_value(late_core::inference::start(&model)?)?)
         }
         "inference.stop" => Ok(serde_json::to_value(late_core::inference::stop()?)?),
         "inference.download" => {
             let model = req_str(&params, &["model", "id"])?;
-            Ok(serde_json::to_value(late_core::inference::download(&model)?)?)
+            Ok(serde_json::to_value(late_core::inference::download(
+                &model,
+            )?)?)
         }
         "session.open" => {
             let info = app.open_session(parse_open(&params)?)?;
@@ -152,7 +159,9 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             let path = if enabled {
-                Some(app.paths.data.join("logs").join(format!("{id}.log")))
+                let stem =
+                    late_core::confine::safe_export_stem(&id).unwrap_or_else(|_| "session".into());
+                Some(app.paths.data.join("logs").join(format!("{stem}.log")))
             } else {
                 None
             };
@@ -252,7 +261,10 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
         "pcap.start" => {
             let iface = req_str(&params, &["iface", "interface"])?;
             let bpf = pstr(&params, &["bpf", "filter"]);
-            let count = params.get("count").and_then(|v| v.as_u64()).map(|n| n as u32);
+            let count = params
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32);
             let app = app.clone();
             blocking(move || Ok(serde_json::to_value(app.start_pcap(&iface, bpf, count)?)?)).await
         }
@@ -351,18 +363,25 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 app.session_device_id(&req_str(&params, &["session_id", "id"])?)?
             };
             let req = parse_api(&params)?;
-            let agent = params.get("agent").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(serde_json::to_value(app.api_send(&device_id, req, agent).await?)?)
+            let agent = params
+                .get("agent")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(serde_json::to_value(
+                app.api_send(&device_id, req, agent).await?,
+            )?)
         }
         "import.file" | "import.path" => {
             let path = PathBuf::from(req_str(&params, &["path"])?);
-            let commit = params.get("commit").and_then(|v| v.as_bool()).unwrap_or(false);
+            let commit = params
+                .get("commit")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             Ok(serde_json::to_value(app.import_file(&path, commit)?)?)
         }
         "collections.list" => Ok(serde_json::to_value(app.list_collections()?.collections)?),
         "collections.upsert" => {
-            let col: CommandCollection =
-                serde_json::from_value(unwrap_obj(&params, "collection"))?;
+            let col: CommandCollection = serde_json::from_value(unwrap_obj(&params, "collection"))?;
             Ok(serde_json::to_value(app.upsert_collection(col)?)?)
         }
         "collections.delete" => {
@@ -502,9 +521,7 @@ fn map_keys(v: Value, f: fn(&str) -> String, skip: bool) -> Value {
             }
             Value::Object(out)
         }
-        Value::Array(arr) => {
-            Value::Array(arr.into_iter().map(|x| map_keys(x, f, skip)).collect())
-        }
+        Value::Array(arr) => Value::Array(arr.into_iter().map(|x| map_keys(x, f, skip)).collect()),
         other => other,
     }
 }

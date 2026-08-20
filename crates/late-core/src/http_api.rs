@@ -47,9 +47,10 @@ pub fn host_pinned(request_url: &str, base: &str) -> bool {
 pub async fn send_request(
     req: ApiRequest,
     extra_headers: HashMap<String, String>,
+    insecure_tls: bool,
 ) -> Result<ApiResponse> {
     let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(insecure_tls)
         .build()
         .map_err(|e| LateError::Http(e.to_string()))?;
     let method = reqwest::Method::from_bytes(req.method.as_bytes())
@@ -71,7 +72,10 @@ pub async fn send_request(
     for (k, v) in resp.headers() {
         headers.insert(k.to_string(), v.to_str().unwrap_or("").to_string());
     }
-    let text = resp.text().await.map_err(|e| LateError::Http(e.to_string()))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| LateError::Http(e.to_string()))?;
     let body: Value = serde_json::from_str(&text).unwrap_or(Value::String(text.clone()));
     let mut redactor = Redactor::new();
     let redacted_text = redactor.redact(&text);
@@ -156,7 +160,10 @@ mod tests {
         assert!(method_allowed_for_agent("GET", ApiController::Generic));
         assert!(method_allowed_for_agent("get", ApiController::Unifi));
         assert!(!method_allowed_for_agent("POST", ApiController::Generic));
-        assert!(!method_allowed_for_agent("GET", ApiController::Fortimanager));
+        assert!(!method_allowed_for_agent(
+            "GET",
+            ApiController::Fortimanager
+        ));
     }
 
     #[test]

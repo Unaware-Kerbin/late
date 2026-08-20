@@ -390,7 +390,9 @@ fn eos(cli: &mut CliSession, iface: &str, count: u32, bpf: &str) -> Result<Vec<u
     ))?;
     cli.wait(Duration::from_secs(20));
     let mark = cli.len();
-    cli.send("bash echo LATEB64_START; bash base64 /mnt/flash/latepcap.pcap; bash echo LATEB64_END")?;
+    cli.send(
+        "bash echo LATEB64_START; bash base64 /mnt/flash/latepcap.pcap; bash echo LATEB64_END",
+    )?;
     let out = cli.wait_until(Duration::from_secs(8), has_b64_end_line);
     decode_marked(&cli.since(mark))
         .or_else(|| decode_marked(&out))
@@ -405,7 +407,8 @@ fn junos(cli: &mut CliSession, iface: &str, count: u32) -> Result<Vec<u8>> {
     cli.wait(Duration::from_secs(20));
     try_unix_shell(cli, ifc, count, "").ok_or_else(|| {
         LateError::Pcap(
-            "Junos monitor traffic ran but the pcap could not be exported (need start shell)".into(),
+            "Junos monitor traffic ran but the pcap could not be exported (need start shell)"
+                .into(),
         )
     })
 }
@@ -475,10 +478,7 @@ fn start_unix_stream(
     let _ = child.kill();
     let _ = child.wait();
     let _ = pump.join();
-    let err = err_buf
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+    let err = err_buf.lock().unwrap_or_else(|p| p.into_inner()).clone();
     Err(LateError::Pcap(if err.trim().is_empty() {
         "remote unix tcpdump did not stream a pcap".into()
     } else {
@@ -507,14 +507,7 @@ fn start_cli_worker(
     let fail2 = fail.clone();
     let worker = std::thread::spawn(move || {
         let res = cli_live_loop(
-            &device,
-            &profile,
-            &secrets,
-            &iface_s,
-            &bpf_s,
-            &outfile2,
-            rx,
-            &running2,
+            &device, &profile, &secrets, &iface_s, &bpf_s, &outfile2, rx, &running2,
         );
         if let Err(e) = &res {
             *fail2.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
@@ -651,9 +644,10 @@ fn cli_live_loop(
             wait_stop(&mut cli, &rx);
             cli.interrupt()?;
             cli.wait(Duration::from_secs(2));
-            let bytes = export_unix_file(&mut cli, "/mnt/flash/latepcap.pcap").ok_or_else(|| {
-                LateError::Pcap("EOS capture stopped but pcap export failed".into())
-            })?;
+            let bytes =
+                export_unix_file(&mut cli, "/mnt/flash/latepcap.pcap").ok_or_else(|| {
+                    LateError::Pcap("EOS capture stopped but pcap export failed".into())
+                })?;
             write_bytes(outfile, &bytes)
         }
         Platform::Junos => {

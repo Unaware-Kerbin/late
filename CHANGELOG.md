@@ -2,6 +2,34 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-20 08:59
+
+**Compact session tree, loopback auth, and ACL permit lists.**
+
+Inventory
+
+- Session manager is a one-line tree under **Sessions** (folder / host name), with a toolbar (connect, new folder, new session, properties, delete, expand/collapse).
+- Filter matches name, host, folder, or tag (`Alt+I`). Arrow keys move; Enter connects; double-click connects.
+- Local PTY, packet capture, and Edgeshark sit in a **Tools** group instead of crowding the device list.
+- Vendor / OS is on the session form (not only under extra options).
+
+Agent and permit lists
+
+- Open SSH/serial sessions no longer default to a deny-all Generic list. Generic allows `show` / `ping` / `traceroute` until the MOTD or `show version` identifies the OS (Aruba AOS-CX, Cisco, Arista, and others).
+- AOS-CX and Cisco allowlists include config needed for ACLs (`configure`, `access-list` / `acl`, `apply`, numbered ACEs like `10 deny tcp any any eq 80`). Destructive verbs (`start-shell`, `copy`, `reload`, `write erase`) stay denied. Config lines cannot be always-allowed.
+- If the permit list still blocks a line, Late will not send it, but the agent is told to print the full CLI for you to paste.
+
+Security
+
+- Daemon `/rpc` and `/ws` and sidecar `/chat` `/approve` `/pending` `/models` `/stop` require the sidecar token. Origin is CORS only (it is not authentication).
+- Host header must be loopback. Non-loopback `--bind` is refused unless `LATE_INSECURE_BIND=1`.
+- SSH uses `StrictHostKeyChecking=yes` against a pinned OpenSSH known_hosts file after Late’s TOFU pin.
+- Secrets and tokens are written mode `0600` atomically; config directories are `0700`.
+- Electron stays on the app origin for navigation and `late:token` IPC. Desktop CSP limits `connect-src` to loopback.
+- Path jail under home / Late data; local PTY is bash/zsh/fish/sh only; remote tcpdump BPF is quoted.
+- Append-only `audit.jsonl` for privileged RPC and Approve/Deny. API TLS is verified by default.
+- `./late` always restarts the sidecar on `:7430` with the token (fixes chat dying against a leftover sidecar).
+
 ## 2026-08-19 16:23
 
 **Stop Cursor hangs after a command, and let Settings scroll.**

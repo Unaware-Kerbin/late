@@ -11,19 +11,69 @@ pub struct LocalPty {
 }
 
 pub fn discover_shells() -> Vec<(String, String)> {
-    let candidates = [
-        ("bash", "/bin/bash"),
-        ("zsh", "/bin/zsh"),
-        ("fish", "/usr/bin/fish"),
-        ("sh", "/bin/sh"),
-        ("python", "/usr/bin/python3"),
-        ("node", "/usr/bin/node"),
-    ];
-    candidates
+    allowed_shell_paths()
         .into_iter()
-        .filter(|(_, p)| std::path::Path::new(p).exists())
-        .map(|(n, p)| (n.to_string(), p.to_string()))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_string();
+            Some((name, p.to_string_lossy().into_owned()))
+        })
         .collect()
+}
+
+fn allowed_shell_paths() -> Vec<std::path::PathBuf> {
+    [
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/bin/zsh",
+        "/usr/bin/zsh",
+        "/usr/bin/fish",
+        "/bin/sh",
+        "/usr/bin/sh",
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .filter(|p| p.exists())
+    .collect()
+}
+
+fn resolve_shell(requested: Option<&str>) -> Result<String> {
+    let allowed: Vec<std::path::PathBuf> = allowed_shell_paths()
+        .into_iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .collect();
+    if allowed.is_empty() {
+        return Err(LateError::Message("no allowed local shells found".into()));
+    }
+    let want = requested
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_else(|| "/bin/bash".into());
+    if !want.contains('/') {
+        if let Some(p) = allowed.iter().find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n == want)
+        }) {
+            return Ok(p.to_string_lossy().into_owned());
+        }
+        return Err(LateError::Message(format!(
+            "local shell '{want}' is not allowed"
+        )));
+    }
+    if want.contains('\0') || want.contains("..") {
+        return Err(LateError::Message("local shell path rejected".into()));
+    }
+    let path = std::path::PathBuf::from(&want);
+    let canon = path
+        .canonicalize()
+        .map_err(|_| LateError::Message(format!("local shell not found: {want}")))?;
+    if allowed.iter().any(|a| a == &canon) {
+        return Ok(canon.to_string_lossy().into_owned());
+    }
+    Err(LateError::Message(
+        "local PTY may only start bash, zsh, fish, or sh".into(),
+    ))
 }
 
 pub fn open_local(shell: Option<&str>, cols: u16, rows: u16) -> Result<LocalPty> {
@@ -37,10 +87,7 @@ pub fn open_local(shell: Option<&str>, cols: u16, rows: u16) -> Result<LocalPty>
         })
         .map_err(|e| LateError::Message(e.to_string()))?;
 
-    let exe = shell
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("SHELL").ok())
-        .unwrap_or_else(|| "/bin/bash".into());
+    let exe = resolve_shell(shell)?;
     let cmd = CommandBuilder::new(exe);
     let mut child = pair
         .slave
@@ -63,26 +110,24 @@ pub fn open_local(shell: Option<&str>, cols: u16, rows: u16) -> Result<LocalPty>
     let (close_tx, mut close_rx) = mpsc::channel::<()>(1);
     let out_tx2 = out_tx.clone();
 
-    std::thread::spawn(move || {
-        loop {
-            if close_rx.try_recv().is_ok() {
-                let _ = child.kill();
-                break;
-            }
-            while let Ok(b) = in_rx.try_recv() {
-                let _ = writer.write_all(&b);
-                let _ = writer.flush();
-            }
-            if let Ok((c, r)) = resize_rx.try_recv() {
-                let _ = master.resize(PtySize {
-                    rows: r,
-                    cols: c,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-            }
-            std::thread::sleep(std::time::Duration::from_millis(8));
+    std::thread::spawn(move || loop {
+        if close_rx.try_recv().is_ok() {
+            let _ = child.kill();
+            break;
         }
+        while let Ok(b) = in_rx.try_recv() {
+            let _ = writer.write_all(&b);
+            let _ = writer.flush();
+        }
+        if let Ok((c, r)) = resize_rx.try_recv() {
+            let _ = master.resize(PtySize {
+                rows: r,
+                cols: c,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
     });
 
     std::thread::spawn(move || {

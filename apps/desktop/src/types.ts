@@ -145,6 +145,7 @@ export interface AppSettings {
   max_agent_rounds: number;
   pcap_dir?: string;
   log_dir?: string;
+  api_insecure_tls?: boolean;
 }
 
 export function coerceChatBackend(v: unknown): ChatBackend {
@@ -176,6 +177,13 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     }
     return undefined;
   };
+  const flag = (...keys: string[]): boolean | undefined => {
+    for (const k of keys) {
+      const v = r[k];
+      if (typeof v === "boolean") return v;
+    }
+    return undefined;
+  };
   return {
     bind: str("bind") ?? "127.0.0.1:7420",
     vllm_base_url: str("vllm_base_url", "vllmBaseUrl") ?? "http://127.0.0.1:8000/v1",
@@ -189,6 +197,7 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     max_agent_rounds: num("max_agent_rounds", "maxAgentRounds") ?? 50,
     pcap_dir: str("pcap_dir", "pcapDir"),
     log_dir: str("log_dir", "logDir"),
+    api_insecure_tls: flag("api_insecure_tls", "apiInsecureTls") ?? false,
   };
 }
 

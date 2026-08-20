@@ -42,6 +42,9 @@ function parentOf(path: string): string {
 }
 
 function joinPath(dir: string, name: string): string {
+  if (!name || name === "." || name === ".." || /[/\\]/.test(name)) {
+    throw new Error("invalid file name");
+  }
   if (!dir || dir === "/") return `/${name}`.replace(/\/+/g, "/");
   if (dir.endsWith("/") || dir.endsWith("\\")) return `${dir}${name}`;
   const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";

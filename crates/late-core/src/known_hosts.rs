@@ -21,8 +21,8 @@ impl KnownHosts {
     }
 
     pub fn save(&self, paths: &LatePaths) -> Result<()> {
-        fs::write(
-            paths.known_hosts(),
+        crate::fsutil::write_private(
+            &paths.known_hosts(),
             toml::to_string_pretty(self).map_err(|e| LateError::Config(e.to_string()))?,
         )?;
         Ok(())
@@ -84,4 +84,3 @@ pub fn host_port_key(host: &str, port: u16) -> String {
         format!("[{host}]:{port}")
     }
 }
-

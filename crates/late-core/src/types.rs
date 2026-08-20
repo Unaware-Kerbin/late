@@ -51,6 +51,51 @@ impl Vendor {
             _ => Vendor::Generic,
         }
     }
+
+    /// Banner / MOTD / `show version` text. Inventory hint is used when nothing matches.
+    pub fn infer_from_text(text: &str, hint: Self) -> Self {
+        Self::detect_from_text(text).unwrap_or(hint)
+    }
+
+    pub fn detect_from_text(text: &str) -> Option<Self> {
+        let t = text.to_ascii_lowercase();
+        if t.contains("aos-cx")
+            || t.contains("arubaos-cx")
+            || t.contains("arubanetworks")
+            || t.contains("hewlett packard enterprise")
+            || t.contains("aruba")
+        {
+            return Some(Vendor::AosCx);
+        }
+        if t.contains("nx-os") || t.contains("nexus") {
+            return Some(Vendor::CiscoNxos);
+        }
+        if t.contains("ios-xe") || t.contains("iosxe") || t.contains("cisco ios xe") {
+            return Some(Vendor::CiscoIosXe);
+        }
+        if t.contains("cisco ios")
+            || t.contains("ios software")
+            || t.contains("cisco internetwork operating system")
+        {
+            return Some(Vendor::CiscoIos);
+        }
+        if t.contains("arista") {
+            return Some(Vendor::AristaEos);
+        }
+        if t.contains("junos") || t.contains("juniper") {
+            return Some(Vendor::Junos);
+        }
+        if t.contains("fortigate") || t.contains("fortios") {
+            return Some(Vendor::Fortios);
+        }
+        if t.contains("routeros") || t.contains("mikrotik") {
+            return Some(Vendor::Routeros);
+        }
+        if t.contains("palo alto") || t.contains("pan-os") || t.contains("panos") {
+            return Some(Vendor::Panos);
+        }
+        None
+    }
 }
 
 impl<'de> Deserialize<'de> for Vendor {
@@ -181,7 +226,12 @@ pub struct Device {
     pub api_base_url: Option<String>,
     #[serde(default)]
     pub api_controller: Option<String>,
-    #[serde(default, alias = "authProfileId", alias = "auth_profile", alias = "profile_id")]
+    #[serde(
+        default,
+        alias = "authProfileId",
+        alias = "auth_profile",
+        alias = "profile_id"
+    )]
     pub auth_profile_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
@@ -393,6 +443,14 @@ mod tests {
             assert_eq!(w.vendor, want, "{raw}");
         }
         assert_eq!(serde_json::to_value(Vendor::AosCx).unwrap(), "aos_cx");
+        assert_eq!(
+            Vendor::infer_from_text("Hewlett Packard Enterprise  aruba  AOS-CX", Vendor::Generic),
+            Vendor::AosCx
+        );
+        assert_eq!(
+            Vendor::infer_from_text("", Vendor::CiscoIos),
+            Vendor::CiscoIos
+        );
     }
 
     #[test]
@@ -471,4 +529,3 @@ has_password = true
         assert!(!p.use_agent);
     }
 }
-

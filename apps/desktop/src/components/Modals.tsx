@@ -163,6 +163,9 @@ function ApprovalModal() {
         {blocked && (
           <div className="banner">
             Permit list denied: {approval.policyReason || "vendor permit list rejected this command"}
+            <div className="hint" style={{ marginTop: 8, textTransform: "none", letterSpacing: 0 }}>
+              This will not be sent. Copy the command below into the terminal if you want to apply it yourself. The agent should also print the rest of the ACL for you.
+            </div>
           </div>
         )}
         {typeof approval.detail?.reason === "string" && approval.detail.reason && (
@@ -396,6 +399,7 @@ function SettingsModal() {
   const [ollama, setOllama] = useState(settings?.ollama_base_url ?? "http://127.0.0.1:11434/v1");
   const [ollamaModel, setOllamaModel] = useState(settings?.ollama_model ?? "");
   const [defaultBackend, setDefaultBackend] = useState(settings?.default_backend ?? "local");
+  const [insecureTls, setInsecureTls] = useState(Boolean(settings?.api_insecure_tls));
   return (
     <div className="modal-root" onMouseDown={() => setState({ settingsOpen: false })}>
       <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
@@ -417,6 +421,10 @@ function SettingsModal() {
           Ollama is not bundled. Install from <a href="https://ollama.com" target="_blank" rel="noreferrer">ollama.com</a>,
           start it, then <code>ollama pull &lt;model&gt;</code>. Late never pulls models for you.
         </p>
+        <label className="row" style={{ alignItems: "center", gap: 8 }}>
+          <input type="checkbox" checked={insecureTls} onChange={(e) => setInsecureTls(e.target.checked)} />
+          Allow invalid TLS certificates on API sessions (lab gear only)
+        </label>
         <label>
           UI scale ({Math.round(uiScale * 100)}%)
           <input
@@ -548,6 +556,7 @@ function SettingsModal() {
                 max_agent_rounds: settings?.max_agent_rounds ?? 50,
                 pcap_dir: settings?.pcap_dir,
                 log_dir: settings?.log_dir,
+                api_insecure_tls: insecureTls,
               })
             }
           >
@@ -792,6 +801,21 @@ function DeviceModal({ device }: { device: Device }) {
             </datalist>
           </label>
         </div>
+        {d.kind !== "local" && (
+          <label>
+            Vendor / OS (permit list)
+            <select
+              value={d.vendor}
+              onChange={(e) => patch({ vendor: e.target.value as Device["vendor"] })}
+            >
+              {VENDORS.map((v) => (
+                <option key={v} value={v}>
+                  {v === "aos_cx" ? "AOS-CX (Aruba)" : v === "generic" ? "generic (auto-detect)" : v}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {d.kind === "ssh" && (
           <>

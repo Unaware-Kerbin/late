@@ -3,7 +3,6 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use zeroize::Zeroize;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -53,14 +52,7 @@ impl SecretStore {
 
     fn save_vault(&self, vault: &FileVault) -> Result<()> {
         let path = self.paths.secrets_file();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, serde_json::to_string_pretty(vault)?)?;
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        crate::fsutil::write_private(&path, serde_json::to_string_pretty(vault)?)?;
         Ok(())
     }
 }
-

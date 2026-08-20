@@ -2,8 +2,8 @@ use crate::config::LatePaths;
 use crate::error::Result;
 use crate::types::CaptureRecord;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use similar::{ChangeTag, TextDiff};
+use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CaptureStore {
@@ -63,8 +63,11 @@ pub fn export_session(
     body: &str,
     encrypt_passphrase: Option<&str>,
 ) -> Result<std::path::PathBuf> {
-    fs::create_dir_all(paths.data.join("exports"))?;
-    let path = paths.data.join("exports").join(format!("{name}.log"));
+    let stem = crate::confine::safe_export_stem(name)?;
+    let dir = paths.data.join("exports");
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{stem}.log"));
+    crate::confine::confine_under_roots(&path, &[dir.clone()], false)?;
     if let Some(pass) = encrypt_passphrase {
         // age was omitted: passphrase export is XOR obfuscation with SHA-256(pass),
         // not real encryption. Use `age` CLI on the plaintext `.log` for secrecy.

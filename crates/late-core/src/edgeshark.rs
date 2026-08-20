@@ -58,7 +58,8 @@ fn repo_root() -> Result<PathBuf> {
         }
     }
     Err(LateError::Message(
-        "cannot find docker/compose.edgeshark.yml; start Late from the repo or set LATE_ROOT".into(),
+        "cannot find docker/compose.edgeshark.yml; start Late from the repo or set LATE_ROOT"
+            .into(),
     ))
 }
 
@@ -168,7 +169,9 @@ pub fn start() -> Result<EdgesharkStatus> {
     if let Ok(o) = &out {
         if !o.status.success() {
             return Err(LateError::Message(
-                job().lock().unwrap_or_else(|e| e.into_inner())
+                job()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
                     .last_error
                     .clone()
                     .unwrap_or_else(|| "docker compose up failed".into()),
@@ -215,7 +218,12 @@ pub fn stop() -> Result<EdgesharkStatus> {
     match out {
         Ok(o) if o.status.success() => j.last_error = None,
         Ok(o) => {
-            j.last_error = Some(String::from_utf8_lossy(&o.stderr).chars().take(400).collect());
+            j.last_error = Some(
+                String::from_utf8_lossy(&o.stderr)
+                    .chars()
+                    .take(400)
+                    .collect(),
+            );
         }
         Err(e) => j.last_error = Some(format!("docker compose: {e}")),
     }

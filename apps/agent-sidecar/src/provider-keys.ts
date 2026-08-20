@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { lateConfigDir } from "./local-auth.js";
 import { DAEMON_HTTP } from "./types.js";
 
 export type ProviderMap = Record<string, string>;
@@ -9,7 +9,7 @@ let cache: { at: number; keys: ProviderMap } | null = null;
 const CACHE_MS = 5_000;
 
 async function sidecarToken(): Promise<string> {
-  const path = join(homedir(), ".config/late/sidecar.token");
+  const path = join(lateConfigDir(), "sidecar.token");
   const raw = await readFile(path, "utf8");
   return raw.trim();
 }

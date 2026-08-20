@@ -114,14 +114,8 @@ impl ProviderVault {
             }
             return Ok(());
         }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        fs::write(&path, &token)?;
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        crate::fsutil::write_private(&path, &token)?;
         Ok(())
     }
 
@@ -135,14 +129,10 @@ impl ProviderVault {
     }
 
     fn save(&self, vault: &KeyVault) -> Result<()> {
-        let path = self.paths.provider_keys();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, serde_json::to_string_pretty(vault)?)?;
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        crate::fsutil::write_private(
+            &self.paths.provider_keys(),
+            serde_json::to_string_pretty(vault)?,
+        )?;
         Ok(())
     }
 }
@@ -165,7 +155,9 @@ fn validate_key(key: &str) -> Result<String> {
         return Err(LateError::Message("API key is too long".into()));
     }
     if trimmed.chars().any(|c| c.is_control()) {
-        return Err(LateError::Message("API key contains control characters".into()));
+        return Err(LateError::Message(
+            "API key contains control characters".into(),
+        ));
     }
     if trimmed.len() < 8 {
         return Err(LateError::Message("API key looks too short".into()));

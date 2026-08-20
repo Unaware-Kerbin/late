@@ -139,7 +139,9 @@ impl InventoryStore {
         }
         let prefix = format!("{from}/");
         for d in &mut inv.devices {
-            let Some(cur) = d.folder.as_deref() else { continue };
+            let Some(cur) = d.folder.as_deref() else {
+                continue;
+            };
             if cur == from {
                 d.folder = Some(to.clone());
             } else if let Some(rest) = cur.strip_prefix(&prefix) {
@@ -174,7 +176,9 @@ impl InventoryStore {
         let parent = path.rsplit_once('/').map(|(p, _)| p.to_string());
         let mut inv = self.load()?;
         for d in &mut inv.devices {
-            let Some(cur) = d.folder.as_deref() else { continue };
+            let Some(cur) = d.folder.as_deref() else {
+                continue;
+            };
             if is_under(cur, &path) {
                 d.folder = parent.clone();
             }
@@ -311,7 +315,11 @@ mod tests {
         let serial = inv.devices.iter().find(|d| d.kind == DeviceKind::Serial);
         if let Some(serial) = serial {
             assert!(
-                serial.serial_path.as_deref().unwrap_or("").starts_with("/dev/"),
+                serial
+                    .serial_path
+                    .as_deref()
+                    .unwrap_or("")
+                    .starts_with("/dev/"),
                 "serial device must keep its TTY path"
             );
         }
@@ -320,7 +328,9 @@ mod tests {
     #[test]
     fn nested_site_folders_roundtrip() {
         let store = IsolatedStore::new();
-        store.upsert_device(ssh("edge-sw1", " Sites / NYC / Core ")).unwrap();
+        store
+            .upsert_device(ssh("edge-sw1", " Sites / NYC / Core "))
+            .unwrap();
         store.upsert_folder("Sites/NYC/Access").unwrap();
         let inv = store.load().unwrap();
         assert!(inv.folders.iter().any(|f| f == "Sites"));
@@ -358,7 +368,10 @@ mod tests {
         let store = IsolatedStore::new();
         for raw in ["", "/", "//", "  ", "./.", ".."] {
             assert!(store.upsert_folder(raw).is_err(), "upsert {raw:?}");
-            assert!(store.rename_folder("Sites", raw).is_err(), "rename to {raw:?}");
+            assert!(
+                store.rename_folder("Sites", raw).is_err(),
+                "rename to {raw:?}"
+            );
             assert!(store.delete_folder(raw).is_err(), "delete {raw:?}");
         }
         assert!(store.rename_folder("/", "Sites").is_err());
@@ -386,7 +399,9 @@ mod tests {
     fn upsert_device_does_not_wipe_empty_folders() {
         let store = IsolatedStore::new();
         store.upsert_folder("Sites/NYC/Access").unwrap();
-        store.upsert_device(ssh("core-sw", "Sites/NYC/Core")).unwrap();
+        store
+            .upsert_device(ssh("core-sw", "Sites/NYC/Core"))
+            .unwrap();
         let inv = store.load().unwrap();
         assert!(inv.folders.iter().any(|f| f == "Sites/NYC/Access"));
         assert!(inv.folders.iter().any(|f| f == "Sites/NYC/Core"));
@@ -426,7 +441,9 @@ mod tests {
         let store = IsolatedStore::new();
         store.upsert_folder("Sites/NYC").unwrap();
         store.upsert_folder("Sites/Boston").unwrap();
-        let err = store.rename_folder("Sites/NYC", "Sites/Boston").unwrap_err();
+        let err = store
+            .rename_folder("Sites/NYC", "Sites/Boston")
+            .unwrap_err();
         assert!(
             err.to_string().contains("already exists"),
             "unexpected error: {err}"

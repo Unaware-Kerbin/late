@@ -87,7 +87,9 @@ mod tests {
         let b = r.redact(pem);
         assert!(a.contains("[REDACTED:pem#1]"));
         assert_eq!(a, b);
-        let jwt = r.redact("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abcabcabcabcabcabcab");
+        let jwt = r.redact(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.abcabcabcabcabcabcab",
+        );
         assert!(jwt.contains("[REDACTED:jwt#1]"));
     }
 

@@ -1,6 +1,7 @@
 use crate::capture::{self, CaptureStore, DiffLine};
 use crate::collections;
 use crate::config::{load_settings, save_settings, AppSettings, LatePaths};
+use crate::confine;
 use crate::error::{LateError, Result};
 use crate::http_api::{self, ApiRequest, ApiResponse};
 use crate::import::{self, ImportResult};
@@ -223,12 +224,15 @@ impl App {
     }
 
     pub fn check_command(&self, session_id: &str, command: &str) -> Result<PolicyDecision> {
-        let inner = self.inner.lock();
+        let mut inner = self.inner.lock();
         let s = inner
             .sessions
-            .get(session_id)
+            .get_mut(session_id)
             .ok_or_else(|| LateError::NotFound(session_id.into()))?;
-        Ok(self.policy.check(s.vendor, command))
+        let text = String::from_utf8_lossy(&s.scrollback);
+        let vendor = Vendor::infer_from_text(&text, s.vendor);
+        s.vendor = vendor;
+        Ok(self.policy.check(vendor, command))
     }
 
     pub fn check_policy(&self, vendor: Vendor, command: &str) -> PolicyDecision {
@@ -522,26 +526,43 @@ impl App {
         )
     }
 
+    fn operator_fs_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home);
+        }
+        roots.push(self.paths.data.clone());
+        roots.push(self.paths.config.clone());
+        let pcap = self.settings.lock().pcap_dir.clone();
+        if !pcap.as_os_str().is_empty() {
+            roots.push(pcap);
+        }
+        roots
+    }
+
     pub fn sftp_download(&self, session_id: &str, remote: &str, local: &str) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let dest =
+            confine::confine_under_roots(Path::new(local), &self.operator_fs_roots(), false)?;
         sftp::download(
             &profile,
             &self.secrets,
             device.host.as_deref().unwrap_or(""),
             device.port.unwrap_or(22),
             remote,
-            local,
+            &dest.to_string_lossy(),
         )
     }
 
     pub fn sftp_upload(&self, session_id: &str, local: &str, remote: &str) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let src = confine::confine_under_roots(Path::new(local), &self.operator_fs_roots(), true)?;
         sftp::upload(
             &profile,
             &self.secrets,
             device.host.as_deref().unwrap_or(""),
             device.port.unwrap_or(22),
-            local,
+            &src.to_string_lossy(),
             remote,
         )
     }
@@ -650,6 +671,7 @@ impl App {
     }
 
     pub fn open_pcap(&self, path: PathBuf) -> Result<serde_json::Value> {
+        let path = confine::confine_under_roots(&path, &self.operator_fs_roots(), true)?;
         let parsed = pcap::parse_pcap(&path)?;
         let info = self.attach(
             format!("pcap:{}", path.display()),
@@ -858,9 +880,13 @@ impl App {
         Ok((device, profile))
     }
 
-    pub fn open_pcap_in_wireshark(&self, session_id: Option<&str>, path: Option<&str>) -> Result<()> {
+    pub fn open_pcap_in_wireshark(
+        &self,
+        session_id: Option<&str>,
+        path: Option<&str>,
+    ) -> Result<()> {
         let file = if let Some(p) = path.filter(|s| !s.is_empty()) {
-            PathBuf::from(p)
+            confine::confine_under_roots(Path::new(p), &self.operator_fs_roots(), true)?
         } else if let Some(sid) = session_id.filter(|s| !s.is_empty()) {
             let inner = self.inner.lock();
             inner
@@ -950,7 +976,8 @@ impl App {
                 "request host is not pinned to the device".into(),
             ));
         }
-        let controller = ApiController::parse(device.api_controller.as_deref().unwrap_or("generic"));
+        let controller =
+            ApiController::parse(device.api_controller.as_deref().unwrap_or("generic"));
         if agent && !http_api::method_allowed_for_agent(&req.method, controller) {
             return Err(LateError::PolicyDenied(
                 "agent may only issue GET to host-pinned controllers (FortiManager JSON-RPC is human-only)"
@@ -963,7 +990,17 @@ impl App {
                 extra.insert("Authorization".into(), format!("Bearer {secret}"));
             }
         }
-        http_api::send_request(req, extra).await
+        let insecure_tls = self.settings.lock().api_insecure_tls;
+        http_api::send_request(req, extra, insecure_tls).await.map(|mut resp| {
+            if agent {
+                resp.body = resp.redacted_body.clone();
+                resp.headers.retain(|k, _| {
+                    let l = k.to_ascii_lowercase();
+                    !l.contains("auth") && l != "set-cookie" && l != "cookie"
+                });
+            }
+            resp
+        })
     }
 
     pub fn open_api(&self, device_id: &str) -> Result<SessionInfo> {
@@ -1066,7 +1103,8 @@ impl App {
     }
 
     pub fn import_file(&self, path: &Path, commit: bool) -> Result<ImportResult> {
-        let result = import::import_file(path)?;
+        let path = confine::confine_under_roots(path, &self.operator_fs_roots(), true)?;
+        let result = import::import_file(&path)?;
         if commit {
             for d in &result.devices {
                 self.inventory.upsert_device(d.clone())?;

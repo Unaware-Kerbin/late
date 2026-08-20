@@ -2,13 +2,15 @@ mod rpc;
 
 use anyhow::Context;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
+use late_core::origin::{is_allowed_origin, is_loopback_host_header};
 use late_core::App;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -32,6 +34,12 @@ async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let app = App::boot().context("boot late-core")?;
     let bind: SocketAddr = args.bind.parse().context("parse --bind")?;
+    if !bind.ip().is_loopback() && std::env::var("LATE_INSECURE_BIND").ok().as_deref() != Some("1")
+    {
+        anyhow::bail!(
+            "refusing to bind {bind} (not loopback). Set LATE_INSECURE_BIND=1 only for isolated labs."
+        );
+    }
 
     let router = Router::new()
         .route("/health", get(health))
@@ -52,19 +60,81 @@ async fn main() -> anyhow::Result<()> {
 fn cors_layer() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
-            let Ok(s) = origin.to_str() else {
-                return false;
-            };
-            let s = s.to_ascii_lowercase();
-            s.starts_with("http://localhost")
-                || s.starts_with("http://127.0.0.1")
-                || s.starts_with("https://localhost")
-                || s.starts_with("https://127.0.0.1")
-                || s.starts_with("tauri://")
-                || s.contains("tauri.localhost")
+            origin.to_str().map(is_allowed_origin).unwrap_or(false)
         }))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers(tower_http::cors::Any)
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::HeaderName::from_static("x-late-token"),
+            header::HeaderName::from_static("x-late-sidecar-token"),
+        ])
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct TokenQuery {
+    token: Option<String>,
+}
+
+fn presented_token(headers: &HeaderMap, query: Option<&str>) -> Option<String> {
+    for name in ["x-late-token", "x-late-sidecar-token"] {
+        if let Some(v) = headers.get(name).and_then(|v| v.to_str().ok()) {
+            let t = v.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    if let Some(v) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(t) = v
+            .strip_prefix("Bearer ")
+            .or_else(|| v.strip_prefix("bearer "))
+        {
+            let t = t.trim();
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    query
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Token is authentication. Origin is CORS only (browsers set it; curl can forge it).
+fn authorize(
+    app: &App,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> std::result::Result<(), (StatusCode, Json<Value>)> {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !is_loopback_host_header(host) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "host not allowed"})),
+        ));
+    }
+    let Some(tok) = presented_token(headers, query_token) else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        ));
+    };
+    if app.providers.token_matches(&tok) {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        ))
+    }
 }
 
 async fn health() -> Json<Value> {
@@ -110,13 +180,25 @@ async fn internal_provider_keys(
     }
 }
 
-async fn rpc_http(State(app): State<App>, body: String) -> impl IntoResponse {
+async fn rpc_http(State(app): State<App>, headers: HeaderMap, body: String) -> impl IntoResponse {
+    if let Err(resp) = authorize(&app, &headers, None) {
+        return resp.into_response();
+    }
     let resp = rpc::handle(&app, &body).await;
-    ([(header::CONTENT_TYPE, "application/json")], resp)
+    ([(header::CONTENT_TYPE, "application/json")], resp).into_response()
 }
 
-async fn ws_upgrade(ws: WebSocketUpgrade, State(app): State<App>) -> impl IntoResponse {
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(q): Query<TokenQuery>,
+) -> impl IntoResponse {
+    if let Err(resp) = authorize(&app, &headers, q.token.as_deref()) {
+        return resp.into_response();
+    }
     ws.on_upgrade(move |socket| ws_loop(socket, app))
+        .into_response()
 }
 
 async fn ws_loop(mut socket: WebSocket, app: App) {
@@ -155,5 +237,29 @@ async fn ws_loop(mut socket: WebSocket, app: App) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn presented_token_reads_headers_and_query() {
+        let mut h = HeaderMap::new();
+        h.insert("x-late-token", HeaderValue::from_static("abc"));
+        assert_eq!(presented_token(&h, None).as_deref(), Some("abc"));
+
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer xyz"),
+        );
+        assert_eq!(presented_token(&h, Some("ignored")).as_deref(), Some("xyz"));
+
+        let h = HeaderMap::new();
+        assert_eq!(presented_token(&h, Some("qtok")).as_deref(), Some("qtok"));
+        assert!(presented_token(&h, Some("")).is_none());
     }
 }

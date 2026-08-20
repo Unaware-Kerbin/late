@@ -1,0 +1,10 @@
+vendor: aos_cx
+aliases:
+  sh: show
+allow: [show, ping, traceroute, diag, capture, configure, config, acl, access-list, apply, interface, vlan, ip, ipv6, no, end, do, write, hostname, routing, router, qos, spanning-tree, deny, permit, remark, exit, resequence]
+deny: [erase, reload, boot, write erase, checkpoint, start-shell, copy]
+deny_substrings: [erase, reload, factory, shell]
+allow_pipes: [include, exclude, begin]
+deny_pipes: []
+unrestricted: false
+allow_always_allow: true

@@ -15,8 +15,6 @@ const DEFAULT_IMAGE: &str = "intel/llm-scaler-vllm:0.21.0-b3";
 #[allow(dead_code)]
 const DEFAULT_SERVE: &str = "Qwen/Qwen3-8B";
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalModel {
     pub id: String,
@@ -85,7 +83,10 @@ fn compose_file() -> Result<PathBuf> {
 }
 
 fn docker_dir() -> Result<PathBuf> {
-    Ok(compose_file()?.parent().unwrap_or(Path::new(".")).to_path_buf())
+    Ok(compose_file()?
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf())
 }
 
 fn read_env_key(path: &Path, key: &str) -> Option<String> {
@@ -118,7 +119,9 @@ pub fn validate_model(model: &str) -> Result<()> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "/._-:".contains(c))
     {
-        return Err(LateError::Message("model id contains illegal characters".into()));
+        return Err(LateError::Message(
+            "model id contains illegal characters".into(),
+        ));
     }
     Ok(())
 }
@@ -135,7 +138,8 @@ pub fn status() -> InferenceStatus {
             j.last_error.clone(),
         )
     };
-    let serve_model = serve_model.or_else(|| read_env_key(&docker_dir().ok()?.join(".env"), "MODEL_PATH"));
+    let serve_model =
+        serve_model.or_else(|| read_env_key(&docker_dir().ok()?.join(".env"), "MODEL_PATH"));
     let models = probe_models();
     let gpu = crate::hardware::probe();
     let local_models = list_local_models();
@@ -202,7 +206,8 @@ fn probe_models() -> Vec<String> {
     if !body.status.success() {
         return vec![];
     }
-    let v: serde_json::Value = serde_json::from_slice(&body.stdout).unwrap_or(serde_json::Value::Null);
+    let v: serde_json::Value =
+        serde_json::from_slice(&body.stdout).unwrap_or(serde_json::Value::Null);
     v.get("data")
         .and_then(|d| d.as_array())
         .map(|arr| {
@@ -230,7 +235,10 @@ fn write_gid_overlay(dir: &Path) -> Result<PathBuf> {
 }
 
 fn host_gid(group: &str) -> Option<String> {
-    let out = Command::new("getent").args(["group", group]).output().ok()?;
+    let out = Command::new("getent")
+        .args(["group", group])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -353,7 +361,11 @@ fn require_complete_model(model: &str) -> Result<()> {
 
 fn dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
-    for e in walkdir::WalkDir::new(path).follow_links(false).into_iter().flatten() {
+    for e in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
         if e.file_type().is_file() {
             if let Ok(m) = e.metadata() {
                 total = total.saturating_add(m.len());
@@ -673,7 +685,8 @@ pub fn download(model: &str) -> Result<InferenceStatus> {
     std::thread::Builder::new()
         .name("late-hf-dl".into())
         .spawn(move || {
-            let log_path = download_log_path().unwrap_or_else(|| PathBuf::from("/tmp/late-hf-download.log"));
+            let log_path =
+                download_log_path().unwrap_or_else(|| PathBuf::from("/tmp/late-hf-download.log"));
             let _ = fs::write(
                 &log_path,
                 format!("downloading {model} into {}\n", hf_home().display()),
@@ -691,8 +704,8 @@ pub fn download(model: &str) -> Result<InferenceStatus> {
                 "-v".into(),
                 volume,
             ];
-            if let Ok(token) = std::env::var("HF_TOKEN")
-                .or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
+            if let Ok(token) =
+                std::env::var("HF_TOKEN").or_else(|_| std::env::var("HUGGING_FACE_HUB_TOKEN"))
             {
                 args.push("-e".into());
                 args.push(format!("HF_TOKEN={token}"));
@@ -702,7 +715,11 @@ pub fn download(model: &str) -> Result<InferenceStatus> {
             args.push(model.clone());
             let mut cmd = Command::new("docker");
             cmd.args(&args);
-            let result = match fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            let result = match fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
                 Ok(file) => {
                     let stderr = file.try_clone().ok();
                     cmd.stdin(Stdio::null());
@@ -741,7 +758,10 @@ pub fn download(model: &str) -> Result<InferenceStatus> {
 }
 
 fn append_log(path: &Path, line: &str) -> std::io::Result<()> {
-    let mut f = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
     f.write_all(line.as_bytes())
 }
 

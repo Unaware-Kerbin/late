@@ -132,17 +132,25 @@ if ! curl -sf "http://127.0.0.1:7420/health" | grep -q pcap.edgeshark; then
   echo "late: warning: daemon health did not report pcap.edgeshark — still a stale binary?" >&2
 fi
 
-if ! up "http://127.0.0.1:7430/health"; then
-  echo "late: sidecar :7430"
-  npm run start -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
-  started+=($!)
-  sleep 0.4
-  if ! up "http://127.0.0.1:7430/health"; then
-    npm run dev -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
-    started+=($!)
-  fi
-  wait_up "http://127.0.0.1:7430/health" "sidecar"
+# Sidecar must present the daemon token. Always replace whatever owns :7430.
+echo "late: replacing sidecar on :7430"
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k 7430/tcp >/dev/null 2>&1 || true
 fi
+sleep 0.4
+TOKEN=""
+if [[ -r "${XDG_CONFIG_HOME:-$HOME/.config}/late/sidecar.token" ]]; then
+  TOKEN="$(tr -d '\n' < "${XDG_CONFIG_HOME:-$HOME/.config}/late/sidecar.token")"
+fi
+echo "late: sidecar :7430"
+LATE_RPC_TOKEN="$TOKEN" npm run start -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
+started+=($!)
+sleep 0.4
+if ! up "http://127.0.0.1:7430/health"; then
+  LATE_RPC_TOKEN="$TOKEN" npm run dev -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
+  started+=($!)
+fi
+wait_up "http://127.0.0.1:7430/health" "sidecar"
 
 UI_URL="http://127.0.0.1:5173"
 if ! up "$UI_URL"; then

@@ -9,8 +9,8 @@ aliases:
   tr: traceroute
   conf: configure
   t: telnet
-allow: [show, ping, traceroute, dir, more, terminal, where, undebug]
-deny: [configure, conf, enable, disable, write, copy, delete, erase, format, archive, boot, reload, reset, clear, logout, exit, quit, end, tclsh, tclquit, debug, event]
+allow: [show, ping, traceroute, dir, more, terminal, where, undebug, configure, interface, vlan, access-list, ip, ipv6, no, end, do, write, router, route-map, line, access-class, deny, permit, remark, exit]
+deny: [enable, disable, copy, delete, erase, write erase, format, archive, boot, reload, reset, clear, logout, quit, tclsh, tclquit, debug, event, telnet]
 deny_substrings: [tclsh, guestshell, app-hosting, event manager]
 allow_pipes: [include, exclude, begin, section, count, format]
 deny_pipes: [redirect, tee, append]

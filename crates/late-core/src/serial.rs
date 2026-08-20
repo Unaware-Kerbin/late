@@ -147,7 +147,10 @@ pub fn open_serial(path: &str, baud: u32) -> Result<SerialIo> {
             if user_closed {
                 break;
             }
-            notice(&out_tx2, &format!("serial port lost — reconnecting {path}…"));
+            notice(
+                &out_tx2,
+                &format!("serial port lost — reconnecting {path}…"),
+            );
         }
     });
 

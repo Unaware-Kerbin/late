@@ -18,6 +18,8 @@ pub struct AppSettings {
     pub max_agent_rounds: u32,
     pub pcap_dir: PathBuf,
     pub log_dir: PathBuf,
+    /// Lab gear with private PKI. Default false — verify TLS.
+    pub api_insecure_tls: bool,
 }
 
 impl Default for AppSettings {
@@ -36,6 +38,7 @@ impl Default for AppSettings {
             max_agent_rounds: 50,
             pcap_dir: dirs.data.join("pcap"),
             log_dir: dirs.data.join("logs"),
+            api_insecure_tls: false,
         }
     }
 }
@@ -67,7 +70,7 @@ impl LatePaths {
             &self.data.join("captures"),
             &self.data.join("exports"),
         ] {
-            fs::create_dir_all(p)?;
+            crate::fsutil::mkdir_private(p)?;
         }
         Ok(())
     }

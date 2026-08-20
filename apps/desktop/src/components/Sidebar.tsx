@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import {
   deleteDevice,
   deleteFolder,
@@ -22,6 +22,19 @@ type FolderNode = {
   devices: Device[];
 };
 
+type CtxMenu =
+  | { kind: "folder"; path: string; x: number; y: number }
+  | { kind: "device"; id: string; x: number; y: number };
+
+type VisRow =
+  | { key: string; type: "folder"; path: string; name: string; depth: number; count: number }
+  | { key: string; type: "device"; device: Device; depth: number }
+  | { key: string; type: "tools"; depth: number }
+  | { key: string; type: "tool"; id: "pty" | "pcap" | "edgeshark"; depth: number };
+
+const ROOT_COLLAPSE = "__sessions__";
+const TOOLS_COLLAPSE = "__tools__";
+
 function normalizeFolder(raw: string | null | undefined): string {
   return normalizeFolderPath(raw) ?? "";
 }
@@ -29,7 +42,9 @@ function normalizeFolder(raw: string | null | undefined): string {
 function loadCollapsed(): Set<string> {
   try {
     const raw = JSON.parse(localStorage.getItem("late.folders.collapsed") || "[]") as unknown;
-    return new Set(Array.isArray(raw) ? raw.map(String) : []);
+    const next = new Set(Array.isArray(raw) ? raw.map(String) : []);
+    next.delete("");
+    return next;
   } catch {
     return new Set();
   }
@@ -96,13 +111,82 @@ function ancestorPaths(path: string): string[] {
   return out;
 }
 
-function clampMenuPos(x: number, y: number) {
-  const menuW = 176;
-  const menuH = 168;
+function collectFolderPaths(n: FolderNode, into: string[] = []): string[] {
+  for (const c of n.children) {
+    into.push(c.path);
+    collectFolderPaths(c, into);
+  }
+  return into;
+}
+
+function clampMenuPos(x: number, y: number, h = 176) {
+  const menuW = 188;
   return {
     x: Math.max(8, Math.min(x, window.innerWidth - menuW - 8)),
-    y: Math.max(8, Math.min(y, window.innerHeight - menuH - 8)),
+    y: Math.max(8, Math.min(y, window.innerHeight - h - 8)),
   };
+}
+
+function deviceHost(d: Device): string {
+  if (d.kind === "ssh" && d.host) return d.port && d.port !== 22 ? `${d.host}:${d.port}` : d.host;
+  if (d.kind === "serial") return d.serial_path ?? "";
+  if (d.kind === "api") return d.api_base_url ?? "";
+  return "";
+}
+
+function kindLabel(kind: Device["kind"]): string {
+  if (kind === "ssh") return "SSH";
+  if (kind === "serial") return "Serial";
+  if (kind === "api") return "API";
+  return kind;
+}
+
+function Icon({ children }: { children: ReactNode }) {
+  return (
+    <svg className="sess-ico" viewBox="0 0 16 16" aria-hidden>
+      {children}
+    </svg>
+  );
+}
+
+function FolderIco() {
+  return (
+    <Icon>
+      <path fill="currentColor" d="M1.5 3.5h4.2l.8 1.5H14.5v8H1.5z" opacity="0.92" />
+    </Icon>
+  );
+}
+
+function HostIco() {
+  return (
+    <Icon>
+      <rect x="2" y="3" width="12" height="8" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M6 13h4M8 11v2" stroke="currentColor" strokeWidth="1.3" />
+    </Icon>
+  );
+}
+
+function SerialIco() {
+  return (
+    <Icon>
+      <path d="M3 8h10M5 5v6M11 5v6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    </Icon>
+  );
+}
+
+function ApiIco() {
+  return (
+    <Icon>
+      <circle cx="8" cy="8" r="2" fill="currentColor" />
+      <path d="M8 3v2M8 11v2M3 8h2M11 8h2" stroke="currentColor" strokeWidth="1.3" />
+    </Icon>
+  );
+}
+
+function DeviceIco({ kind }: { kind: Device["kind"] }) {
+  if (kind === "serial") return <SerialIco />;
+  if (kind === "api") return <ApiIco />;
+  return <HostIco />;
 }
 
 export function Sidebar() {
@@ -111,14 +195,18 @@ export function Sidebar() {
   const [q, setQ] = useState("");
   const [newOpen, setNewOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
-  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
-  const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  const [activeFolder, setActiveFolder] = useState("");
   const [folderDlg, setFolderDlg] = useState<
     { mode: "create"; parent: string } | { mode: "rename"; path: string } | { mode: "delete"; path: string } | null
   >(null);
   const [folderName, setFolderName] = useState("");
   const folderInput = useRef<HTMLInputElement>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
+
+  const filtering = Boolean(q.trim());
+  const toolsOpen = filtering || !collapsed.has(TOOLS_COLLAPSE);
 
   useEffect(() => {
     if (folderDlg?.mode === "create" || folderDlg?.mode === "rename") {
@@ -144,6 +232,12 @@ export function Sidebar() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === "i" || e.key === "I")) {
+        e.preventDefault();
+        filterRef.current?.focus();
+        filterRef.current?.select();
+        return;
+      }
       if (e.key !== "Escape") return;
       if (folderDlg) {
         e.preventDefault();
@@ -168,7 +262,7 @@ export function Sidebar() {
     const query = q.trim().toLowerCase();
     const devices = inventory.devices.filter((d) => {
       if (!query) return true;
-      const hay = `${d.name} ${d.host ?? ""} ${d.tags.join(" ")} ${d.folder ?? ""}`.toLowerCase();
+      const hay = `${d.name} ${d.host ?? ""} ${d.tags.join(" ")} ${d.folder ?? ""} ${d.kind}`.toLowerCase();
       return hay.includes(query);
     });
     const extra = query
@@ -180,11 +274,49 @@ export function Sidebar() {
     return buildTree(extra, devices);
   }, [inventory.devices, inventory.folders, q]);
 
+  function folderOpen(path: string) {
+    if (filtering) return true;
+    if (path === "") return !collapsed.has(ROOT_COLLAPSE);
+    return !collapsed.has(path);
+  }
+
+  const rows = useMemo(() => {
+    const isOpen = (path: string) => {
+      if (filtering) return true;
+      if (path === "") return !collapsed.has(ROOT_COLLAPSE);
+      return !collapsed.has(path);
+    };
+    const out: VisRow[] = [
+      { key: "sessions", type: "folder", path: "", name: "Sessions", depth: 0, count: countDevices(tree) },
+    ];
+    const walk = (node: FolderNode, depth: number) => {
+      if (!isOpen(node.path)) return;
+      for (const c of node.children) {
+        out.push({ key: `f:${c.path}`, type: "folder", path: c.path, name: c.name, depth, count: countDevices(c) });
+        walk(c, depth + 1);
+      }
+      for (const d of node.devices) {
+        out.push({ key: `d:${d.id}`, type: "device", device: d, depth });
+      }
+    };
+    walk(tree, 1);
+    out.push({ key: "tools", type: "tools", depth: 0 });
+    if (toolsOpen) {
+      out.push({ key: "t:pty", type: "tool", id: "pty", depth: 1 });
+      out.push({ key: "t:pcap", type: "tool", id: "pcap", depth: 1 });
+      out.push({ key: "t:edgeshark", type: "tool", id: "edgeshark", depth: 1 });
+    }
+    return out;
+  }, [tree, collapsed, filtering, toolsOpen]);
+
+  const selectedDevice = inventory.devices.find((d) => d.id === selected) ?? null;
+
   function toggle(path: string) {
+    const key = path === "" ? ROOT_COLLAPSE : path;
     setCollapsed((cur) => {
       const next = new Set(cur);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       saveCollapsed(next);
       return next;
     });
@@ -195,7 +327,7 @@ export function Sidebar() {
       const next = new Set(cur);
       let changed = false;
       for (const p of paths) {
-        if (next.delete(p)) changed = true;
+        if (next.delete(p === "" ? ROOT_COLLAPSE : p)) changed = true;
       }
       if (!changed) return cur;
       saveCollapsed(next);
@@ -203,15 +335,34 @@ export function Sidebar() {
     });
   }
 
-  function selectFolder(path: string) {
+  function collapseAll() {
+    const next = new Set<string>([...collectFolderPaths(tree), TOOLS_COLLAPSE]);
+    saveCollapsed(next);
+    setCollapsed(next);
+  }
+
+  function expandAll() {
+    saveCollapsed(new Set());
+    setCollapsed(new Set());
+  }
+
+  function selectFolder(path: string, expand = true) {
     setActiveFolder(path);
+    setState({ selectedDeviceId: null });
+    if (!expand) return;
     setCollapsed((cur) => {
-      if (!cur.has(path)) return cur;
+      const key = path === "" ? ROOT_COLLAPSE : path;
+      if (!cur.has(key)) return cur;
       const next = new Set(cur);
-      next.delete(path);
+      next.delete(key);
       saveCollapsed(next);
       return next;
     });
+  }
+
+  function selectDevice(d: Device) {
+    setState({ selectedDeviceId: d.id });
+    setActiveFolder(normalizeFolder(d.folder));
   }
 
   function connect(d: Device, kind?: SessionKind) {
@@ -226,6 +377,7 @@ export function Sidebar() {
   }
 
   function askRename(path: string) {
+    if (!path) return;
     setMenu(null);
     const leaf = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
     setFolderName(leaf);
@@ -233,6 +385,7 @@ export function Sidebar() {
   }
 
   function confirmDelete(path: string) {
+    if (!path) return;
     setMenu(null);
     setFolderDlg({ mode: "delete", path });
   }
@@ -242,7 +395,7 @@ export function Sidebar() {
     if (folderDlg.mode === "delete") {
       const gone = folderDlg.path;
       if (!(await deleteFolder(gone))) return;
-      setActiveFolder((cur) => (cur != null && folderPathIsUnder(cur, gone) ? null : cur));
+      setActiveFolder((cur) => (folderPathIsUnder(cur, gone) ? "" : cur));
       setFolderDlg(null);
       return;
     }
@@ -276,7 +429,6 @@ export function Sidebar() {
       const from = folderDlg.path;
       if (!(await renameFolder(from, to))) return;
       setActiveFolder((cur) => {
-        if (cur == null || cur === "") return cur;
         if (cur === from) return to;
         if (folderPathIsUnder(cur, from)) return `${to}${cur.slice(from.length)}`;
         return cur;
@@ -294,154 +446,220 @@ export function Sidebar() {
     if (id) void moveDeviceToFolder(id, path);
   }
 
-  function openFolderMenu(path: string, e: MouseEvent) {
+  function openMenu(next: CtxMenu, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    const pos = clampMenuPos(e.clientX, e.clientY);
-    setMenu({ path, x: pos.x, y: pos.y });
+    const pos = clampMenuPos(e.clientX, e.clientY, next.kind === "device" ? 200 : 176);
+    setMenu({ ...next, x: pos.x, y: pos.y });
   }
 
-  function renderDevice(d: Device, depth: number) {
+  function currentIndex() {
+    if (selected) {
+      const i = rows.findIndex((r) => r.type === "device" && r.device.id === selected);
+      if (i >= 0) return i;
+    }
+    return rows.findIndex((r) => r.type === "folder" && r.path === activeFolder);
+  }
+
+  function activateRow(row: VisRow) {
+    if (row.type === "folder") selectFolder(row.path, false);
+    else if (row.type === "device") selectDevice(row.device);
+    else if (row.type === "tools") setState({ selectedDeviceId: null });
+  }
+
+  function onTreeKey(e: ReactKeyboardEvent<HTMLElement>) {
+    const i = currentIndex();
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = rows[Math.min(rows.length - 1, Math.max(0, i) + 1)];
+      if (next) activateRow(next);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = rows[Math.max(0, (i < 0 ? 0 : i) - 1)];
+      if (next) activateRow(next);
+      return;
+    }
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      const row = i >= 0 ? rows[i] : null;
+      if (row?.type === "folder" && !folderOpen(row.path)) toggle(row.path);
+      if (row?.type === "tools" && !toolsOpen) toggle(TOOLS_COLLAPSE);
+      return;
+    }
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      const row = i >= 0 ? rows[i] : null;
+      if (row?.type === "folder" && folderOpen(row.path) && (row.path !== "" || tree.children.length + tree.devices.length > 0)) {
+        toggle(row.path);
+        return;
+      }
+      if (row?.type === "device") {
+        selectFolder(normalizeFolder(row.device.folder), false);
+      }
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (selectedDevice) connect(selectedDevice);
+      else if (activeFolder) toggle(activeFolder);
+      return;
+    }
+    if (e.key === "F2" && activeFolder && !selectedDevice) {
+      e.preventDefault();
+      askRename(activeFolder);
+      return;
+    }
+    if (e.key === "Delete") {
+      if (selectedDevice) {
+        e.preventDefault();
+        void deleteDevice(selectedDevice.id);
+      } else if (activeFolder) {
+        e.preventDefault();
+        confirmDelete(activeFolder);
+      }
+    }
+  }
+
+  function renderRow(row: VisRow) {
+    const pad = { paddingLeft: 6 + row.depth * 14 };
+    if (row.type === "folder") {
+      const open = folderOpen(row.path);
+      const dropKey = row.path;
+      const active = !selected && activeFolder === row.path;
+      return (
+        <div
+          key={row.key}
+          className={`tree-row folder ${dragOver === dropKey ? "drop" : ""} ${active ? "active" : ""}`}
+          style={pad}
+          role="treeitem"
+          tabIndex={-1}
+          aria-expanded={open}
+          aria-selected={active}
+          onClick={(e) => {
+            e.currentTarget.focus();
+            selectFolder(row.path, false);
+          }}
+          onDoubleClick={() => toggle(row.path)}
+          onContextMenu={(e) => {
+            if (!row.path) return;
+            openMenu({ kind: "folder", path: row.path, x: 0, y: 0 }, e);
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(dropKey);
+          }}
+          onDragLeave={(e) => {
+            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+            setDragOver((cur) => (cur === dropKey ? null : cur));
+          }}
+          onDrop={(e) => onDropFolder(row.path || null, e)}
+        >
+          <button
+            type="button"
+            className={`chev ${open ? "open" : ""}`}
+            aria-label={open ? `Collapse ${row.name}` : `Expand ${row.name}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggle(row.path);
+            }}
+          />
+          <span className="tree-ico folder">
+            <FolderIco />
+          </span>
+          <span className="tree-name">{row.name}</span>
+          <span className="tree-count">{row.count}</span>
+        </div>
+      );
+    }
+    if (row.type === "tools") {
+      return (
+        <div
+          key={row.key}
+          className={`tree-row folder ${!selected && activeFolder === "__tools__" ? "active" : ""}`}
+          style={pad}
+          role="treeitem"
+          tabIndex={-1}
+          aria-expanded={toolsOpen}
+          onClick={(e) => {
+            e.currentTarget.focus();
+            setActiveFolder("__tools__");
+            setState({ selectedDeviceId: null });
+          }}
+          onDoubleClick={() => toggle(TOOLS_COLLAPSE)}
+        >
+          <button
+            type="button"
+            className={`chev ${toolsOpen ? "open" : ""}`}
+            aria-label={toolsOpen ? "Collapse Tools" : "Expand Tools"}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggle(TOOLS_COLLAPSE);
+            }}
+          />
+          <span className="tree-ico folder">
+            <FolderIco />
+          </span>
+          <span className="tree-name">Tools</span>
+        </div>
+      );
+    }
+    if (row.type === "tool") {
+      const label =
+        row.id === "pty" ? "Local PTY" : row.id === "pcap" ? "Packet capture" : "Edgeshark";
+      const meta =
+        row.id === "pty" ? "host shell" : row.id === "pcap" ? "pcap / tcpdump" : "127.0.0.1:5001";
+      return (
+        <button
+          key={row.key}
+          type="button"
+          className="tree-row device"
+          style={pad}
+          onClick={() => {
+            if (row.id === "pty") void openLocal();
+            else openPcapPane();
+          }}
+        >
+          <span className="chev spacer" />
+          <span className="tree-ico host">
+            <HostIco />
+          </span>
+          <span className="tree-name">{label}</span>
+          <span className="tree-host">{meta}</span>
+        </button>
+      );
+    }
+    const d = row.device;
+    const host = deviceHost(d);
     return (
       <div
-        key={d.id}
-        className={`device ${selected === d.id ? "selected" : ""}`}
-        style={{ paddingLeft: 10 + depth * 12 }}
+        key={row.key}
+        className={`tree-row device ${selected === d.id ? "selected" : ""}`}
+        style={pad}
+        role="treeitem"
+        tabIndex={-1}
+        aria-selected={selected === d.id}
         draggable
+        title={host || d.name}
         onDragStart={(e) => {
           e.dataTransfer.setData("text/late-device", d.id);
           e.dataTransfer.effectAllowed = "move";
         }}
-        onClick={() => setState({ selectedDeviceId: d.id })}
-        onDoubleClick={() => connect(d)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") connect(d);
+        onClick={(e) => {
+          e.currentTarget.focus();
+          selectDevice(d);
         }}
-        tabIndex={0}
+        onDoubleClick={() => connect(d)}
+        onContextMenu={(e) => openMenu({ kind: "device", id: d.id, x: 0, y: 0 }, e)}
       >
-        <span className="dot" style={{ background: d.accent || "var(--accent)" }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="name">{d.name}</div>
-          <div className="meta">
-            <span className="kind-pill">{d.kind}</span>
-            {d.kind === "ssh" && d.host
-              ? `${d.host}${d.port && d.port !== 22 ? `:${d.port}` : ""}`
-              : d.kind === "serial"
-                ? `${d.serial_path ?? "no port"} @ ${d.baud ?? 9600}`
-                : d.kind === "api"
-                  ? (d.api_base_url ?? "no URL")
-                  : d.vendor}
-          </div>
-          {(d.tags ?? []).length > 0 && (
-            <div className="tags">
-              {(d.tags ?? []).map((t) => (
-                <span key={t} className="tag">
-                  {t}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-        <button
-          className="ghost"
-          onClick={(e) => {
-            e.stopPropagation();
-            startDeviceEditor(d);
-          }}
-        >
-          edit
-        </button>
-      </div>
-    );
-  }
-
-  function renderFolder(node: FolderNode, depth: number): ReactNode {
-    if (!node.path && !node.children.length) {
-      return node.devices.map((d) => renderDevice(d, depth));
-    }
-    if (!node.path) {
-      return (
-        <>
-          {node.children.map((c) => renderFolder(c, depth))}
-          {node.devices.length > 0 && (
-            <div>
-              <div
-                className={`folder-row ${dragOver === "" ? "drop" : ""} ${activeFolder === "" ? "active" : ""}`}
-                style={{ paddingLeft: 8 + depth * 12 }}
-                onClick={() => selectFolder("")}
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  setDragOver("");
-                }}
-                onDragLeave={(e) => {
-                  if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-                  setDragOver((cur) => (cur === "" ? null : cur));
-                }}
-                onDrop={(e) => onDropFolder(null, e)}
-              >
-                <button
-                  type="button"
-                  className="chev"
-                  aria-label={collapsed.has("") ? "Expand Ungrouped" : "Collapse Ungrouped"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    toggle("");
-                  }}
-                >
-                  {collapsed.has("") ? "▸" : "▾"}
-                </button>
-                <button type="button" className="folder-main" onClick={() => selectFolder("")}>
-                  <span className="folder-name">Ungrouped</span>
-                  <span className="folder-count">{node.devices.length}</span>
-                </button>
-              </div>
-              {!collapsed.has("") && node.devices.map((d) => renderDevice(d, depth + 1))}
-            </div>
-          )}
-        </>
-      );
-    }
-    const open = q.trim() ? true : !collapsed.has(node.path);
-    const n = countDevices(node);
-    return (
-      <div key={node.path}>
-        <div
-          className={`folder-row ${dragOver === node.path ? "drop" : ""} ${activeFolder === node.path ? "active" : ""}`}
-          style={{ paddingLeft: 8 + depth * 12 }}
-          onClick={() => selectFolder(node.path)}
-          onContextMenu={(e) => openFolderMenu(node.path, e)}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(node.path);
-          }}
-          onDragLeave={(e) => {
-            if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-            setDragOver((cur) => (cur === node.path ? null : cur));
-          }}
-          onDrop={(e) => onDropFolder(node.path, e)}
-        >
-          <button
-            type="button"
-            className="chev"
-            aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggle(node.path);
-            }}
-          >
-            {open ? "▾" : "▸"}
-          </button>
-          <button type="button" className="folder-main" onClick={() => selectFolder(node.path)}>
-            <span className="folder-name">{node.name}</span>
-            <span className="folder-count">{n}</span>
-          </button>
-        </div>
-        {open && (
-          <>
-            {node.children.map((c) => renderFolder(c, depth + 1))}
-            {node.devices.map((d) => renderDevice(d, depth + 1))}
-          </>
-        )}
+        <span className="chev spacer" />
+        <span className={`tree-ico host ${d.kind}`}>
+          <DeviceIco kind={d.kind} />
+        </span>
+        <span className="tree-name">{d.name}</span>
+        {host ? <span className="tree-host">{host}</span> : null}
+        <span className="tree-kind">{kindLabel(d.kind)}</span>
       </div>
     );
   }
@@ -449,103 +667,167 @@ export function Sidebar() {
   return (
     <aside
       className="sidebar"
+      onKeyDown={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("input, textarea, select, .folder-dlg, .new-pop, .folder-menu")) return;
+        onTreeKey(e);
+      }}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest(".folder-dlg, .folder-menu, .new-pop")) return;
         setMenu(null);
       }}
     >
-      <div className="side-head">
-        Inventory
-        <span className="side-head-actions">
+      <div className="side-head">Sessions</div>
+      <div className="sess-toolbar">
+        <button
+          type="button"
+          className="sess-tb"
+          title="Connect"
+          disabled={!selectedDevice}
+          onClick={() => selectedDevice && connect(selectedDevice)}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <path
+              d="M4 8h5M8 5l3 3-3 3M3 4v8"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="sess-tb"
+          title="New folder"
+          onClick={(e) => {
+            e.stopPropagation();
+            askNewFolder(activeFolder === "__tools__" ? "" : activeFolder);
+          }}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <path fill="currentColor" d="M1.5 3.5h4.2l.8 1.5H12.5v2h-1V6H2.5v7h8v1h-9z" />
+            <path d="M12 9v6M9 12h6" stroke="currentColor" strokeWidth="1.4" />
+          </svg>
+        </button>
+        <span className="new-menu">
           <button
             type="button"
-            className="icon-btn"
-            title="New folder"
+            className="sess-tb"
+            title="New session"
             onClick={(e) => {
               e.stopPropagation();
-              askNewFolder(activeFolder || "");
+              setNewOpen((v) => !v);
             }}
           >
-            Folder
+            <svg viewBox="0 0 16 16" aria-hidden>
+              <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
           </button>
-          <span className="new-menu">
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setNewOpen((v) => !v);
-              }}
-              title="New session"
+          {newOpen && (
+            <div
+              className="new-pop"
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
             >
-              +
-            </button>
-            {newOpen && (
-              <div
-                className="new-pop"
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  askNewFolder(activeFolder === "__tools__" ? "" : activeFolder);
+                }}
               >
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    askNewFolder(activeFolder || "");
-                  }}
-                >
-                  New folder
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewOpen(false);
-                    startDeviceEditor(undefined, "ssh", activeFolder);
-                  }}
-                >
-                  SSH session
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewOpen(false);
-                    startDeviceEditor(undefined, "serial", activeFolder);
-                  }}
-                >
-                  Serial console
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewOpen(false);
-                    startDeviceEditor(undefined, "api", activeFolder);
-                  }}
-                >
-                  API controller
-                </button>
-                <button
-                  onClick={() => {
-                    setNewOpen(false);
-                    void openLocal();
-                  }}
-                >
-                  Local shell
-                </button>
-                <button
-                  onClick={() => {
-                    setNewOpen(false);
-                    openPcapPane();
-                  }}
-                >
-                  Packet capture
-                </button>
-              </div>
-            )}
-          </span>
+                New folder
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewOpen(false);
+                  startDeviceEditor(undefined, "ssh", activeFolder === "__tools__" ? "" : activeFolder);
+                }}
+              >
+                SSH session
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewOpen(false);
+                  startDeviceEditor(undefined, "serial", activeFolder === "__tools__" ? "" : activeFolder);
+                }}
+              >
+                Serial console
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewOpen(false);
+                  startDeviceEditor(undefined, "api", activeFolder === "__tools__" ? "" : activeFolder);
+                }}
+              >
+                API controller
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewOpen(false);
+                  void openLocal();
+                }}
+              >
+                Local shell
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewOpen(false);
+                  openPcapPane();
+                }}
+              >
+                Packet capture
+              </button>
+            </div>
+          )}
         </span>
+        <button
+          type="button"
+          className="sess-tb"
+          title="Session properties"
+          disabled={!selectedDevice}
+          onClick={() => selectedDevice && startDeviceEditor(selectedDevice)}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <rect x="3" y="3" width="10" height="10" rx="1.2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M6 7h4M6 9.5h3" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="sess-tb"
+          title="Delete"
+          disabled={!selectedDevice && !activeFolder}
+          onClick={() => {
+            if (selectedDevice) void deleteDevice(selectedDevice.id);
+            else if (activeFolder && activeFolder !== "__tools__") confirmDelete(activeFolder);
+          }}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <path d="M4 5h8M6 5V3.5h4V5M5.5 5l.5 8h4l.5-8" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        </button>
+        <span className="sess-tb-gap" />
+        <button type="button" className="sess-tb" title="Expand all folders" onClick={expandAll}>
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <path d="M3 5h10M3 8h10M3 11h10" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        </button>
+        <button type="button" className="sess-tb" title="Collapse all folders" onClick={collapseAll}>
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <path d="M3 8h10" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        </button>
       </div>
       <input
+        ref={filterRef}
         className="search"
-        placeholder="Filter hosts, tags, folders"
+        placeholder="Filter by session name (Alt+I)"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
@@ -594,95 +876,48 @@ export function Sidebar() {
       )}
       <div
         className="tree"
+        role="tree"
         onDragOver={(e) => {
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
         }}
         onDrop={(e) => {
-          if ((e.target as HTMLElement).closest(".folder-row, .device")) return;
+          if ((e.target as HTMLElement).closest(".tree-row")) return;
           onDropFolder(null, e);
         }}
       >
-        <button type="button" className="device" onClick={() => void openLocal()}>
-          <span className="dot" style={{ background: "var(--accent)" }} />
-          <div>
-            <div className="name">Local PTY</div>
-            <div className="meta">host shell · invisible to agent</div>
-          </div>
-        </button>
-        <button type="button" className="device" onClick={() => openPcapPane()}>
-          <span className="dot" style={{ background: "var(--info)" }} />
-          <div>
-            <div className="name">Packet capture</div>
-            <div className="meta">pcap file, live tcpdump, Edgeshark, SSH capture</div>
-          </div>
-        </button>
-        <button type="button" className="device" onClick={() => openPcapPane()}>
-          <span className="dot" style={{ background: "#6cb6ff" }} />
-          <div>
-            <div className="name">Edgeshark</div>
-            <div className="meta">container capture UI · http://127.0.0.1:5001</div>
-          </div>
-        </button>
-        {!q.trim() && inventory.folders.length === 0 && inventory.devices.length === 0 && (
-          <button
-            type="button"
-            className="folder-row"
-            onClick={(e) => {
-              e.stopPropagation();
-              askNewFolder("");
-            }}
-          >
-            <span className="folder-name">Create a site folder…</span>
-          </button>
-        )}
-        {renderFolder(tree, 0)}
+        {rows.map(renderRow)}
       </div>
-      <div className="side-actions">
-        <button className="ghost" onClick={() => setState({ keysOpen: true })}>
-          API keys
-        </button>
-        <button className="ghost" onClick={() => setState({ authOpen: true })}>
-          Auth
-        </button>
-        <button className="ghost" onClick={() => setState({ importOpen: true })}>
-          Import
-        </button>
-        <button className="ghost" onClick={() => setState({ collectionsOpen: true })}>
-          Collections
-        </button>
-        <button className="ghost" onClick={() => setState({ settingsOpen: true })}>
-          Settings
-        </button>
-      </div>
-      {selected && (
-        <div className="row" style={{ padding: "0 8px 8px" }}>
-          <button
-            className="primary"
-            onClick={() => {
-              const d = inventory.devices.find((x) => x.id === selected);
-              if (d) connect(d);
-            }}
-          >
+      {selectedDevice && (
+        <div className="sess-connect">
+          <button className="primary" type="button" onClick={() => connect(selectedDevice)}>
             Connect
           </button>
-          {inventory.devices.find((x) => x.id === selected)?.kind === "ssh" && (
-            <button
-              className="ghost"
-              onClick={() => {
-                const d = inventory.devices.find((x) => x.id === selected);
-                if (d) connect(d, "sftp");
-              }}
-            >
+          {selectedDevice.kind === "ssh" && (
+            <button className="ghost" type="button" onClick={() => connect(selectedDevice, "sftp")}>
               SFTP
             </button>
           )}
-          <button className="danger" onClick={() => void deleteDevice(selected)}>
-            Delete
-          </button>
         </div>
       )}
-      {menu && (
+      <div className="side-actions">
+        <button className="ghost" type="button" onClick={() => setState({ keysOpen: true })}>
+          Keys
+        </button>
+        <button className="ghost" type="button" onClick={() => setState({ authOpen: true })}>
+          Auth
+        </button>
+        <button className="ghost" type="button" onClick={() => setState({ importOpen: true })}>
+          Import
+        </button>
+        <button className="ghost" type="button" onClick={() => setState({ collectionsOpen: true })}>
+          Collections
+        </button>
+        <button className="ghost" type="button" onClick={() => setState({ settingsOpen: true })}>
+          Settings
+        </button>
+      </div>
+      {menu?.kind === "folder" && (
         <div
           className="folder-menu"
           style={{ left: menu.x, top: menu.y }}
@@ -708,17 +943,61 @@ export function Sidebar() {
           >
             New SSH session
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMenu(null);
-              askRename(menu.path);
-            }}
-          >
+          <button type="button" onClick={() => askRename(menu.path)}>
             Rename
           </button>
           <button type="button" onClick={() => confirmDelete(menu.path)}>
             Delete folder
+          </button>
+        </div>
+      )}
+      {menu?.kind === "device" && (
+        <div
+          className="folder-menu"
+          style={{ left: menu.x, top: menu.y }}
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => {
+              const d = inventory.devices.find((x) => x.id === menu.id);
+              setMenu(null);
+              if (d) connect(d);
+            }}
+          >
+            Connect
+          </button>
+          {inventory.devices.find((x) => x.id === menu.id)?.kind === "ssh" && (
+            <button
+              type="button"
+              onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
+                setMenu(null);
+                if (d) connect(d, "sftp");
+              }}
+            >
+              SFTP
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              const d = inventory.devices.find((x) => x.id === menu.id);
+              setMenu(null);
+              if (d) startDeviceEditor(d);
+            }}
+          >
+            Properties
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMenu(null);
+              void deleteDevice(menu.id);
+            }}
+          >
+            Delete session
           </button>
         </div>
       )}

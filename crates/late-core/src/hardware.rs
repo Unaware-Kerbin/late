@@ -15,12 +15,24 @@ const LIBRARY: &[(&str, u32, &str)] = &[
     ("Qwen/Qwen3-14B", 28, "Needs a ~32GB card"),
     ("Qwen/Qwen2.5-7B-Instruct", 14, "Instruct, one 16–24GB card"),
     ("Qwen/Qwen2.5-14B-Instruct", 28, "Needs a ~32GB card"),
-    ("Qwen/Qwen3-32B", 64, "Needs ~64GB (one 80GB or TP=2 × 32GB+)"),
+    (
+        "Qwen/Qwen3-32B",
+        64,
+        "Needs ~64GB (one 80GB or TP=2 × 32GB+)",
+    ),
     ("Qwen/Qwen2.5-32B-Instruct", 64, "Needs ~64GB"),
     ("Qwen/Qwen3.6-35B-A3B", 70, "BF16 MoE, needs ~70GB"),
-    ("Qwen/Qwen3.6-35B-A3B-FP8", 37, "FP8 MoE, needs ~37GB or TP=2"),
+    (
+        "Qwen/Qwen3.6-35B-A3B-FP8",
+        37,
+        "FP8 MoE, needs ~37GB or TP=2",
+    ),
     ("meta-llama/Llama-3.1-8B-Instruct", 16, "Llama 8B instruct"),
-    ("mistralai/Mistral-7B-Instruct-v0.3", 14, "Mistral 7B instruct"),
+    (
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        14,
+        "Mistral 7B instruct",
+    ),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +80,9 @@ pub fn probe() -> GpuProfile {
     // fragile (IPC), so default TP=1 unless the operator opts in.
     let tp_ok = match vendor.as_str() {
         "nvidia" | "amd" => discrete_n >= 2,
-        "intel" => std::env::var("LATE_VLLM_ALLOW_TP").ok().as_deref() == Some("1") && discrete_n >= 2,
+        "intel" => {
+            std::env::var("LATE_VLLM_ALLOW_TP").ok().as_deref() == Some("1") && discrete_n >= 2
+        }
         _ => false,
     };
     summarize(&vendor, cards, tp_ok)
@@ -76,7 +90,10 @@ pub fn probe() -> GpuProfile {
 
 fn probe_nvidia() -> Vec<GpuCard> {
     let out = Command::new("nvidia-smi")
-        .args(["--query-gpu=name,memory.total,pci.bus_id", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=name,memory.total,pci.bus_id",
+            "--format=csv,noheader,nounits",
+        ])
         .output();
     let Ok(out) = out else {
         return vec![];
@@ -208,7 +225,10 @@ fn lspci_prefetch_bytes(bdf: &str) -> Option<u64> {
     if bdf.is_empty() {
         return None;
     }
-    let out = Command::new("lspci").args(["-v", "-s", bdf]).output().ok()?;
+    let out = Command::new("lspci")
+        .args(["-v", "-s", bdf])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -246,7 +266,10 @@ fn lspci_name(bdf: &str) -> Option<String> {
     if bdf.is_empty() {
         return None;
     }
-    let out = Command::new("lspci").args(["-s", bdf, "-nn"]).output().ok()?;
+    let out = Command::new("lspci")
+        .args(["-s", bdf, "-nn"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -304,13 +327,18 @@ pub fn recommend(profile: &GpuProfile) -> Vec<ModelReco> {
         let tp1_fits = profile.vram_gb > 0 && w <= profile.vram_gb;
         let tp2_fits = profile.tp_ok
             && profile.discrete_count >= 2
-            && w <= profile.vram_gb.saturating_mul(u64::from(profile.discrete_count));
+            && w <= profile
+                .vram_gb
+                .saturating_mul(u64::from(profile.discrete_count));
         let (tp, reason) = if tp1_fits {
             let tight = w + 6 > profile.vram_gb;
             (
                 1,
                 if tight {
-                    format!("{blurb}. Tight on {}GB (TP=1, keep context short).", profile.vram_gb)
+                    format!(
+                        "{blurb}. Tight on {}GB (TP=1, keep context short).",
+                        profile.vram_gb
+                    )
                 } else {
                     format!("{blurb}. Fits one {}GB GPU (TP=1).", profile.vram_gb)
                 },
@@ -343,7 +371,11 @@ pub fn default_model(profile: &GpuProfile) -> String {
     recs.iter()
         .filter(|r| r.tp == 1 && u64::from(r.weight_gb) + 6 <= profile.vram_gb)
         .max_by_key(|r| r.weight_gb)
-        .or_else(|| recs.iter().filter(|r| r.recommended).max_by_key(|r| r.weight_gb))
+        .or_else(|| {
+            recs.iter()
+                .filter(|r| r.recommended)
+                .max_by_key(|r| r.weight_gb)
+        })
         .map(|r| r.id.clone())
         .unwrap_or_else(|| "Qwen/Qwen3-8B".into())
 }
@@ -364,7 +396,9 @@ pub fn fits(id: &str, profile: &GpuProfile) -> Result<(), String> {
     if w <= profile.vram_gb {
         return Ok(());
     }
-    if profile.tp_ok && profile.discrete_count >= 2 && w <= profile.vram_gb * u64::from(profile.discrete_count)
+    if profile.tp_ok
+        && profile.discrete_count >= 2
+        && w <= profile.vram_gb * u64::from(profile.discrete_count)
     {
         return Ok(());
     }
@@ -404,7 +438,9 @@ mod tests {
     fn thirty_two_gb_picks_8b_or_14b_not_32b() {
         let rec = recommend(&intel_32x2());
         assert!(rec.iter().any(|r| r.id == "Qwen/Qwen3-8B" && r.recommended));
-        assert!(rec.iter().any(|r| r.id == "Qwen/Qwen3-14B" && r.recommended));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "Qwen/Qwen3-14B" && r.recommended));
         assert!(!rec.iter().any(|r| r.id.contains("32B") && r.recommended));
         let d = default_model(&intel_32x2());
         assert!(d.contains("14B") || d.contains("8B"));
@@ -422,6 +458,8 @@ mod tests {
             cards: vec![],
         };
         let rec = recommend(&p);
-        assert!(rec.iter().any(|r| r.id == "Qwen/Qwen3-32B" && r.recommended && r.tp == 2));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "Qwen/Qwen3-32B" && r.recommended && r.tp == 2));
     }
 }

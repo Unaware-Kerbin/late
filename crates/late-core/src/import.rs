@@ -200,7 +200,11 @@ pub fn import_mobaxterm(raw: &str) -> Result<ImportResult> {
             continue;
         }
         let name = parts[0].rsplit('=').next().unwrap_or("session").to_string();
-        let host = parts.iter().find(|p| p.contains('.')).copied().unwrap_or("");
+        let host = parts
+            .iter()
+            .find(|p| p.contains('.'))
+            .copied()
+            .unwrap_or("");
         if host.is_empty() {
             continue;
         }

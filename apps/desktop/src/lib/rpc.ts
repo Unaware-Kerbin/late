@@ -1,3 +1,5 @@
+import { lateLocalToken } from "./localToken";
+
 export const DAEMON_HTTP = "http://127.0.0.1:7420";
 export const DAEMON_WS = "ws://127.0.0.1:7420/ws";
 
@@ -97,35 +99,42 @@ class DaemonRpc {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve();
     if (this.opening) return this.opening;
     this.opening = new Promise((resolve, reject) => {
-      const ws = new WebSocket(DAEMON_WS);
-      const timer = window.setTimeout(() => {
-        ws.close();
-        reject(new Error("daemon websocket timeout"));
-      }, 4000);
-      ws.onopen = () => {
-        window.clearTimeout(timer);
-        this.ws = ws;
-        this.connected = true;
-        this.lastError = null;
-        this.statusHandlers.forEach((h) => h(true));
-        resolve();
-      };
-      ws.onmessage = (ev) => this.onMessage(String(ev.data));
-      ws.onclose = () => {
-        this.ws = null;
+      void (async () => {
+        const token = await lateLocalToken();
+        const url = token ? `${DAEMON_WS}?token=${encodeURIComponent(token)}` : DAEMON_WS;
+        const ws = new WebSocket(url);
+        const timer = window.setTimeout(() => {
+          ws.close();
+          reject(new Error("daemon websocket timeout"));
+        }, 4000);
+        ws.onopen = () => {
+          window.clearTimeout(timer);
+          this.ws = ws;
+          this.connected = true;
+          this.lastError = null;
+          this.statusHandlers.forEach((h) => h(true));
+          resolve();
+        };
+        ws.onmessage = (ev) => this.onMessage(String(ev.data));
+        ws.onclose = () => {
+          this.ws = null;
+          this.opening = null;
+          this.connected = false;
+          this.lastError = "daemon disconnected";
+          this.statusHandlers.forEach((h) => h(false, this.lastError ?? undefined));
+          for (const [, p] of this.pending) p.reject(new Error("daemon websocket closed"));
+          this.pending.clear();
+        };
+        ws.onerror = () => {
+          window.clearTimeout(timer);
+          this.lastError = `cannot reach ${DAEMON_WS}`;
+          this.statusHandlers.forEach((h) => h(false, this.lastError ?? undefined));
+          reject(new Error(this.lastError ?? "ws error"));
+        };
+      })().catch((err) => {
         this.opening = null;
-        this.connected = false;
-        this.lastError = "daemon disconnected";
-        this.statusHandlers.forEach((h) => h(false, this.lastError ?? undefined));
-        for (const [, p] of this.pending) p.reject(new Error("daemon websocket closed"));
-        this.pending.clear();
-      };
-      ws.onerror = () => {
-        window.clearTimeout(timer);
-        this.lastError = `cannot reach ${DAEMON_WS}`;
-        this.statusHandlers.forEach((h) => h(false, this.lastError ?? undefined));
-        reject(new Error(this.lastError ?? "ws error"));
-      };
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
     });
     return this.opening;
   }

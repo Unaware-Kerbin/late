@@ -6,7 +6,6 @@ use crate::types::{AuthProfile, Device};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::fs;
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 use tokio::sync::{broadcast, mpsc};
@@ -25,6 +24,10 @@ pub struct SshConnectOpts {
 }
 
 pub fn probe_fingerprint(host: &str, port: u16) -> Result<String> {
+    Ok(probe_keyscan(host, port)?.1)
+}
+
+fn probe_keyscan(host: &str, port: u16) -> Result<(String, String)> {
     let out = Command::new("ssh-keyscan")
         .args(["-T", "5", "-p", &port.to_string(), host])
         .output()
@@ -33,8 +36,50 @@ pub fn probe_fingerprint(host: &str, port: u16) -> Result<String> {
     let line = text
         .lines()
         .find(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .ok_or_else(|| LateError::Ssh("ssh-keyscan returned no host key".into()))?;
-    Ok(KnownHosts::fingerprint(line.as_bytes()))
+        .ok_or_else(|| LateError::Ssh("ssh-keyscan returned no host key".into()))?
+        .trim()
+        .to_string();
+    let fp = KnownHosts::fingerprint(line.as_bytes());
+    Ok((line, fp))
+}
+
+fn write_openssh_known_hosts(paths: &LatePaths, host: &str, port: u16, line: &str) -> Result<PathBuf> {
+    let dir = paths.data.join("ssh-known");
+    crate::fsutil::mkdir_private(&dir)?;
+    let safe: String = host
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))
+        .collect();
+    let path = dir.join(format!("{safe}_{port}.known"));
+    crate::fsutil::write_private(&path, format!("{line}\n"))?;
+    Ok(path)
+}
+
+/// OpenSSH will only connect if this host was already pinned in Late's TOML store.
+pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<PathBuf> {
+    let paths = LatePaths::discover();
+    let known = KnownHosts::load(&paths)?;
+    let (line, fp) = probe_keyscan(host, port)?;
+    let hk = host_port_key(host, port);
+    match known.check(&hk, &fp) {
+        HostKeyCheck::Match => {}
+        HostKeyCheck::Unknown => {
+            return Err(LateError::Ssh(format!(
+                "host {hk} is not pinned; open an SSH session first"
+            )));
+        }
+        HostKeyCheck::Mismatch {
+            pinned,
+            presented,
+        } => {
+            return Err(LateError::HostKeyMismatch {
+                host: hk,
+                pinned,
+                presented,
+            });
+        }
+    }
+    write_openssh_known_hosts(&paths, host, port, &line)
 }
 
 pub fn open_ssh(
@@ -53,7 +98,7 @@ pub fn open_ssh(
         .ok_or_else(|| LateError::Ssh("device has no host".into()))?;
     let port = device.port.unwrap_or(22);
     let hk = host_port_key(&host, port);
-    let presented = probe_fingerprint(&host, port)?;
+    let (keyscan_line, presented) = probe_keyscan(&host, port)?;
     match known.check(&hk, &presented) {
         HostKeyCheck::Match => {}
         HostKeyCheck::Unknown => {
@@ -78,6 +123,7 @@ pub fn open_ssh(
             known.save(paths)?;
         }
     }
+    let kh = write_openssh_known_hosts(paths, &host, port, &keyscan_line)?;
 
     let mut password = if profile.has_password {
         secrets.get(&profile.id)?
@@ -97,7 +143,7 @@ pub fn open_ssh(
 
     let mut cmd = CommandBuilder::new("ssh");
     cmd.arg("-tt");
-    apply_trusted_host_opts_pty(&mut cmd);
+    apply_strict_host_opts_pty(&mut cmd, &kh);
     cmd.arg("-p");
     cmd.arg(port.to_string());
     if let Some(key) = &profile.key_path {
@@ -117,7 +163,7 @@ pub fn open_ssh(
     }
 
     if let Some(ref pw) = password {
-        cmd = wrap_pty_password(cmd, pw, &profile, &host, port)?;
+        cmd = wrap_pty_password(cmd, pw, &profile, &host, port, &kh)?;
     }
     if let Some(mut pw) = password.take() {
         pw.zeroize();
@@ -144,26 +190,24 @@ pub fn open_ssh(
     let (close_tx, mut close_rx) = mpsc::channel::<()>(1);
     let out_tx2 = out_tx.clone();
 
-    std::thread::spawn(move || {
-        loop {
-            if close_rx.try_recv().is_ok() {
-                let _ = child.kill();
-                break;
-            }
-            while let Ok(b) = in_rx.try_recv() {
-                let _ = writer.write_all(&b);
-                let _ = writer.flush();
-            }
-            if let Ok((c, r)) = resize_rx.try_recv() {
-                let _ = master.resize(PtySize {
-                    rows: r as u16,
-                    cols: c as u16,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-            }
-            std::thread::sleep(std::time::Duration::from_millis(8));
+    std::thread::spawn(move || loop {
+        if close_rx.try_recv().is_ok() {
+            let _ = child.kill();
+            break;
         }
+        while let Ok(b) = in_rx.try_recv() {
+            let _ = writer.write_all(&b);
+            let _ = writer.flush();
+        }
+        if let Ok((c, r)) = resize_rx.try_recv() {
+            let _ = master.resize(PtySize {
+                rows: r as u16,
+                cols: c as u16,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
     });
 
     std::thread::spawn(move || {
@@ -234,7 +278,7 @@ pub fn exec_bytes_result(
     } else {
         cmd.arg("-o").arg("BatchMode=yes");
     }
-    apply_trusted_host_opts_std(&mut cmd);
+    apply_strict_host_opts_std(&mut cmd, &host, port)?;
     cmd.arg("-o").arg("LogLevel=ERROR");
     cmd.arg("-o")
         .arg("ConnectTimeout=8")
@@ -330,7 +374,7 @@ pub fn spawn_exec(
     } else {
         cmd.arg("-o").arg("BatchMode=yes");
     }
-    apply_trusted_host_opts_std(&mut cmd);
+    apply_strict_host_opts_std(&mut cmd, &host, port)?;
     cmd.arg("-o").arg("LogLevel=ERROR");
     cmd.arg("-o")
         .arg("ConnectTimeout=8")
@@ -389,9 +433,10 @@ impl CliSession {
                 pixel_height: 0,
             })
             .map_err(|e| LateError::Ssh(e.to_string()))?;
+        let kh = pinned_known_hosts_file(&host, port)?;
         let mut cmd = CommandBuilder::new("ssh");
         cmd.arg("-tt");
-        apply_trusted_host_opts_pty(&mut cmd);
+        apply_strict_host_opts_pty(&mut cmd, &kh);
         cmd.arg("-p");
         cmd.arg(port.to_string());
         if let Some(key) = &profile.key_path {
@@ -410,7 +455,7 @@ impl CliSession {
             cmd.arg("NumberOfPasswordPrompts=1");
         }
         if let Some(ref pw) = password {
-            cmd = wrap_pty_password(cmd, pw, profile, &host, port)?;
+            cmd = wrap_pty_password(cmd, pw, profile, &host, port, &kh)?;
         }
         if let Some(mut pw) = password.take() {
             pw.zeroize();
@@ -516,9 +561,8 @@ impl CliSession {
                 Ok(chunk) => {
                     let text = String::from_utf8_lossy(&chunk);
                     self.acc.extend_from_slice(&chunk);
-                    let tail = String::from_utf8_lossy(
-                        &self.acc[self.acc.len().saturating_sub(240)..],
-                    );
+                    let tail =
+                        String::from_utf8_lossy(&self.acc[self.acc.len().saturating_sub(240)..]);
                     // AOS-CX uses `-- MORE --`; NX-OS/IOS use `--More--`.
                     if looks_like_more_prompt(&text) || looks_like_more_prompt(&tail) {
                         let _ = self.writer.write_all(b" ");
@@ -575,17 +619,23 @@ mod prompt_tests {
 
 fn write_askpass(password: &str) -> Result<PathBuf> {
     let id = uuid::Uuid::new_v4();
-    let dir = std::env::temp_dir();
-    let pwfile = dir.join(format!(".late-ask-{id}.pw"));
-    let script = dir.join(format!(".late-ask-{id}"));
-    fs::write(&pwfile, password.as_bytes())?;
-    fs::set_permissions(&pwfile, fs::Permissions::from_mode(0o600))?;
+    let dir = LatePaths::discover().data.join("askpass");
+    crate::fsutil::mkdir_private(&dir)?;
+    let pwfile = dir.join(format!("{id}.pw"));
+    let script = dir.join(format!("{id}.sh"));
+    crate::fsutil::write_private(&pwfile, password.as_bytes())?;
     let body = format!(
         "#!/bin/sh\ncat \"{pw}\"\n: > \"{pw}\"\nrm -f \"{pw}\" \"$0\"\n",
         pw = pwfile.display()
     );
-    fs::write(&script, body)?;
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+    crate::fsutil::write_private(&script, body.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script)?.permissions();
+        perms.set_mode(0o700);
+        fs::set_permissions(&script, perms)?;
+    }
     Ok(script)
 }
 
@@ -595,6 +645,7 @@ fn wrap_pty_password(
     profile: &AuthProfile,
     host: &str,
     port: u16,
+    kh: &std::path::Path,
 ) -> Result<CommandBuilder> {
     if which("sshpass") {
         let mut c = CommandBuilder::new("sshpass");
@@ -602,7 +653,7 @@ fn wrap_pty_password(
         c.env("SSHPASS", pw);
         c.arg("ssh");
         c.arg("-tt");
-        apply_trusted_host_opts_pty(&mut c);
+        apply_strict_host_opts_pty(&mut c, kh);
         c.arg("-o");
         c.arg("PreferredAuthentications=keyboard-interactive,password");
         c.arg("-o");
@@ -649,18 +700,25 @@ pub(crate) fn ssh_command_with_secret(program: &str, password: Option<&str>) -> 
     Ok(cmd)
 }
 
-pub(crate) fn apply_trusted_host_opts_std(cmd: &mut Command) {
-    cmd.arg("-o").arg("StrictHostKeyChecking=no");
-    cmd.arg("-o").arg("UserKnownHostsFile=/dev/null");
+pub(crate) fn apply_strict_host_opts_std(cmd: &mut Command, host: &str, port: u16) -> Result<()> {
+    let kh = pinned_known_hosts_file(host, port)?;
+    apply_strict_std(cmd, &kh);
+    Ok(())
+}
+
+fn apply_strict_std(cmd: &mut Command, kh: &std::path::Path) {
+    cmd.arg("-o").arg("StrictHostKeyChecking=yes");
+    cmd.arg("-o")
+        .arg(format!("UserKnownHostsFile={}", kh.display()));
     cmd.arg("-o").arg("GlobalKnownHostsFile=/dev/null");
     cmd.arg("-o").arg("UpdateHostKeys=no");
 }
 
-fn apply_trusted_host_opts_pty(cmd: &mut CommandBuilder) {
+fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &std::path::Path) {
     cmd.arg("-o");
-    cmd.arg("StrictHostKeyChecking=no");
+    cmd.arg("StrictHostKeyChecking=yes");
     cmd.arg("-o");
-    cmd.arg("UserKnownHostsFile=/dev/null");
+    cmd.arg(format!("UserKnownHostsFile={}", kh.display()));
     cmd.arg("-o");
     cmd.arg("GlobalKnownHostsFile=/dev/null");
     cmd.arg("-o");

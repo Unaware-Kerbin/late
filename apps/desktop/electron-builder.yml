@@ -8,6 +8,7 @@ directories:
 files:
   - dist/**/*
   - electron/main.cjs
+  - electron/preload.cjs
 extraResources:
   - from: resources/bin
     to: bin
