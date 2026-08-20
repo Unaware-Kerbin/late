@@ -2,6 +2,12 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-20 12:08
+
+**Publish installers on the GitHub Releases page.**
+
+- Tagging `v*` now attaches Linux / macOS / Windows packages to a Release (the old workflow only stored Actions artifacts, which is why `/releases` was empty). First tagged build is `v0.1.0`. Installers are still unsigned.
+
 ## 2026-08-20 11:45
 
 **SOC 2 / ISO 27001 ISMS (aim, not a certificate) and local-only chat by default.**

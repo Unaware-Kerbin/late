@@ -47,4 +47,28 @@ jobs:
             apps/desktop/release/*.zip
             apps/desktop/release/*.exe
             apps/desktop/release/*.msi
-          if-no-files-found: warn
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
+          body: |
+            First downloadable Late build. Installers are **unsigned** (no Apple notarization or Windows Authenticode yet).
+
+            - **macOS:** right-click Late → Open the first time.
+            - **Windows:** if SmartScreen appears, More info → Run anyway.
+            - **Linux:** AppImage (make it executable) or `.deb`.
+

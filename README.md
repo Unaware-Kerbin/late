@@ -22,7 +22,7 @@ You want the **download** path if a release exists. Use **from source** only if 
 | **macOS** | `.dmg` (or `.zip`) | Open the disk image and drag Late into Applications. The first time, **right-click** Late → **Open** (it is unsigned). |
 | **Linux** | `.AppImage` or `.deb` | **AppImage:** make it executable (right-click → Properties → “Allow executing file as program”, or `chmod +x` the file), then double-click it. **Debian/Ubuntu:** double-click the `.deb`. In a terminal, from the folder you downloaded to: `sudo apt install ./the-file-you-downloaded.deb` |
 
-If that page has no files yet, skip to [Run from source](#run-from-source-linux-and-macos).
+If that page has no files yet, GitHub is still building them (about 10–20 minutes after a `v*` tag) or you can [run from source](#run-from-source-linux-and-macos).
 
 The download includes the window, the local daemon, and the agent helper. It still uses the `ssh` program already on your computer.
 
@@ -246,6 +246,12 @@ Default API: `http://127.0.0.1:8080/v1`. Gated Hub repos need `HF_TOKEN` in the 
 ## Changelog
 
 Dates and times are from git commits (America/New_York). Newest first. Same notes as [CHANGELOG.md](CHANGELOG.md).
+
+### 2026-08-20 12:08
+
+**Publish installers on the GitHub Releases page.**
+
+- Tagging `v*` now attaches Linux / macOS / Windows packages to a Release (the old workflow only stored Actions artifacts, which is why `/releases` was empty). First tagged build is `v0.1.0`. Installers are still unsigned.
 
 ### 2026-08-20 11:45
 
