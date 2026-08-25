@@ -10,7 +10,7 @@ Dates and times are from git commits (America/New_York). Newest first.
 - File transfer is OpenSSH **scp** (folders use `scp -r`). The sidebar button is **SCP / SFTP**. RPC aliases `scp.upload` / `scp.download`. Local paths stay under home or Late data. The helper still cannot copy files.
 - Terminal **keyword highlights** (Settings): `down` / `up` / warn color schemes are adjustable (not a single baked-in red/green). Display only — logs and the agent still see the raw text.
 - Terminal **font and size** are adjustable in Settings (system stacks plus a custom family already on this computer; 10–48px). Ctrl+wheel still zooms size.
-- README **Demo** embeds `docs/assets/late-demo.mp4`. Staging, Cloud AI, PATH Push, SCP, keyword colors, and terminal fonts are documented for operators.
+- README leads with how Late works and how to install, in plain language. The walkthrough sits after that and plays from the `readme-demo` release (`late-demo.mp4`), not the source-file page. Staging, Cloud AI, PATH Push, SCP, keyword colors, and terminal fonts stay in the first-run list.
 - Sessions **+** and right-click **Add folder** / **Add device** stay inside the Late window.
 
 ## 2026-08-24

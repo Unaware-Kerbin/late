@@ -1,41 +1,49 @@
-# Late — Local AI Terminal Emulator
+# Late
 
-Late is a desktop app for SSH, serial consoles, file transfer (SCP), REST APIs, packet capture, and **Staging** drafts (CLI, Ansible, Netmiko, Salt, Chef). Terminals can color keywords (down/up) and use a font and size you pick. An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
+Late is a window on **your computer**. You use it to talk to other computers.
 
-By default the helper uses a model **on your computer**. Cloud backends (Cursor and similar) stay off until they are enabled in Settings. Hugging Face model downloads stay available.
+You can open a terminal (SSH), a serial port, a shell on this computer, copy files, look at packets, and save command drafts. A helper can *suggest* a command. Late will not send it until you click **Approve**. Passwords and keys stay on your computer.
 
-Late is **not** SOC 2 or ISO 27001 certified. The project’s security documents are in [docs/isms/](docs/isms/README.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
+## How it works
 
-## Demo
+1. You add a computer on the left (a name, an address, a login).
+2. You click it. Late opens a terminal to that computer.
+3. You type, like any other terminal.
+4. If you ask the helper, it may propose a command. You read it. You click **Approve** or **Deny**. It does not send on Enter, and it does not send by itself.
+5. Cloud helpers stay **off** until you turn on **Cloud AI** in Settings. The usual helper is a model on your computer.
 
-[![Late walkthrough](docs/assets/late-demo.webp)](https://github.com/Unaware-Kerbin/late/blob/main/docs/assets/late-demo.mp4)
+That is the whole idea.
 
-[Full walkthrough (MP4)](https://github.com/Unaware-Kerbin/late/blob/main/docs/assets/late-demo.mp4)
+## Watch it
 
-## Download
+Click the picture. The video plays from Late’s demo release (not the source-file page).
 
-Prebuilt apps are on **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (currently [v0.1.3](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.3)), not on the green check next to a commit. That check is the **ci** workflow (Rust tests). Installers are built by **Build installers** and attached to the Release.
+[![Watch how Late works](docs/assets/late-demo.jpg)](https://github.com/Unaware-Kerbin/late/releases/download/readme-demo/late-demo.mp4)
 
-| Your computer | File on the Release | What to do |
+## Install
+
+The easy way: download a ready-made app from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.3](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.3)). Pick the file that matches your computer:
+
+| Your computer | File | What you do |
 |---|---|---|
-| Windows | `Late-0.1.0-win-x64.exe` | Double-click. If SmartScreen appears: **More info** → **Run anyway**. |
-| macOS (Apple Silicon) | `Late-0.1.0-mac-arm64.dmg` (or `.zip`) | Open the disk image and drag Late to Applications. First open: **right-click** Late → **Open**. |
-| Linux | `Late-0.1.0-linux-x86_64.AppImage` or `Late-0.1.0-linux-amd64.deb` | AppImage: mark as executable, then double-click. Debian/Ubuntu: install the `.deb` from the download folder. |
+| Windows | `Late-…-win-x64.exe` | Double-click. If Windows warns you, choose **More info** → **Run anyway**. |
+| Mac (Apple chip) | `Late-…-mac-arm64.dmg` | Open it. Drag Late into Applications. First time: **right-click** Late → **Open**. |
+| Linux | `Late-…AppImage` or `Late-….deb` | AppImage: make it executable, then double-click. Ubuntu/Debian: install the `.deb`. |
 
-The `0.1.0` in the filename is the app version; the GitHub tag may be newer (`v0.1.3`). Installers are unsigned. Each package includes the UI, daemon, and agent helper. SSH still uses the `ssh` program already on your computer. Ansible, Netmiko, Salt, Chef, and `sshpass` are **not** bundled — install those yourself if you want Staging **Run playbook**.
+The number in the file name is the app version. It can be older than the GitHub tag. These files are unsigned. SSH still uses the `ssh` program already on your computer.
 
-If Releases has no files yet, [install from source](#install-from-source).
+If Releases has no app files yet, [build it yourself](#install-from-source).
 
 ## Install from source
 
-Build Late on your computer (Windows, macOS, or Linux). Install these once, then **close and reopen** the terminal:
+Do this if you want to run Late from this folder. Install these **once**, then close the terminal and open a new one:
 
-1. [Git](https://git-scm.com/downloads) — on Windows, use **Git Bash** for the commands below.
-2. [Node.js 22 LTS](https://nodejs.org/).
-3. [Rust](https://rustup.rs/) — accept the defaults. On Windows, choose the MSVC toolchain if asked.
-4. Extra packages:
+1. [Git](https://git-scm.com/downloads) — on Windows, use **Git Bash**.
+2. [Node.js 22](https://nodejs.org/).
+3. [Rust](https://rustup.rs/) — tap through the defaults.
+4. Extra bits:
    - **Ubuntu / Debian:** `sudo apt install pkg-config libudev-dev build-essential openssh-client libudev1 tcpdump`
-   - **macOS:** `xcode-select --install`
+   - **Mac:** `xcode-select --install`
    - **Windows:** optional [Npcap](https://npcap.com/) or Wireshark if you want packet capture.
 
 Then:
@@ -47,78 +55,33 @@ npm install
 ./late
 ```
 
-`./late` starts Electron with `--no-sandbox` (needed on Linux for GPU/Wayland). Packaged AppImage/deb installers from Releases do not pass that flag. Keep the source launcher as-is unless you have a working Chromium sandbox helper.
+The first start builds the backend. Wait. A Late window should open. If it does not, the terminal may print a local web address — open that.
 
-Without Git: on the repository page choose **Code** → **Download ZIP**, unzip it, open a terminal in that folder, then run `npm install` and `./late`.
+No Git? On GitHub click **Code** → **Download ZIP**, unzip it, open a terminal in that folder, then `npm install` and `./late`.
 
-The first start compiles the backend and can take several minutes. A Late window should open. If it does not, the launcher may print a local URL — open that in a browser.
+On Linux, `./late --install` puts Late in the app menu. After that you can search for **Late**, or type `late`. If `late` is not found, log out and back in.
 
-**Linux application menu:**
-
-```bash
-./late --install
-```
-
-Then search for **Late**, or run `late` in a terminal. If the command is not found, log out and back in, or add `~/.local/bin` to your PATH.
-
-### Common problems
-
-| What you see | What to do |
+| Problem | Fix |
 |---|---|
-| `git: command not found` | Install Git and open a new terminal (Windows: Git Bash). |
-| `npm: command not found` | Install Node.js 22 and open a new terminal. |
-| `cargo: command not found` | Finish the rustup install and open a new terminal. |
-| Compiles, but no window | On Linux/macOS check `/tmp/late-electron.log`, or open the URL printed in the terminal. |
-| Serial ports or capture unavailable | Install the extras in step 4. |
+| `git: command not found` | Install Git. Open a new terminal. |
+| `npm: command not found` | Install Node.js 22. Open a new terminal. |
+| `cargo: command not found` | Finish the Rust install. Open a new terminal. |
+| It builds, but no window | On Linux/macOS look at `/tmp/late-electron.log`, or open the address printed in the terminal. |
 
-## First launch
+## After it opens
 
-1. In the left sidebar, click **+** or right-click **Sessions** (or empty tree) to **Add folder** / **Add device**. Connect. Confirm the host key the first time you are asked.
-2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
-3. To use Cursor or other cloud chat, open Settings and turn on the **Cloud AI** switch. Save. Session text may then leave your computer.
-4. **Staging** (titlebar or Tools) holds CLI / Ansible / Netmiko / Salt / Chef drafts the helper writes on your computer. Ask for a playbook by name. **Push** is click-only (Enter does not confirm). See [Staging](#staging).
-5. On an SSH device, **SCP / SFTP** copies files and folders with OpenSSH `scp`. See [File transfer](#file-transfer-scp).
-6. Settings → **Keyword highlights** colors `down` / `up` (and the rest of those schemes). **Terminal font** and **size** are on the same Settings page. See [Keyword highlights](#keyword-highlights) and [Terminal look](#terminal-look).
+1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter).
+2. Helper is optional. Easiest local AI: install [Ollama](https://ollama.com), pick **Ollama** in Late, **Pull** a model (try `gemma3:4b`).
+3. Want Cursor or other cloud chat? Settings → **Cloud AI** → Save. Then session text may leave your computer.
+4. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
+5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
+6. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
 
 ## Help
 
-- Questions and bugs: [GitHub Issues](https://github.com/Unaware-Kerbin/late/issues) — include your OS, Late version or commit, and what you expected vs what happened. Do not paste passwords, API keys, or `sidecar.token`.
-- Security reports: [SECURITY.md](SECURITY.md) (private advisory preferred).
-- Agent commands: Late waits for **Approve**. Network OS sessions also check a vendor permit list first; Linux CLI has no permit list (Approve every command). API GETs (`propose_api_get`) are operator click only (no vendor permit list). Host-key and approval dialogs are not dismissed by clicking outside. **Trust** and **Approve** need an explicit button click (not Enter). Escape does not Trust.
-- Staging: see [Staging](#staging).
-- File copies: see [File transfer](#file-transfer-scp). The helper cannot SCP.
-- Keyword colors: Settings → **Keyword highlights**. Change the Down / Up / Warn scheme colors; they apply to SSH, serial, and local terminals. Display only.
-- Terminal font and size: Settings → **Terminal font**. See [Terminal look](#terminal-look).
-
-## Staging
-
-The helper can draft CLI, Ansible, Netmiko, Salt, or Chef into the Staging pane (`propose_staged_artifact`). That tool only **saves a draft** on your computer. It does not log in, does not Push, and does not run playbooks.
-
-**Push** is operator-only (click; Enter does not confirm):
-
-| Format | Button | What happens |
-|---|---|---|
-| CLI | Push CLI… | Types the draft into an SSH or serial session you already opened. |
-| Ansible | Run playbook… | Runs `ansible-playbook` on your computer against the **SSH inventory device** you pick (not the Push-session dropdown). |
-| Netmiko | Run script… | Runs `python3` on the saved script. |
-| Salt | Run state… | Runs `salt-call` / `salt-ssh`. |
-| Chef | Run recipe… | Runs `chef-apply` / `chef-client`. |
-
-Late does **not** install those PATH tools. If one is missing, you get an install error. Pick an SSH inventory host (hostname/IP + user + key, agent, or a password already saved in Late). An open serial **Push session** is only for Push CLI.
-
-Draft files reject password-like lines and never contain `ansible_ssh_pass`. Password-only Push injects the vault secret at run time (`sshpass -e` on the daemon child) — prefer a key or agent when you can. Generic Vendor/OS does not assume Cisco IOS.
-
-## File transfer (SCP)
-
-On an SSH device, **SCP / SFTP** opens a dual-pane browser. Listing uses `ssh … ls`; copies use OpenSSH `scp` on your computer (folders use `scp -r`). Local paths stay under your home directory or Late data. Passwords use the same ASKPASS helper as SSH — not the process command line, and not the agent. The helper cannot upload or download files.
-
-## Keyword highlights
-
-Settings → **Keyword highlights** colors words in SSH, serial, and local output (SecureCRT-style). **Down / bad**, **Up / good**, and **Warn** each have a color you pick — every keyword in that scheme follows. Individual keywords can use a custom color. Optional fill paints a background. This is display-only: session logs and the agent still see the raw text. Stored on this computer, not in the daemon.
-
-## Terminal look
-
-Settings → **Terminal font** picks a monospace family already on your computer (system default, Cascadia, Consolas, Menlo/SF Mono, DejaVu, Ubuntu Mono, Courier, or a **Custom** name such as Fira Code). Late does not download fonts. **Size** is 10–48px (slider or the box); Ctrl+mouse wheel also zooms. UI typeface (system / accessible / all mono) is separate, under **UI typeface**.
+- Stuck or a bug: [GitHub Issues](https://github.com/Unaware-Kerbin/late/issues). Say your OS and what you expected. Do not paste passwords, keys, or `sidecar.token`.
+- Security: [SECURITY.md](SECURITY.md).
+- Late is **not** SOC 2 or ISO 27001 certified. Project notes: [docs/isms/](docs/isms/README.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## For developers
 
@@ -241,6 +204,7 @@ npm install
 ```
 
 Artifacts land in `apps/desktop/release/`.
+
 ### Local inference (any GPU)
 
 Late does not bundle CUDA, ROCm, oneAPI, Ollama, llama.cpp, or model weights. The agent talks to a local vLLM (or llama.cpp / Ollama) on loopback. NVIDIA, AMD, and Intel are all fine if the server you run uses that GPU.
@@ -274,5 +238,3 @@ llama-server -m ~/.local/share/late/models/gguf/Qwen--Qwen3-8B-GGUF/*.gguf --por
 ```
 
 Default API: `http://127.0.0.1:8080/v1`. Gated Hub repos need `HF_TOKEN` in the environment. vLLM Docker Start/Download stay hidden when llama.cpp is selected.
-
-
