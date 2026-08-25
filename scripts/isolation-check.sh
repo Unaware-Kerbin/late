@@ -13,4 +13,11 @@ if hits=$(grep -RInE 'keyring|russh|secret' "$SIDECAR" \
   echo "$hits"
   exit 1
 fi
+if hits=$(grep -RInE 'stage\.push|stage\.plan' "$SIDECAR" \
+    --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' \
+    --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git 2>/dev/null); then
+  echo "FAIL: agent-sidecar must not call stage.push or stage.plan"
+  echo "$hits"
+  exit 1
+fi
 echo "isolation-check: OK"

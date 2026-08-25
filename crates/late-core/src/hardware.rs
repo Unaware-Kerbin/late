@@ -28,21 +28,61 @@ const LIBRARY: &[(&str, u32, &str)] = &[
         37,
         "FP8 MoE, needs ~37GB or TP=2",
     ),
-    ("google/gemma-3-1b-it", 3, "Gemma 3 tiny instruct (gated Hub)"),
-    ("google/gemma-3-4b-it", 8, "Gemma 3 small instruct (gated Hub)"),
-    ("google/gemma-3-12b-it", 24, "Gemma 3 12B instruct (gated Hub)"),
-    ("google/gemma-3-27b-it", 54, "Gemma 3 27B, needs ~54GB (gated Hub)"),
-    ("google/gemma-2-2b-it", 5, "Gemma 2 tiny instruct (gated Hub)"),
-    ("google/gemma-2-9b-it", 18, "Gemma 2 9B instruct (gated Hub)"),
-    ("meta-llama/Llama-3.2-1B-Instruct", 3, "Llama 3.2 tiny (gated Hub)"),
-    ("meta-llama/Llama-3.2-3B-Instruct", 7, "Llama 3.2 3B instruct (gated Hub)"),
-    ("meta-llama/Llama-3.1-8B-Instruct", 16, "Llama 8B instruct (gated Hub)"),
+    (
+        "google/gemma-3-1b-it",
+        3,
+        "Gemma 3 tiny instruct (gated Hub)",
+    ),
+    (
+        "google/gemma-3-4b-it",
+        8,
+        "Gemma 3 small instruct (gated Hub)",
+    ),
+    (
+        "google/gemma-3-12b-it",
+        24,
+        "Gemma 3 12B instruct (gated Hub)",
+    ),
+    (
+        "google/gemma-3-27b-it",
+        54,
+        "Gemma 3 27B, needs ~54GB (gated Hub)",
+    ),
+    (
+        "google/gemma-2-2b-it",
+        5,
+        "Gemma 2 tiny instruct (gated Hub)",
+    ),
+    (
+        "google/gemma-2-9b-it",
+        18,
+        "Gemma 2 9B instruct (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.2-1B-Instruct",
+        3,
+        "Llama 3.2 tiny (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.2-3B-Instruct",
+        7,
+        "Llama 3.2 3B instruct (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.1-8B-Instruct",
+        16,
+        "Llama 8B instruct (gated Hub)",
+    ),
     (
         "mistralai/Mistral-7B-Instruct-v0.3",
         14,
         "Mistral 7B instruct",
     ),
-    ("mistralai/Ministral-8B-Instruct-2410", 16, "Ministral 8B instruct"),
+    (
+        "mistralai/Ministral-8B-Instruct-2410",
+        16,
+        "Ministral 8B instruct",
+    ),
     ("microsoft/Phi-4-mini-instruct", 8, "Phi-4 mini instruct"),
     ("microsoft/phi-4", 28, "Phi-4, needs ~32GB"),
     (
@@ -501,7 +541,11 @@ mod tests {
 
     #[test]
     fn catalog_includes_sfw_families_not_uncensored() {
-        let ids: String = LIBRARY.iter().map(|(id, _, _)| *id).collect::<Vec<_>>().join(" ");
+        let ids: String = LIBRARY
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(ids.contains("google/gemma-3-4b-it"));
         assert!(ids.contains("meta-llama/Llama-3.2-3B-Instruct"));
         assert!(ids.contains("microsoft/Phi-4-mini-instruct"));

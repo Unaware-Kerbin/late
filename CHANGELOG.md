@@ -2,6 +2,23 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-25
+
+**README demo video, Staging PATH Push, and Sessions add UI.**
+
+- README **Demo** embeds `docs/assets/late-demo.mp4`. Staging, Cloud AI, and PATH Push (tools on your computer, not bundled) are documented for operators.
+- Sessions **+** and right-click **Add folder** / **Add device** stay inside the Late window.
+
+## 2026-08-24
+
+**Staging pane for CLI / Ansible / Netmiko / Salt / Chef drafts (operator Push only).**
+
+- New Staging workspace pane (Tools → Staging). The helper can call `propose_staged_artifact` to write a draft on your computer. That tool does not log in, does not Push, and does not run playbooks.
+- Daemon `stage.render|save|get|list|plan|push` stores files under Late data `staging/` (mode 0600). Drafts with password-like fields are rejected. Generic inventory does not assume Cisco IOS.
+- **Push** is operator-only from Staging (click to confirm; Enter does not confirm). CLI types the draft into an SSH/serial session you already opened. Ansible / Netmiko / Salt / Chef run on your computer via PATH tools Late does not bundle (`ansible-playbook`, `python3`+netmiko, `salt-call`/`salt-ssh`, `chef-apply`). Generated inventory never contains passwords or `ansible_ssh_pass`. Key/agent stay in inventory extra args. Password-only auth from the daemon vault is injected at run time (`sshpass -e` + `SSHPASS` on the late-daemon child). Missing binaries toast a clear install error. The helper still cannot Push.
+- PATH Push (Ansible / Netmiko / Salt / Chef) uses the **SSH inventory device** you pick (hostname/IP on your computer). Auth is that device’s profile, or the login an open SSH session to the same host already used. An open serial session in **Push session** is ignored — that dropdown is only for Push CLI into an open terminal.
+- Same inventory and auth profiles as SSH. Generated drafts list platform/user intent only — no passwords in the files.
+
 ## 2026-08-20 15:52
 
 **Keep SSH passwords working after device banners, fix Approve, and tighten the control plane.**

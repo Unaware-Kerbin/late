@@ -42,15 +42,15 @@ export async function runCursorChat(opts: {
   }
 
   const scratch = await mkdtemp(join(tmpdir(), "late-scratch-"));
+  const sessionBlock = await liveSessionContext();
+  const lastUser = [...opts.messages].reverse().find((m) => m.role === "user");
+  const lastUserText = (lastUser?.content ?? "").trim();
   const ctx: ToolCtx = {
     conversationId: opts.conversationId,
     emit: opts.emit,
     signal: opts.signal,
+    operatorText: lastUserText,
   };
-
-  const sessionBlock = await liveSessionContext();
-  const lastUser = [...opts.messages].reverse().find((m) => m.role === "user");
-  const lastUserText = (lastUser?.content ?? "").trim();
   const operatorTurn = lastUserText || "Continue from the untrusted device output.";
 
   // Agent.create has no documented instructions/system field. Untrusted

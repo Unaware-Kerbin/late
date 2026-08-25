@@ -220,10 +220,12 @@ async function runCompatChat(opts: {
 
     messages.push({ role: "assistant", content: content || null, tool_calls: toolCalls });
 
+    const lastUser = [...opts.messages].reverse().find((m) => m.role === "user");
     const ctx: ToolCtx = {
       conversationId: opts.conversationId,
       emit: opts.emit,
       signal: opts.signal,
+      operatorText: (lastUser?.content ?? "").trim(),
     };
     for (const call of toolCalls) {
       const result = clipToolResult(

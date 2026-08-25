@@ -742,7 +742,7 @@ export async function reconnectPane(paneId: string) {
                 /* session.open flags still pin if this method is missing */
               }
             }
-            await openSession(device, pane.kind === "empty" ? "ssh" : pane.kind, {
+            await openSession(device, pane.session!.kind, {
               acceptUnknownHost: true,
               replaceHostKey: hk.mismatch,
             });
@@ -854,7 +854,7 @@ export async function runCollection(id: string) {
   }
   const pane = focusedPane();
   const sessionId = pane?.session?.id;
-  if (!sessionId || pane?.kind === "pcap" || pane?.kind === "sftp" || pane?.kind === "api") {
+  if (!sessionId || pane?.kind === "pcap" || pane?.kind === "sftp" || pane?.kind === "api" || pane?.kind === "stage") {
     toast("error", "focus an SSH, serial, or local terminal first");
     return;
   }
@@ -1199,6 +1199,62 @@ export function openPcapPane() {
   const tab: TabState = {
     id: newId(),
     title: "Packet capture",
+    tree: { type: "leaf", paneId: pane.id },
+  };
+  setState((s) => ({
+    tabs: [...s.tabs, tab],
+    panes: { ...s.panes, [pane.id]: pane },
+    activeTabId: tab.id,
+    focusedPaneId: pane.id,
+  }));
+}
+
+export function openStagePane(stageId?: string, format?: string) {
+  const existing = Object.values(state.panes).find((p) => p.kind === "stage");
+  if (existing) {
+    const tab = state.tabs.find((t) => treeHasPane(t.tree, existing.id));
+    setState((s) => ({
+      panes: {
+        ...s.panes,
+        [existing.id]: {
+          ...s.panes[existing.id],
+          ...(stageId ? { stageId } : {}),
+          ...(format ? { stageFormat: format } : {}),
+        },
+      },
+      focusedPaneId: existing.id,
+      activeTabId: tab?.id ?? s.activeTabId,
+    }));
+    return;
+  }
+  const focus = state.focusedPaneId;
+  const cur = focus ? state.panes[focus] : undefined;
+  if (cur && cur.kind === "empty" && !cur.session) {
+    setState((s) => ({
+      panes: {
+        ...s.panes,
+        [cur.id]: {
+          ...s.panes[cur.id],
+          kind: "stage",
+          ...(stageId ? { stageId } : {}),
+          ...(format ? { stageFormat: format } : {}),
+        },
+      },
+      tabs: s.tabs.map((t) =>
+        t.id === s.activeTabId ? { ...t, title: "Staging" } : t,
+      ),
+    }));
+    return;
+  }
+  const pane = {
+    ...freshPane(),
+    kind: "stage" as const,
+    ...(stageId ? { stageId } : {}),
+    ...(format ? { stageFormat: format } : {}),
+  };
+  const tab: TabState = {
+    id: newId(),
+    title: "Staging",
     tree: { type: "leaf", paneId: pane.id },
   };
   setState((s) => ({

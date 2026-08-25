@@ -441,6 +441,9 @@ button.tree-row { color: inherit; }
   position: fixed;
   z-index: 90;
   min-width: 160px;
+  max-width: min(240px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -462,13 +465,20 @@ button.tree-row { color: inherit; }
 }
 .folder-menu button:hover { background: var(--panel-2); }
 .folder-dlg {
-  margin: 0 10px 8px;
+  margin: 0;
   padding: 10px;
   background: var(--panel);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
-  position: relative;
-  z-index: 6;
+  position: fixed;
+  z-index: 95;
+  left: 50%;
+  top: clamp(12px, 16vh, calc(100vh - 12rem));
+  transform: translateX(-50%);
+  width: min(20rem, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 .folder-dlg p { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: none; letter-spacing: 0; }
 .folder-dlg label {
@@ -656,7 +666,7 @@ textarea { min-height: 88px; font-family: var(--mono); }
 
 .modal-root {
   position: fixed; inset: 0; background: rgba(4, 8, 12, 0.72);
-  display: grid; place-items: center; z-index: 100;
+  display: flex; justify-content: center; z-index: 100;
   overflow-y: auto;
   padding: 16px;
   overscroll-behavior: contain;
@@ -664,9 +674,10 @@ textarea { min-height: 88px; font-family: var(--mono); }
 .modal-root.hostkey { z-index: 80; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 .modal {
-  width: min(560px, 92vw);
+  width: min(560px, calc(100vw - 32px));
   max-width: 100%;
   min-width: 0;
+  margin: auto;
   background: var(--panel); border: 1px solid var(--line-strong);
   border-radius: 12px; padding: 18px; box-shadow: 0 24px 80px rgba(0,0,0,.45);
   max-height: calc(100vh - 32px);
@@ -674,7 +685,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.modal.wide { width: min(640px, 94vw); }
+.modal.wide { width: min(640px, calc(100vw - 32px)); }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; text-transform: none; letter-spacing: 0; }
 .kind-grid {
   display: grid;
@@ -717,11 +728,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   z-index: 90;
   min-width: 132px;
   max-width: min(240px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 .new-pop button {
   display: block;
@@ -823,9 +836,11 @@ pre.fp {
   -webkit-appearance: none;
   width: 42px;
   height: 24px;
+  min-width: 42px;
+  min-height: 24px;
   margin: 0;
   padding: 0;
-  flex: 0 0 auto;
+  flex: 0 0 42px;
   align-self: center;
   position: relative;
   border-radius: 99px;
@@ -1506,6 +1521,65 @@ html[data-font="mono"] {
   margin-bottom: 6px;
 }
 .choice-swatch i { flex: 1; }
+.appearance-block h3 {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stage-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  padding: 10px 12px;
+}
+.stage-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+}
+.stage-toolbar label,
+.stage-intent {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.stage-toolbar select,
+.stage-intent input,
+.stage-body {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.stage-body {
+  flex: 1;
+  min-height: 12rem;
+  resize: none;
+  padding: 8px;
+}
+.stage-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.stage-preview {
+  max-height: 16rem;
+  overflow: auto;
+  background: var(--bg);
+  padding: 8px;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+.hint.warn { color: var(--amber); }
 .appearance-block h3 {
   margin: 14px 0 4px;
   font-size: 11px;

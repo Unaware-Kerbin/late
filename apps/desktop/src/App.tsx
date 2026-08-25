@@ -13,6 +13,7 @@ import {
   resetAppearance,
   setState,
   splitFocused,
+  openStagePane,
   useApp,
 } from "./store";
 
@@ -172,6 +173,9 @@ export function App() {
         </button>
         <button className="icon-btn" onClick={() => setState({ keysOpen: true })} title="API keys">
           Keys
+        </button>
+        <button className="icon-btn" onClick={() => openStagePane()} title="CLI / Ansible / Netmiko drafts">
+          Staging
         </button>
         <button className="icon-btn" onClick={() => setState({ settingsOpen: true })} title="Settings, themes, layout">
           Settings

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   deleteDevice,
   deleteFolder,
   moveDeviceToFolder,
   openLocal,
   openPcapPane,
+  openStagePane,
   openSession,
   renameFolder,
   setState,
@@ -31,7 +33,7 @@ type VisRow =
   | { key: string; type: "folder"; path: string; name: string; depth: number; count: number }
   | { key: string; type: "device"; device: Device; depth: number }
   | { key: string; type: "tools"; depth: number }
-  | { key: string; type: "tool"; id: "pty" | "pcap" | "edgeshark"; depth: number };
+  | { key: string; type: "tool"; id: "pty" | "pcap" | "edgeshark" | "stage"; depth: number };
 
 const ROOT_COLLAPSE = "__sessions__";
 const TOOLS_COLLAPSE = "__tools__";
@@ -120,31 +122,50 @@ function collectFolderPaths(n: FolderNode, into: string[] = []): string[] {
   return into;
 }
 
-function clampMenuPos(x: number, y: number, h = 176) {
-  const menuW = 188;
+const MENU_PAD = 8;
+
+function clampToViewport(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): { x: number; y: number; w: number; maxH: number } {
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const width = Math.min(Math.max(96, w), Math.max(96, vw - MENU_PAD * 2));
+  const height = Math.min(Math.max(72, h), Math.max(72, vh - MENU_PAD * 2));
   return {
-    x: Math.max(8, Math.min(x, window.innerWidth - menuW - 8)),
-    y: Math.max(8, Math.min(y, window.innerHeight - h - 8)),
+    x: Math.max(MENU_PAD, Math.min(x, vw - width - MENU_PAD)),
+    y: Math.max(MENU_PAD, Math.min(y, vh - height - MENU_PAD)),
+    w: width,
+    maxH: height,
   };
 }
 
-function placeInsidePane(
-  pane: DOMRect,
+function placeFromAnchor(
   anchor: DOMRect,
   menuW: number,
   menuH: number,
 ): { x: number; y: number; w: number; maxH: number } {
-  const pad = 6;
-  const w = Math.min(menuW, Math.max(132, pane.width - pad * 2));
-  let x = anchor.left;
-  x = Math.min(x, pane.right - w - pad);
-  x = Math.max(pane.left + pad, x);
-  const below = pane.bottom - (anchor.bottom + 4) - pad;
-  const above = anchor.top - 4 - pane.top - pad;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const w = Math.min(menuW, Math.max(132, vw - MENU_PAD * 2));
+  const gap = 4;
+  const below = vh - MENU_PAD - (anchor.bottom + gap);
+  const above = anchor.top - gap - MENU_PAD;
   const openDown = below >= Math.min(menuH, 120) || below >= above;
-  const y = openDown ? anchor.bottom + 4 : Math.max(pane.top + pad, anchor.top - Math.min(menuH, above) - 4);
-  const maxH = Math.min(menuH, Math.max(96, openDown ? below : above));
-  return { x, y, w, maxH };
+
+  let x = anchor.left;
+  if (x + w + MENU_PAD > vw) x = anchor.right - w;
+  if (x < MENU_PAD) x = MENU_PAD;
+  if (x + w + MENU_PAD > vw) x = Math.max(MENU_PAD, vw - w - MENU_PAD);
+
+  if (openDown) {
+    const y = anchor.bottom + gap;
+    return { x, y, w, maxH: Math.min(menuH, Math.max(96, vh - y - MENU_PAD)) };
+  }
+  const maxH = Math.min(menuH, Math.max(96, above));
+  return { x, y: Math.max(MENU_PAD, anchor.top - maxH - gap), w, maxH };
 }
 
 function deviceHost(d: Device): string {
@@ -214,8 +235,9 @@ export function Sidebar() {
   const selected = useApp((s) => s.selectedDeviceId);
   const [q, setQ] = useState("");
   const [newPop, setNewPop] = useState<{ x: number; y: number; w: number; maxH: number } | null>(null);
-  const sidebarRef = useRef<HTMLElement>(null);
   const newBtnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
@@ -280,20 +302,36 @@ export function Sidebar() {
     return () => window.removeEventListener("keydown", onKey);
   }, [folderDlg, menu, newPop]);
 
+  useLayoutEffect(() => {
+    const el = newPop ? popRef.current : menu ? menuRef.current : null;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const next = clampToViewport(r.left, r.top, r.width, r.height);
+    if (Math.abs(next.x - r.left) < 1 && Math.abs(next.y - r.top) < 1) return;
+    if (newPop) setNewPop({ ...newPop, x: next.x, y: next.y, maxH: next.maxH });
+    else if (menu) setMenu({ ...menu, x: next.x, y: next.y });
+  }, [menu, newPop]);
+
   useEffect(() => {
-    if (!newPop) return;
+    if (!newPop && !menu) return;
     const onWin = () => {
-      const pane = sidebarRef.current?.getBoundingClientRect();
-      const btn = newBtnRef.current?.getBoundingClientRect();
-      if (!pane || !btn) {
-        setNewPop(null);
+      if (newPop) {
+        const btn = newBtnRef.current?.getBoundingClientRect();
+        if (!btn) {
+          setNewPop(null);
+          return;
+        }
+        setNewPop(placeFromAnchor(btn, 188, 236));
         return;
       }
-      setNewPop(placeInsidePane(pane, btn, 188, 236));
+      if (menu) {
+        const next = clampToViewport(menu.x, menu.y, 188, menu.kind === "device" ? 200 : 176);
+        setMenu({ ...menu, x: next.x, y: next.y });
+      }
     };
     window.addEventListener("resize", onWin);
     return () => window.removeEventListener("resize", onWin);
-  }, [newPop]);
+  }, [menu, newPop]);
 
   const tree = useMemo(() => {
     const query = q.trim().toLowerCase();
@@ -341,6 +379,7 @@ export function Sidebar() {
     if (toolsOpen) {
       out.push({ key: "t:pty", type: "tool", id: "pty", depth: 1 });
       out.push({ key: "t:pcap", type: "tool", id: "pcap", depth: 1 });
+      out.push({ key: "t:stage", type: "tool", id: "stage", depth: 1 });
       out.push({ key: "t:edgeshark", type: "tool", id: "edgeshark", depth: 1 });
     }
     return out;
@@ -414,10 +453,10 @@ export function Sidebar() {
   }
 
   function openNewSessionMenu() {
-    const pane = sidebarRef.current?.getBoundingClientRect();
     const btn = newBtnRef.current?.getBoundingClientRect();
-    if (!pane || !btn) return;
-    setNewPop(placeInsidePane(pane, btn, 188, 236));
+    if (!btn) return;
+    setMenu(null);
+    setNewPop(placeFromAnchor(btn, 188, 236));
   }
 
   function askRename(path: string) {
@@ -493,7 +532,9 @@ export function Sidebar() {
   function openMenu(next: CtxMenu, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    const pos = clampMenuPos(e.clientX, e.clientY, next.kind === "device" ? 200 : 176);
+    const h = next.kind === "device" ? 200 : next.path ? 176 : 96;
+    const pos = clampToViewport(e.clientX, e.clientY, 188, h);
+    setNewPop(null);
     setMenu({ ...next, x: pos.x, y: pos.y });
   }
 
@@ -586,10 +627,7 @@ export function Sidebar() {
             selectFolder(row.path, false);
           }}
           onDoubleClick={() => toggle(row.path)}
-          onContextMenu={(e) => {
-            if (!row.path) return;
-            openMenu({ kind: "folder", path: row.path, x: 0, y: 0 }, e);
-          }}
+          onContextMenu={(e) => openMenu({ kind: "folder", path: row.path, x: 0, y: 0 }, e)}
           onDragOver={(e) => {
             e.preventDefault();
             setDragOver(dropKey);
@@ -651,9 +689,21 @@ export function Sidebar() {
     }
     if (row.type === "tool") {
       const label =
-        row.id === "pty" ? "Local PTY" : row.id === "pcap" ? "Packet capture" : "Edgeshark";
+        row.id === "pty"
+          ? "Local PTY"
+          : row.id === "pcap"
+            ? "Packet capture"
+            : row.id === "stage"
+              ? "Staging"
+              : "Edgeshark";
       const meta =
-        row.id === "pty" ? "host shell" : row.id === "pcap" ? "pcap / tcpdump" : "127.0.0.1:5001";
+        row.id === "pty"
+          ? "host shell"
+          : row.id === "pcap"
+            ? "pcap / tcpdump"
+            : row.id === "stage"
+              ? "CLI / Ansible drafts"
+              : "127.0.0.1:5001";
       return (
         <button
           key={row.key}
@@ -662,6 +712,7 @@ export function Sidebar() {
           style={pad}
           onClick={() => {
             if (row.id === "pty") void openLocal();
+            else if (row.id === "stage") openStagePane();
             else openPcapPane();
           }}
         >
@@ -710,7 +761,6 @@ export function Sidebar() {
 
   return (
     <aside
-      ref={sidebarRef}
       className="sidebar"
       onKeyDown={(e) => {
         const t = e.target as HTMLElement;
@@ -720,6 +770,10 @@ export function Sidebar() {
       onClick={(e) => {
         if ((e.target as HTMLElement).closest(".folder-dlg, .folder-menu, .new-pop")) return;
         setMenu(null);
+      }}
+      onContextMenu={(e) => {
+        if ((e.target as HTMLElement).closest(".tree-row, .folder-dlg, .folder-menu, .new-pop, .sess-toolbar, .search, .side-actions, .sess-connect")) return;
+        openMenu({ kind: "folder", path: "", x: 0, y: 0 }, e);
       }}
     >
       <div
@@ -780,70 +834,73 @@ export function Sidebar() {
               <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" />
             </svg>
           </button>
-          {newPop && (
-            <div
-              className="new-pop"
-              role="menu"
-              style={{ left: newPop.x, top: newPop.y, width: newPop.w, maxHeight: newPop.maxH }}
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  askNewFolder(activeFolder === "__tools__" ? "" : activeFolder);
-                }}
+          {newPop &&
+            createPortal(
+              <div
+                ref={popRef}
+                className="new-pop"
+                role="menu"
+                style={{ left: newPop.x, top: newPop.y, width: newPop.w, maxHeight: newPop.maxH }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
               >
-                New folder
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNewPop(null);
-                  startDeviceEditor(undefined, "ssh", activeFolder === "__tools__" ? "" : activeFolder);
-                }}
-              >
-                SSH session
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNewPop(null);
-                  startDeviceEditor(undefined, "serial", activeFolder === "__tools__" ? "" : activeFolder);
-                }}
-              >
-                Serial console
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNewPop(null);
-                  startDeviceEditor(undefined, "api", activeFolder === "__tools__" ? "" : activeFolder);
-                }}
-              >
-                API controller
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNewPop(null);
-                  void openLocal();
-                }}
-              >
-                Local shell
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNewPop(null);
-                  openPcapPane();
-                }}
-              >
-                Packet capture
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    askNewFolder(activeFolder === "__tools__" ? "" : activeFolder);
+                  }}
+                >
+                  New folder
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPop(null);
+                    startDeviceEditor(undefined, "ssh", activeFolder === "__tools__" ? "" : activeFolder);
+                  }}
+                >
+                  SSH session
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPop(null);
+                    startDeviceEditor(undefined, "serial", activeFolder === "__tools__" ? "" : activeFolder);
+                  }}
+                >
+                  Serial console
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPop(null);
+                    startDeviceEditor(undefined, "api", activeFolder === "__tools__" ? "" : activeFolder);
+                  }}
+                >
+                  API controller
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPop(null);
+                    void openLocal();
+                  }}
+                >
+                  Local shell
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPop(null);
+                    openPcapPane();
+                  }}
+                >
+                  Packet capture
+                </button>
+              </div>,
+              document.body,
+            )}
         </span>
         <button
           type="button"
@@ -890,52 +947,58 @@ export function Sidebar() {
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
-      {folderDlg && (
-        <form
-          className="folder-dlg"
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onSubmit={(e) => {
-            e.preventDefault();
-            submitFolderDlg();
-          }}
-        >
-          {folderDlg.mode === "delete" ? (
-            <p>
-              Delete folder <strong>{folderDlg.path}</strong>? Devices move to the parent group.
-            </p>
-          ) : (
-            <label>
-              {folderDlg.mode === "rename"
-                ? "Rename folder"
-                : folderDlg.parent
-                  ? `New folder under ${folderDlg.parent}`
-                  : "New folder"}
-              <input
-                ref={folderInput}
-                value={folderName}
-                onChange={(e) => setFolderName(e.target.value)}
-                placeholder={folderDlg.mode === "create" && !folderDlg.parent ? "NYC/Core" : "Core"}
-              />
-            </label>
-          )}
-          <div className="row">
-            <button type="button" className="ghost" onClick={() => setFolderDlg(null)}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className={folderDlg.mode === "delete" ? "danger" : "primary"}
-              disabled={folderDlg.mode !== "delete" && !normalizeFolder(folderName)}
-            >
-              {folderDlg.mode === "delete" ? "Delete" : folderDlg.mode === "rename" ? "Rename" : "Create"}
-            </button>
-          </div>
-        </form>
-      )}
+      {folderDlg &&
+        createPortal(
+          <form
+            className="folder-dlg"
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              submitFolderDlg();
+            }}
+          >
+            {folderDlg.mode === "delete" ? (
+              <p>
+                Delete folder <strong>{folderDlg.path}</strong>? Devices move to the parent group.
+              </p>
+            ) : (
+              <label>
+                {folderDlg.mode === "rename"
+                  ? "Rename folder"
+                  : folderDlg.parent
+                    ? `New folder under ${folderDlg.parent}`
+                    : "New folder"}
+                <input
+                  ref={folderInput}
+                  value={folderName}
+                  onChange={(e) => setFolderName(e.target.value)}
+                  placeholder={folderDlg.mode === "create" && !folderDlg.parent ? "NYC/Core" : "Core"}
+                />
+              </label>
+            )}
+            <div className="row">
+              <button type="button" className="ghost" onClick={() => setFolderDlg(null)}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className={folderDlg.mode === "delete" ? "danger" : "primary"}
+                disabled={folderDlg.mode !== "delete" && !normalizeFolder(folderName)}
+              >
+                {folderDlg.mode === "delete" ? "Delete" : folderDlg.mode === "rename" ? "Rename" : "Create"}
+              </button>
+            </div>
+          </form>,
+          document.body,
+        )}
       <div
         className="tree"
         role="tree"
+        onContextMenu={(e) => {
+          if ((e.target as HTMLElement).closest(".tree-row")) return;
+          openMenu({ kind: "folder", path: "", x: 0, y: 0 }, e);
+        }}
         onDragOver={(e) => {
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
@@ -976,90 +1039,100 @@ export function Sidebar() {
           Settings
         </button>
       </div>
-      {menu?.kind === "folder" && (
-        <div
-          className="folder-menu"
-          style={{ left: menu.x, top: menu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setMenu(null);
-              askNewFolder(menu.path);
-            }}
+      {menu?.kind === "folder" &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="folder-menu"
+            style={{ left: menu.x, top: menu.y }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            New subfolder
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMenu(null);
-              setActiveFolder(menu.path);
-              startDeviceEditor(undefined, "ssh", menu.path);
-            }}
+            <button
+              type="button"
+              onClick={() => {
+                setMenu(null);
+                askNewFolder(menu.path);
+              }}
+            >
+              Add folder
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenu(null);
+                setActiveFolder(menu.path);
+                startDeviceEditor(undefined, "ssh", menu.path);
+              }}
+            >
+              Add device
+            </button>
+            {menu.path ? (
+              <>
+                <button type="button" onClick={() => askRename(menu.path)}>
+                  Rename
+                </button>
+                <button type="button" onClick={() => confirmDelete(menu.path)}>
+                  Delete folder
+                </button>
+              </>
+            ) : null}
+          </div>,
+          document.body,
+        )}
+      {menu?.kind === "device" &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="folder-menu"
+            style={{ left: menu.x, top: menu.y }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
           >
-            New SSH session
-          </button>
-          <button type="button" onClick={() => askRename(menu.path)}>
-            Rename
-          </button>
-          <button type="button" onClick={() => confirmDelete(menu.path)}>
-            Delete folder
-          </button>
-        </div>
-      )}
-      {menu?.kind === "device" && (
-        <div
-          className="folder-menu"
-          style={{ left: menu.x, top: menu.y }}
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              const d = inventory.devices.find((x) => x.id === menu.id);
-              setMenu(null);
-              if (d) connect(d);
-            }}
-          >
-            Connect
-          </button>
-          {inventory.devices.find((x) => x.id === menu.id)?.kind === "ssh" && (
             <button
               type="button"
               onClick={() => {
                 const d = inventory.devices.find((x) => x.id === menu.id);
                 setMenu(null);
-                if (d) connect(d, "sftp");
+                if (d) connect(d);
               }}
             >
-              SFTP
+              Connect
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              const d = inventory.devices.find((x) => x.id === menu.id);
-              setMenu(null);
-              if (d) startDeviceEditor(d);
-            }}
-          >
-            Properties
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMenu(null);
-              void deleteDevice(menu.id);
-            }}
-          >
-            Delete session
-          </button>
-        </div>
-      )}
+            {inventory.devices.find((x) => x.id === menu.id)?.kind === "ssh" && (
+              <button
+                type="button"
+                onClick={() => {
+                  const d = inventory.devices.find((x) => x.id === menu.id);
+                  setMenu(null);
+                  if (d) connect(d, "sftp");
+                }}
+              >
+                SFTP
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
+                setMenu(null);
+                if (d) startDeviceEditor(d);
+              }}
+            >
+              Properties
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenu(null);
+                void deleteDevice(menu.id);
+              }}
+            >
+              Delete session
+            </button>
+          </div>,
+          document.body,
+        )}
     </aside>
   );
 }

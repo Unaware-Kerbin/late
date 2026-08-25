@@ -81,6 +81,7 @@ impl LatePaths {
             &self.data.join("exports"),
             &self.data.join("models"),
             &self.data.join("models/gguf"),
+            &self.data.join("staging"),
         ] {
             crate::fsutil::mkdir_private(p)?;
         }

@@ -439,6 +439,59 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             let path = app.export_capture(&id, &name, pass.as_deref(), redacted)?;
             Ok(json!({"path": path}))
         }
+        "stage.render" => {
+            let art = app.stage_render(
+                &req_str(&params, &["format"])?,
+                &pstr(&params, &["intent"]).unwrap_or_default(),
+                pstr(&params, &["body"]).as_deref(),
+                pstr(&params, &["device_id", "deviceId"]).as_deref(),
+                pstr(&params, &["session_id", "sessionId"]).as_deref(),
+            )?;
+            Ok(serde_json::to_value(art)?)
+        }
+        "stage.save" => {
+            let art = app.stage_save(
+                &req_str(&params, &["format"])?,
+                &pstr(&params, &["intent"]).unwrap_or_default(),
+                pstr(&params, &["body"]).as_deref(),
+                pstr(&params, &["device_id", "deviceId"]).as_deref(),
+                pstr(&params, &["session_id", "sessionId"]).as_deref(),
+                pstr(&params, &["id"]).as_deref(),
+            )?;
+            Ok(serde_json::to_value(art)?)
+        }
+        "stage.get" => Ok(serde_json::to_value(
+            app.stage_get(&req_str(&params, &["id"])?)?,
+        )?),
+        "stage.list" => Ok(serde_json::to_value(app.stage_list()?)?),
+        "stage.plan" => Ok(serde_json::to_value(app.stage_plan(
+            pstr(&params, &["id"]).as_deref(),
+            &pstr(&params, &["format"]).unwrap_or_else(|| "cli".into()),
+            &pstr(&params, &["intent"]).unwrap_or_default(),
+            pstr(&params, &["body"]).as_deref(),
+            pstr(&params, &["device_id", "deviceId"]).as_deref(),
+            pstr(&params, &["session_id", "sessionId"]).as_deref(),
+        )?)?),
+        "stage.push" => {
+            let app = app.clone();
+            let id = pstr(&params, &["id"]);
+            let format = pstr(&params, &["format"]).unwrap_or_else(|| "cli".into());
+            let intent = pstr(&params, &["intent"]).unwrap_or_default();
+            let body = pstr(&params, &["body"]);
+            let device_id = pstr(&params, &["device_id", "deviceId"]);
+            let session_id = pstr(&params, &["session_id", "sessionId"]);
+            blocking(move || {
+                Ok(serde_json::to_value(app.stage_push(
+                    id.as_deref(),
+                    &format,
+                    &intent,
+                    body.as_deref(),
+                    device_id.as_deref(),
+                    session_id.as_deref(),
+                )?)?)
+            })
+            .await
+        }
         other => Err(LateError::Message(format!("unknown method: {other}"))),
     }
 }

@@ -18,6 +18,7 @@ import {
   newTab,
   openLocal,
   openPcapPane,
+  openStagePane,
   openSession,
   saveSettings,
   saveProviderKey,
@@ -273,6 +274,7 @@ function Palette() {
   const items = [
     { id: "local", label: "Open local PTY", run: () => void openLocal() },
     { id: "pcap", label: "Open packet capture", run: () => openPcapPane() },
+    { id: "stage", label: "Open staging (CLI / Ansible drafts)", run: () => openStagePane() },
     { id: "tab", label: "New tab", run: () => newTab() },
     { id: "tab-close", label: "Close tab", run: () => closeTab(getState().activeTabId ?? "") },
     { id: "split-r", label: "Split right", run: () => splitFocused("right") },

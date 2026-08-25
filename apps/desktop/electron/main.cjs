@@ -23,6 +23,50 @@ function resource(...parts) {
   return path.join(__dirname, "..", "resources", ...parts);
 }
 
+function repoRoot() {
+  return path.join(__dirname, "..", "..", "..");
+}
+
+function httpOk(url, timeoutMs = 800) {
+  return new Promise((resolve) => {
+    const req = http.get(url, (res) => {
+      res.resume();
+      resolve(Boolean(res.statusCode && res.statusCode < 500));
+    });
+    req.on("error", () => resolve(false));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+function openChildLog(name) {
+  try {
+    return fs.openSync(path.join(os.tmpdir(), name), "a");
+  } catch {
+    return null;
+  }
+}
+
+function findDaemonBin() {
+  const name = process.platform === "win32" ? "late-daemon.exe" : "late-daemon";
+  if (app.isPackaged) {
+    const bundled = resource("bin", name);
+    return fs.existsSync(bundled) ? bundled : null;
+  }
+  const built = [
+    path.join(repoRoot(), "target", "debug", name),
+    path.join(repoRoot(), "target", "release", name),
+  ].filter((p) => fs.existsSync(p));
+  if (built.length) {
+    built.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+    return built[0];
+  }
+  // Unpackaged: never the Aug 20 bundled binary (no stage.* RPCs). cargo run instead.
+  return null;
+}
+
 function lateConfigDir() {
   const home = os.homedir();
   if (process.platform === "win32") {
@@ -71,40 +115,86 @@ function waitHttp(url, timeoutMs = 20000) {
   });
 }
 
-function startChild(bin, args, extraEnv) {
+function startChild(bin, args, extraEnv, logName) {
   if (!fs.existsSync(bin)) {
     console.warn("late: missing", bin);
     return null;
   }
+  const log = logName ? openChildLog(logName) : null;
   const child = spawn(bin, args, {
     env: { ...process.env, ...extraEnv },
-    stdio: "ignore",
+    stdio: log == null ? "ignore" : ["ignore", log, log],
     windowsHide: true,
   });
   child.on("error", (err) => console.error("late child error", bin, err));
+  child.on("exit", (code, signal) => {
+    if (code) console.error("late child exit", bin, code, signal || "");
+  });
+  children.push(child);
+  return child;
+}
+
+function startNpmSidecar(extraEnv) {
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const child = spawn(npm, ["run", "start", "-w", "late-agent-sidecar"], {
+    cwd: repoRoot(),
+    env: { ...process.env, ...extraEnv },
+    stdio: "ignore",
+    windowsHide: true,
+    shell: process.platform === "win32",
+  });
+  child.on("error", (err) => console.error("late sidecar npm error", err));
+  children.push(child);
+  return child;
+}
+
+function startDaemonCargo(env) {
+  const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
+  const log = openChildLog("late-daemon.log");
+  const child = spawn(cargo, ["run", "-q", "-p", "late-daemon", "--", "--bind", "127.0.0.1:7420"], {
+    cwd: repoRoot(),
+    env: { ...process.env, ...env },
+    stdio: log == null ? "ignore" : ["ignore", log, log],
+    windowsHide: true,
+    shell: process.platform === "win32",
+  });
+  child.on("error", (err) => console.error("late cargo daemon error", err));
   children.push(child);
   return child;
 }
 
 async function startBackend() {
-  if (!app.isPackaged) return;
-  const daemonName = process.platform === "win32" ? "late-daemon.exe" : "late-daemon";
-  const daemonBin = resource("bin", daemonName);
-  const sidecarJs = resource("sidecar.cjs");
-  const policies = resource("policies");
-  startChild(daemonBin, ["--bind", "127.0.0.1:7420"], {
-    LATE_POLICIES_DIR: policies,
-  });
-  await waitHttp("http://127.0.0.1:7420/health").catch((err) => {
-    console.error("late: daemon did not come up", err);
-  });
-  startChild(process.execPath, [sidecarJs], {
-    ELECTRON_RUN_AS_NODE: "1",
+  if (!(await httpOk("http://127.0.0.1:7420/health"))) {
+    const daemonBin = findDaemonBin();
+    const policies = resource("policies");
+    const env = {};
+    if (fs.existsSync(policies)) env.LATE_POLICIES_DIR = policies;
+    if (daemonBin) {
+      console.log("late: starting daemon", daemonBin);
+      startChild(daemonBin, ["--bind", "127.0.0.1:7420"], env, "late-daemon.log");
+    } else if (!app.isPackaged) {
+      console.warn("late: no late-daemon binary; cargo run -p late-daemon");
+      startDaemonCargo(env);
+    } else {
+      console.error("late: late-daemon binary not found. Build with: cargo build -p late-daemon");
+    }
+    await waitHttp("http://127.0.0.1:7420/health", app.isPackaged ? 20000 : 90000).catch((err) => {
+      console.error("late: daemon did not come up", err);
+    });
+  }
+  if (await httpOk("http://127.0.0.1:7430/health")) return;
+  const extra = {
     LATE_SIDECAR_PORT: "7430",
     LATE_DAEMON_HTTP: "http://127.0.0.1:7420",
     LATE_DAEMON_WS: "ws://127.0.0.1:7420/ws",
     LATE_RPC_TOKEN: readLocalToken(),
-  });
+  };
+  const sidecarJs = resource("sidecar.cjs");
+  if (app.isPackaged && fs.existsSync(sidecarJs)) {
+    startChild(process.execPath, [sidecarJs], { ELECTRON_RUN_AS_NODE: "1", ...extra }, "late-sidecar.log");
+  } else {
+    startNpmSidecar(extra);
+  }
   await waitHttp("http://127.0.0.1:7430/health").catch((err) => {
     console.error("late: sidecar did not come up", err);
   });

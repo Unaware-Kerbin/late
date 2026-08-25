@@ -6,9 +6,71 @@ export type ToolCtx = {
   conversationId: string;
   emit: (e: SseEvent) => void;
   signal: AbortSignal;
+  /** Latest operator message — used only to infer staging format when the model omits it. */
+  operatorText?: string;
 };
 
-/** Six operator-gated tools only. Never add SFTP — file transfer is UI-only. */
+export const STAGE_FORMATS = ["cli", "ansible", "netmiko", "salt", "chef"] as const;
+export type StageFormatName = (typeof STAGE_FORMATS)[number];
+
+const FORMAT_ALIASES: Record<string, StageFormatName> = {
+  cli: "cli",
+  ios: "cli",
+  set: "cli",
+  ansible: "ansible",
+  playbook: "ansible",
+  yaml: "ansible",
+  netmiko: "netmiko",
+  python: "netmiko",
+  salt: "salt",
+  sls: "salt",
+  chef: "chef",
+  recipe: "chef",
+};
+
+/** Conservative: only when the text clearly names Ansible/Netmiko/Salt/Chef (not generic "python"). */
+export function inferNamedStageTool(text: string): Exclude<StageFormatName, "cli"> | null {
+  const hay = text.toLowerCase();
+  if (/\bansible\b|\bplaybook\b/.test(hay)) return "ansible";
+  if (/\bnetmiko\b|\bparamiko\b/.test(hay)) return "netmiko";
+  if (/\bsalt(?:stack)?\b|\bsalt[- ]state\b|\.sls\b/.test(hay)) return "salt";
+  if (/\bchef\b|\bcookbook\b/.test(hay)) return "chef";
+  return null;
+}
+
+export function resolveStagedFormat(
+  requested: string,
+  intent: string,
+  body: string,
+  operatorText = "",
+): StageFormatName {
+  const raw = requested.trim().toLowerCase();
+  const aliased = FORMAT_ALIASES[raw];
+  const named = inferNamedStageTool(`${intent}\n${body}\n${operatorText}`);
+  if (aliased && aliased !== "cli") return aliased;
+  if (!raw || raw === "cli" || aliased === "cli") return named ?? "cli";
+  if ((STAGE_FORMATS as readonly string[]).includes(raw)) return raw as StageFormatName;
+  return named ?? "cli";
+}
+
+function bodyMatchesFormat(format: StageFormatName, body: string): boolean {
+  const b = body.toLowerCase();
+  if (!b.trim()) return false;
+  switch (format) {
+    case "ansible":
+      return /\bhosts\s*:/.test(b) || /\btasks\s*:/.test(b);
+    case "netmiko":
+      return /\bnetmiko\b/.test(b) || /\bconnecthandler\b/.test(b) || /\bdevice_type\b/.test(b);
+    case "salt":
+      return /\bcmd\.run\b/.test(b) || /\bfile\.managed\b/.test(b) || /\bnetconfig\b/.test(b);
+    case "chef":
+      return /\bdo\b/.test(b) && /\bend\b/.test(b);
+    default:
+      return true;
+  }
+}
+
+/** Six operator-gated tools plus one draft-only staging write. Never add SFTP — file transfer is UI-only. */
 export const OPENAI_TOOLS: OpenAiTool[] = [
   {
     type: "function",
@@ -71,6 +133,39 @@ export const OPENAI_TOOLS: OpenAiTool[] = [
           reason: { type: "string", description: "Why this GET answers the operator's question" },
         },
         required: ["session_id", "path"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_staged_artifact",
+      description:
+        "Write a review-only draft into Late Staging on the operator's computer. It does not log in, Push, or run Ansible/Netmiko/Salt/Chef. The operator may Push from Staging on their computer; you cannot. " +
+        "If the operator asks for Ansible or a playbook, you MUST set format=ansible (never cli). " +
+        "Netmiko or a Python network script → format=netmiko. Salt or an SLS/state → format=salt. Chef or a recipe/cookbook → format=chef. " +
+        "format=cli is ONLY for one-line / IOS-like session text they might later Push. " +
+        "Prefer omitting body so Late fills a vendor template from intent. If Vendor/OS is Generic/unknown, still use the named format — do not guess Cisco IOS and do not fall back to cli. Never include passwords, keys, or community strings.",
+      parameters: {
+        type: "object",
+        properties: {
+          format: {
+            type: "string",
+            enum: ["cli", "ansible", "netmiko", "salt", "chef"],
+            description:
+              "ansible = playbook YAML; netmiko = Python script; salt = SLS state; chef = recipe. Use cli ONLY for one-line / IOS-like session text. If they named Ansible/Netmiko/Salt/Chef, that value is required — never substitute cli.",
+          },
+          intent: { type: "string", description: "What the change should do, in vendor-neutral language" },
+          session_id: { type: "string" },
+          device_id: { type: "string" },
+          body: {
+            type: "string",
+            description:
+              "Optional full draft already in the chosen format (playbook/script/state/recipe). Omit so Late fills a template. Do not put raw CLI here when format is ansible|netmiko|salt|chef.",
+          },
+        },
+        required: ["format", "intent"],
         additionalProperties: false,
       },
     },
@@ -273,7 +368,7 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolCtx): 
       type: "tool",
       name,
       status: denied ? "denied" : "ok",
-      detail: denied ? obj?.reason : undefined,
+      detail: denied ? obj?.reason : name === "propose_staged_artifact" ? obj : undefined,
     });
     let text = typeof out === "string" ? out : JSON.stringify(out);
     if (
@@ -317,8 +412,10 @@ async function dispatch(name: string, args: Record<string, unknown>, ctx: ToolCt
       );
     case "propose_api_get":
       return proposeApi(str(args, "session_id"), str(args, "path"), opt(args, "reason"), ctx);
+    case "propose_staged_artifact":
+      return proposeStaged(args, ctx);
     default:
-      return { error: `unknown tool ${name} — only the six Late tools exist` };
+      return { error: `unknown tool ${name} — only the Late tools exist` };
   }
 }
 
@@ -506,6 +603,30 @@ async function proposeApi(sessionId: string, path: string, reason: string, ctx: 
     agent: true,
   });
   return { executed: true, result };
+}
+
+async function proposeStaged(args: Record<string, unknown>, ctx: ToolCtx) {
+  const intent = str(args, "intent");
+  const requested = opt(args, "format");
+  const givenBody = opt(args, "body");
+  const format = resolveStagedFormat(requested, intent, givenBody, ctx.operatorText ?? "");
+  const requestedNorm = FORMAT_ALIASES[requested.trim().toLowerCase()] ?? requested.trim().toLowerCase();
+  const remappedFromCli = (!requestedNorm || requestedNorm === "cli") && format !== "cli";
+  let body: string | undefined = givenBody || undefined;
+  if (remappedFromCli && body && !bodyMatchesFormat(format, body)) {
+    body = undefined;
+  }
+  const sessionId = opt(args, "session_id");
+  const deviceId = opt(args, "device_id");
+  return daemon.call("stage.save", {
+    format,
+    intent,
+    body,
+    sessionId,
+    session_id: sessionId,
+    deviceId,
+    device_id: deviceId,
+  });
 }
 
 export function cursorToolDefs(ctxFactory: () => ToolCtx) {

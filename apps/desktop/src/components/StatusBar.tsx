@@ -1,4 +1,4 @@
-import { setState, useApp } from "../store";
+import { refreshAll, setState, useApp } from "../store";
 
 export function StatusBar() {
   const daemonOk = useApp((s) => s.daemonOk);
@@ -16,6 +16,16 @@ export function StatusBar() {
         sidecar {sidecarOk ? "online" : "offline"}
       </span>
       <span>{sessions.length} sessions</span>
+      {!daemonOk && (
+        <button
+          type="button"
+          className="ghost tiny"
+          onClick={() => void refreshAll()}
+          title="Retry daemon websocket"
+        >
+          Retry
+        </button>
+      )}
       <button
         type="button"
         className="ghost tiny"

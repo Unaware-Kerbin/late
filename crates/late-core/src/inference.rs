@@ -183,8 +183,8 @@ pub fn status() -> InferenceStatus {
             .map(|s| format!("container: {s}"))
             .unwrap_or_else(|| idle_inference_detail(&gpu))
     };
-    let allow_intel_compose = force_intel_compose()
-        || crate::hardware::allow_intel_xpu_compose(&gpu.vendor);
+    let allow_intel_compose =
+        force_intel_compose() || crate::hardware::allow_intel_xpu_compose(&gpu.vendor);
     InferenceStatus {
         running,
         starting,
@@ -511,9 +511,9 @@ fn require_intel_compose(gpu: &crate::hardware::GpuProfile) -> Result<()> {
     if force_intel_compose() || crate::hardware::allow_intel_xpu_compose(&gpu.vendor) {
         return Ok(());
     }
-    Err(LateError::Message(crate::hardware::intel_xpu_compose_refuse(
-        &gpu.vendor,
-    )))
+    Err(LateError::Message(
+        crate::hardware::intel_xpu_compose_refuse(&gpu.vendor),
+    ))
 }
 
 fn idle_inference_detail(gpu: &crate::hardware::GpuProfile) -> String {

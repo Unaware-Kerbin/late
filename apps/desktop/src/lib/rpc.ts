@@ -95,6 +95,14 @@ class DaemonRpc {
     }
   }
 
+  fail(msg: string, reject?: (e: Error) => void) {
+    this.opening = null;
+    this.lastError = msg;
+    this.connected = false;
+    this.statusHandlers.forEach((h) => h(false, msg));
+    reject?.(new Error(msg));
+  }
+
   connect(): Promise<void> {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return Promise.resolve();
     if (this.opening) return this.opening;
@@ -128,9 +136,10 @@ class DaemonRpc {
         };
         ws.onerror = () => {
           window.clearTimeout(timer);
-          this.lastError = `cannot reach ${DAEMON_WS}`;
-          this.statusHandlers.forEach((h) => h(false, this.lastError ?? undefined));
-          reject(new Error(this.lastError ?? "ws error"));
+          const msg = token
+            ? "Could not open the daemon websocket. If the daemon is running, restart Late so it can pick up the local token. From this repo use npm start."
+            : "Could not open the daemon websocket. From this repo run npm start (rebuilds and starts late-daemon).";
+          this.fail(msg, reject);
         };
       })().catch((err) => {
         this.opening = null;

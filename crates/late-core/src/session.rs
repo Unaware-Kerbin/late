@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +78,7 @@ struct LiveSession {
     kind: SessionKind,
     vendor: Vendor,
     device_id: Option<String>,
+    auth_profile_id: Option<String>,
     input: Option<mpsc::Sender<Vec<u8>>>,
     resize: Option<mpsc::Sender<(u32, u32)>>,
     close: Option<mpsc::Sender<()>>,
@@ -100,7 +102,10 @@ struct OpenPcap {
 
 impl App {
     pub fn boot() -> Result<Self> {
-        let paths = LatePaths::discover();
+        Self::boot_with(LatePaths::discover())
+    }
+
+    pub fn boot_with(paths: LatePaths) -> Result<Self> {
         paths.ensure()?;
         seed_bundled_policies(&paths)?;
         let settings = load_settings(&paths.settings())?;
@@ -124,6 +129,35 @@ impl App {
                 live_caps: HashMap::new(),
             })),
         })
+    }
+
+    #[cfg(test)]
+    fn insert_test_session(&self, info: SessionInfo) {
+        self.insert_test_session_with_auth(info, None);
+    }
+
+    #[cfg(test)]
+    fn insert_test_session_with_auth(&self, info: SessionInfo, auth_profile_id: Option<String>) {
+        let (out_tx, _) = broadcast::channel(8);
+        self.inner.lock().sessions.insert(
+            info.id.clone(),
+            LiveSession {
+                kind: info.kind,
+                vendor: info.vendor,
+                device_id: info.device_id.clone(),
+                auth_profile_id,
+                info,
+                input: None,
+                resize: None,
+                close: None,
+                output: out_tx,
+                scrollback: Vec::new(),
+                redactor: Redactor::new(),
+                logging_path: None,
+                reconnect: None,
+                serial_break: None,
+            },
+        );
     }
 
     pub fn settings(&self) -> AppSettings {
@@ -433,7 +467,7 @@ impl App {
             inner.known = known;
             inner.known.save(&self.paths)?;
         }
-        self.attach(
+        let info = self.attach(
             device.name.clone(),
             SessionKind::Ssh,
             device.vendor,
@@ -455,7 +489,11 @@ impl App {
                 iface: None,
                 bpf: None,
             }),
-        )
+        )?;
+        if let Some(s) = self.inner.lock().sessions.get_mut(&info.id) {
+            s.auth_profile_id = Some(profile_id);
+        }
+        Ok(info)
     }
 
     pub fn open_serial(&self, device_id: &str) -> Result<SessionInfo> {
@@ -1143,6 +1181,327 @@ impl App {
         collections::delete(&self.paths, id)
     }
 
+    fn stage_vendor(&self, device_id: Option<&str>, session_id: Option<&str>) -> Result<Vendor> {
+        if let Some(id) = device_id.filter(|s| !s.is_empty()) {
+            let inv = self.inventory.load()?;
+            if let Some(d) = inv.devices.iter().find(|d| d.id == id) {
+                return Ok(d.vendor);
+            }
+        }
+        if let Some(id) = session_id.filter(|s| !s.is_empty()) {
+            if let Some(s) = self.list_sessions().into_iter().find(|s| s.id == id) {
+                return Ok(s.vendor);
+            }
+        }
+        Ok(Vendor::Generic)
+    }
+
+    pub fn stage_render(
+        &self,
+        format: &str,
+        intent: &str,
+        body: Option<&str>,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<crate::stage::StageArtifact> {
+        let vendor = self.stage_vendor(device_id, session_id)?;
+        let mut art = crate::stage::render(
+            crate::stage::StageFormat::parse(format)?,
+            vendor,
+            intent,
+            body,
+        )?;
+        art.device_id = device_id.filter(|s| !s.is_empty()).map(|s| s.to_string());
+        art.session_id = session_id.filter(|s| !s.is_empty()).map(|s| s.to_string());
+        Ok(art)
+    }
+
+    pub fn stage_save(
+        &self,
+        format: &str,
+        intent: &str,
+        body: Option<&str>,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+        id: Option<&str>,
+    ) -> Result<crate::stage::StageArtifact> {
+        let mut art = self.stage_render(format, intent, body, device_id, session_id)?;
+        if let Some(id) = id.filter(|s| !s.is_empty()) {
+            art.id = id.to_string();
+        }
+        crate::stage::save(&self.paths, art)
+    }
+
+    pub fn stage_get(&self, id: &str) -> Result<crate::stage::StageArtifact> {
+        crate::stage::get(&self.paths, id)
+    }
+
+    pub fn stage_list(&self) -> Result<Vec<crate::stage::StageMeta>> {
+        crate::stage::list(&self.paths)
+    }
+
+    fn resolve_push_target(
+        &self,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+        art: &crate::stage::StageArtifact,
+    ) -> Result<Option<crate::stage::PushTarget>> {
+        use crate::stage::StageFormat;
+        // PATH Push uses the inventory device only. `session_id` is the Push-session
+        // dropdown (open PTY, often serial) and is CLI-only — never the Ansible target.
+        let _ = session_id;
+        let id = device_id
+            .filter(|s| !s.is_empty())
+            .or(art.device_id.as_deref())
+            .filter(|s| !s.is_empty());
+        match art.format {
+            StageFormat::Cli => Ok(None),
+            StageFormat::Chef | StageFormat::Salt => match id {
+                Some(id) => Ok(Some(self.require_push_target(id)?)),
+                None => Ok(None),
+            },
+            StageFormat::Ansible | StageFormat::Netmiko => {
+                let id = id.ok_or_else(|| {
+                    LateError::Message(
+                        "Pick an SSH inventory device on your computer (hostname/IP). Push session is only for Push CLI into an open terminal."
+                            .into(),
+                    )
+                })?;
+                Ok(Some(self.require_push_target(id)?))
+            }
+        }
+    }
+
+    fn live_ssh_auth_hints(&self) -> Vec<(Option<String>, Option<String>)> {
+        self.inner
+            .lock()
+            .sessions
+            .values()
+            .filter(|s| s.kind == SessionKind::Ssh && s.info.connected)
+            .map(|s| (s.device_id.clone(), s.auth_profile_id.clone()))
+            .collect()
+    }
+
+    /// Device auth profile, else the profile an open SSH session already used for this host.
+    fn auth_profile_for_push(&self, device: &Device) -> Result<AuthProfile> {
+        if let Some(pid) = device.auth_profile_id.as_deref().filter(|s| !s.is_empty()) {
+            if let Ok(p) = self.inventory.get_auth(pid) {
+                return Ok(p);
+            }
+        }
+        let hints = self.live_ssh_auth_hints();
+        for (did, pid) in &hints {
+            if did.as_deref() != Some(device.id.as_str()) {
+                continue;
+            }
+            if let Some(pid) = pid.as_deref().filter(|s| !s.is_empty()) {
+                if let Ok(p) = self.inventory.get_auth(pid) {
+                    return Ok(p);
+                }
+            }
+        }
+        let host = device.host.as_deref().filter(|s| !s.is_empty());
+        if let Some(host) = host {
+            let port = device.port.unwrap_or(22);
+            for (did, pid) in &hints {
+                let Some(did) = did.as_deref() else { continue };
+                let Ok(other) = self.inventory.get(did) else {
+                    continue;
+                };
+                if other.host.as_deref() != Some(host) || other.port.unwrap_or(22) != port {
+                    continue;
+                }
+                let pid = pid
+                    .as_deref()
+                    .or(other.auth_profile_id.as_deref())
+                    .filter(|s| !s.is_empty());
+                if let Some(pid) = pid {
+                    if let Ok(p) = self.inventory.get_auth(pid) {
+                        return Ok(p);
+                    }
+                }
+            }
+        }
+        Err(LateError::Message(
+            "Add an auth profile with a username and SSH key or agent on your computer.".into(),
+        ))
+    }
+
+    fn require_push_target(&self, device_id: &str) -> Result<crate::stage::PushTarget> {
+        let device = self.inventory.get(device_id)?;
+        if device.jump_host.as_deref().is_some_and(|s| !s.is_empty()) {
+            return Err(LateError::Message(
+                "Jump hosts are not used for generated inventory. Fill inventory on your computer if you need a jump host."
+                    .into(),
+            ));
+        }
+        let host = device
+            .host
+            .clone()
+            .filter(|s| !s.is_empty() && !s.contains("://"))
+            .ok_or_else(|| {
+                LateError::Message(
+                    if device.kind == DeviceKind::Serial {
+                        "This inventory device is serial-only (no SSH host). Pick an SSH inventory device (hostname/IP) on your computer, not a serial session. Push CLI types into an open serial terminal."
+                            .into()
+                    } else {
+                        "Fill inventory on your computer: this device has no SSH host (hostname/IP). PATH Push does not use an open serial session."
+                            .into()
+                    },
+                )
+            })?;
+        let profile = self.auth_profile_for_push(&device)?;
+        if profile.username.trim().is_empty() {
+            return Err(LateError::Message(
+                "Auth profile has no username. Set it on your computer.".into(),
+            ));
+        }
+        let key_path = crate::ssh::confined_identity(&profile)?;
+        let vault_password = if key_path.is_none() && !profile.use_agent {
+            self.secrets.get(&profile.id)?.filter(|s| !s.is_empty())
+        } else {
+            None
+        };
+        let has_vault_password = vault_password.is_some();
+        if let Some(mut pw) = vault_password {
+            pw.zeroize();
+        }
+        if key_path.is_none() && !profile.use_agent && !has_vault_password {
+            return Err(LateError::Message(
+                "Late will not put a password in generated files. Add an SSH key or enable the agent on the auth profile on your computer."
+                    .into(),
+            ));
+        }
+        Ok(crate::stage::PushTarget {
+            name: device.name,
+            vendor: device.vendor,
+            host,
+            port: device.port.unwrap_or(22),
+            username: profile.username,
+            key_path,
+            use_agent: profile.use_agent,
+            has_vault_password,
+            auth_profile_id: Some(profile.id),
+        })
+    }
+
+    fn stage_prepare(
+        &self,
+        id: Option<&str>,
+        format: &str,
+        intent: &str,
+        body: Option<&str>,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<crate::stage::StageArtifact> {
+        if let Some(id) = id.filter(|s| !s.is_empty()) {
+            if body.map(|s| !s.trim().is_empty()).unwrap_or(false) {
+                self.stage_save(format, intent, body, device_id, session_id, Some(id))
+            } else {
+                self.stage_get(id)
+            }
+        } else {
+            self.stage_save(format, intent, body, device_id, session_id, None)
+        }
+    }
+
+    pub fn stage_plan(
+        &self,
+        id: Option<&str>,
+        format: &str,
+        intent: &str,
+        body: Option<&str>,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<crate::stage::StagePlan> {
+        let art = self.stage_prepare(id, format, intent, body, device_id, session_id)?;
+        let target = self.resolve_push_target(device_id, session_id, &art)?;
+        crate::stage::plan_push(&self.paths, &art, target.as_ref())
+    }
+
+    pub fn stage_push(
+        &self,
+        id: Option<&str>,
+        format: &str,
+        intent: &str,
+        body: Option<&str>,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+    ) -> Result<crate::stage::StagePushResult> {
+        let art = self.stage_prepare(id, format, intent, body, device_id, session_id)?;
+        if art.format == crate::stage::StageFormat::Cli {
+            let sid = session_id
+                .filter(|s| !s.is_empty())
+                .or(art.session_id.as_deref())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| LateError::Message("Pick an open SSH or serial session.".into()))?;
+            self.stage_push_cli(sid, &art.body)
+        } else {
+            let target = self.resolve_push_target(device_id, session_id, &art)?;
+            let mut runtime_password = None;
+            if let Some(t) = target.as_ref() {
+                if t.has_vault_password {
+                    if let Some(pid) = t.auth_profile_id.as_deref().filter(|s| !s.is_empty()) {
+                        runtime_password = self.secrets.get(pid)?.filter(|s| !s.is_empty());
+                    }
+                    if runtime_password.is_none() {
+                        return Err(LateError::Message(
+                            "Late will not put a password in generated files. Add an SSH key or enable the agent on the auth profile on your computer."
+                                .into(),
+                        ));
+                    }
+                }
+            }
+            let result = crate::stage::run_push(
+                &self.paths,
+                &art,
+                target.as_ref(),
+                runtime_password.as_deref(),
+            );
+            if let Some(ref mut pw) = runtime_password {
+                pw.zeroize();
+            }
+            result
+        }
+    }
+
+    fn stage_push_cli(
+        &self,
+        session_id: &str,
+        body: &str,
+    ) -> Result<crate::stage::StagePushResult> {
+        {
+            let inner = self.inner.lock();
+            let s = inner
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| LateError::NotFound(session_id.into()))?;
+            if s.kind != SessionKind::Ssh && s.kind != SessionKind::Serial {
+                return Err(LateError::Message(
+                    "CLI Push needs an open SSH or serial session.".into(),
+                ));
+            }
+        }
+        let mut lines = 0u32;
+        for line in body.replace('\r', "").split('\n') {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('!') || t.starts_with('#') {
+                continue;
+            }
+            self.write(session_id, format!("{line}\r").as_bytes())?;
+            lines += 1;
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        Ok(crate::stage::StagePushResult {
+            ok: true,
+            format: crate::stage::StageFormat::Cli,
+            display: format!("typed {lines} line(s) into session {session_id}"),
+            exit_code: None,
+            stdout_tail: String::new(),
+            stderr_tail: String::new(),
+        })
+    }
+
     pub fn import_file(&self, path: &Path, commit: bool) -> Result<ImportResult> {
         let path = confine::confine_under_roots(path, &self.operator_fs_roots(), true)?;
         let result = import::import_file(&path)?;
@@ -1193,6 +1552,7 @@ impl App {
             kind,
             vendor,
             device_id,
+            auth_profile_id: None,
             input,
             resize,
             close,
@@ -1300,4 +1660,333 @@ fn seed_bundled_policies(paths: &LatePaths) -> Result<()> {
         break;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stage_push_tests {
+    use super::*;
+    use crate::types::{AuthProfile, Device, DeviceKind, Vendor};
+
+    fn isolated_app() -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("late-stage-push-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        (app, dir)
+    }
+
+    fn ssh_lab(app: &App) -> Device {
+        let profile = app
+            .inventory
+            .upsert_auth(AuthProfile {
+                id: String::new(),
+                name: "lab login".into(),
+                username: "admin".into(),
+                key_path: None,
+                use_agent: true,
+                has_password: false,
+            })
+            .unwrap();
+        let mut d = Device::new_ssh("edge-sw", "192.0.2.10", Vendor::Linux);
+        d.auth_profile_id = Some(profile.id);
+        app.inventory.upsert_device(d).unwrap()
+    }
+
+    fn serial_console(app: &App) -> Device {
+        let mut d = Device::new_ssh("edge-console", "192.0.2.10", Vendor::Linux);
+        d.kind = DeviceKind::Serial;
+        d.host = None;
+        d.port = None;
+        d.serial_path = Some("/dev/ttyUSB0".into());
+        d.auth_profile_id = None;
+        app.inventory.upsert_device(d).unwrap()
+    }
+
+    fn ssh_aruba_password(app: &App, secret: Option<&str>) -> Device {
+        let profile = app
+            .inventory
+            .upsert_auth(AuthProfile {
+                id: String::new(),
+                name: "aruba login".into(),
+                username: "admin".into(),
+                key_path: None,
+                use_agent: false,
+                has_password: secret.is_some(),
+            })
+            .unwrap();
+        if let Some(pw) = secret {
+            app.secrets.set(&profile.id, pw).unwrap();
+        }
+        let mut d = Device::new_ssh("lab-aruba", "192.0.2.80", Vendor::AosCx);
+        d.auth_profile_id = Some(profile.id);
+        app.inventory.upsert_device(d).unwrap()
+    }
+
+    fn ssh_session(device_id: &str) -> SessionInfo {
+        SessionInfo {
+            id: "ssh-sess-1".into(),
+            device_id: Some(device_id.into()),
+            name: "aruba ssh".into(),
+            kind: SessionKind::Ssh,
+            vendor: Vendor::AosCx,
+            connected: true,
+            created_at: Utc::now(),
+            accent: None,
+        }
+    }
+
+    fn serial_session(device_id: &str) -> SessionInfo {
+        SessionInfo {
+            id: "serial-sess-1".into(),
+            device_id: Some(device_id.into()),
+            name: "console".into(),
+            kind: SessionKind::Serial,
+            vendor: Vendor::Linux,
+            connected: true,
+            created_at: Utc::now(),
+            accent: None,
+        }
+    }
+
+    #[test]
+    fn path_push_uses_inventory_ssh_even_if_session_is_serial() {
+        let (app, dir) = isolated_app();
+        let ssh = ssh_lab(&app);
+        let serial = serial_console(&app);
+        app.insert_test_session(serial_session(&serial.id));
+
+        let art = app
+            .stage_save(
+                "ansible",
+                "ntp servers",
+                Some("hosts: all\ntasks: []\n"),
+                Some(&ssh.id),
+                Some("serial-sess-1"),
+                None,
+            )
+            .unwrap();
+        let target = app
+            .resolve_push_target(Some(&ssh.id), Some("serial-sess-1"), &art)
+            .unwrap()
+            .expect("PATH Push must resolve the SSH inventory device");
+        assert_eq!(target.host, "192.0.2.10");
+        assert_eq!(target.username, "admin");
+
+        let plan = app.stage_plan(
+            Some(&art.id),
+            "ansible",
+            "ntp servers",
+            Some("hosts: all\ntasks: []\n"),
+            Some(&ssh.id),
+            Some("serial-sess-1"),
+        );
+        if let Err(e) = plan {
+            let m = e.to_string();
+            assert!(
+                !m.contains("PATH Push needs an SSH inventory device"),
+                "serial session must not reject PATH Push when an SSH inventory device is selected: {m}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_push_works_without_session_id() {
+        let (app, dir) = isolated_app();
+        let ssh = ssh_lab(&app);
+        let art = app
+            .stage_save(
+                "netmiko",
+                "ntp",
+                Some("from netmiko import ConnectHandler\n"),
+                Some(&ssh.id),
+                None,
+                None,
+            )
+            .unwrap();
+        let target = app
+            .resolve_push_target(Some(&ssh.id), None, &art)
+            .unwrap()
+            .expect("inventory SSH device is enough");
+        assert_eq!(target.host, "192.0.2.10");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_push_password_only_profile_does_not_write_secret() {
+        let (app, dir) = isolated_app();
+        let secret = "super-secret-pass-aruba";
+        let aruba = ssh_aruba_password(&app, Some(secret));
+        app.insert_test_session(ssh_session(&aruba.id));
+        let art = app
+            .stage_save(
+                "ansible",
+                "ntp servers",
+                Some("hosts: late_targets\ntasks: []\n"),
+                Some(&aruba.id),
+                None,
+                None,
+            )
+            .unwrap();
+        let target = app
+            .resolve_push_target(Some(&aruba.id), None, &art)
+            .unwrap()
+            .expect("password-only vault auth is enough");
+        assert_eq!(target.host, "192.0.2.80");
+        assert_eq!(target.username, "admin");
+        assert!(target.has_vault_password);
+        assert!(target.key_path.is_none());
+        assert!(!target.use_agent);
+        assert_eq!(target.vendor, Vendor::AosCx);
+
+        let bindir = std::env::temp_dir().join(format!("late-fake-bins-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&bindir).unwrap();
+        for name in ["ansible-playbook", "sshpass"] {
+            let p = bindir.join(name);
+            std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&p).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&p, perms).unwrap();
+            }
+        }
+        let old = std::env::var("PATH").ok();
+        std::env::set_var("PATH", &bindir);
+        let plan = app.stage_plan(
+            Some(&art.id),
+            "ansible",
+            "ntp servers",
+            Some("hosts: late_targets\ntasks: []\n"),
+            Some(&aruba.id),
+            None,
+        );
+        match old {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        let plan = plan.expect("plan should succeed for password-only vault auth");
+        let staging = crate::stage::staging_dir(&app.paths);
+        let mut saw_inv = false;
+        for ent in std::fs::read_dir(&staging).unwrap() {
+            let p = ent.unwrap().path();
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            assert!(
+                !text.contains(secret),
+                "staging file {} leaked vault password",
+                p.display()
+            );
+            let lower = text.to_ascii_lowercase();
+            assert!(!lower.contains("ansible_ssh_pass"), "{}", p.display());
+            if p.extension().and_then(|e| e.to_str()) == Some("ini") {
+                saw_inv = true;
+                assert!(!lower.contains("sshpass"), "{}", p.display());
+            }
+        }
+        assert!(saw_inv, "expected generated inventory.ini");
+        assert!(
+            !plan.argv.join(" ").contains(secret),
+            "password must not be on argv"
+        );
+        let _ = std::fs::remove_dir_all(bindir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_push_password_flag_without_vault_is_refused() {
+        let (app, dir) = isolated_app();
+        let aruba = ssh_aruba_password(&app, None);
+        let art = app
+            .stage_save(
+                "ansible",
+                "ntp",
+                Some("hosts: late_targets\ntasks: []\n"),
+                Some(&aruba.id),
+                None,
+                None,
+            )
+            .unwrap();
+        let err = app
+            .resolve_push_target(Some(&aruba.id), None, &art)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("will not put a password in generated files"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_push_auth_from_open_ssh_session_when_device_profile_missing() {
+        let (app, dir) = isolated_app();
+        let profile = app
+            .inventory
+            .upsert_auth(AuthProfile {
+                id: String::new(),
+                name: "session login".into(),
+                username: "admin".into(),
+                key_path: None,
+                use_agent: false,
+                has_password: true,
+            })
+            .unwrap();
+        app.secrets
+            .set(&profile.id, "session-vault-secret")
+            .unwrap();
+        let mut d = Device::new_ssh("lab-aruba", "192.0.2.80", Vendor::AosCx);
+        d.auth_profile_id = None;
+        let d = app.inventory.upsert_device(d).unwrap();
+        app.insert_test_session_with_auth(ssh_session(&d.id), Some(profile.id.clone()));
+        let art = app
+            .stage_save(
+                "netmiko",
+                "ntp",
+                Some("from netmiko import ConnectHandler\n"),
+                Some(&d.id),
+                None,
+                None,
+            )
+            .unwrap();
+        let target = app
+            .resolve_push_target(Some(&d.id), None, &art)
+            .unwrap()
+            .expect("open SSH session auth should fill in");
+        assert_eq!(target.username, "admin");
+        assert!(target.has_vault_password);
+        assert_eq!(target.auth_profile_id.as_deref(), Some(profile.id.as_str()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_push_rejects_serial_only_device_clearly() {
+        let (app, dir) = isolated_app();
+        let serial = serial_console(&app);
+        app.insert_test_session(serial_session(&serial.id));
+        let art = app
+            .stage_save(
+                "ansible",
+                "ntp",
+                Some("hosts: all\ntasks: []\n"),
+                Some(&serial.id),
+                Some("serial-sess-1"),
+                None,
+            )
+            .unwrap();
+        let err = app
+            .resolve_push_target(Some(&serial.id), Some("serial-sess-1"), &art)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("serial-only") || err.contains("no SSH host"),
+            "{err}"
+        );
+        assert!(err.contains("your computer"), "{err}");
+        assert!(!err.contains("PATH Push needs an SSH inventory device. Use Push CLI"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

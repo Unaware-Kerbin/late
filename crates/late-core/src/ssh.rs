@@ -736,7 +736,9 @@ fn sweep_stale_askpass(dir: &Path, max_age: Duration) {
             continue;
         }
         let Ok(meta) = ent.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
         if now.duration_since(modified).unwrap_or(Duration::ZERO) >= max_age {
             let _ = fs::remove_file(path);
         }

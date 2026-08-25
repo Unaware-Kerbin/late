@@ -158,7 +158,11 @@ fn ollama_log() -> PathBuf {
 }
 
 fn llama_pid_file() -> PathBuf {
-    paths().data.join("models").join("gguf").join("llama-server.pid")
+    paths()
+        .data
+        .join("models")
+        .join("gguf")
+        .join("llama-server.pid")
 }
 
 fn llama_server_log() -> PathBuf {
@@ -213,7 +217,8 @@ fn llama_status(settings: &AppSettings) -> InferenceStatus {
                     j.last_error = Some(format!(
                         "llama-server exited {} — {}",
                         st.code().unwrap_or(-1),
-                        tail_log(&llama_server_log()).unwrap_or_else(|| "see logs/llama-server.log".into())
+                        tail_log(&llama_server_log())
+                            .unwrap_or_else(|| "see logs/llama-server.log".into())
                     ));
                 }
             }
@@ -472,10 +477,7 @@ fn start_llama_server(model: &str, settings: &AppSettings) -> Result<InferenceSt
     if let Some(parent) = log_path.parent() {
         let _ = mkdir_private(parent);
     }
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    let log = OpenOptions::new().create(true).append(true).open(&log_path);
     let mut cmd = Command::new(&bin);
     cmd.arg("-m")
         .arg(&weights)
@@ -510,7 +512,9 @@ fn start_llama_server(model: &str, settings: &AppSettings) -> Result<InferenceSt
             let mut j = llama_job().lock().unwrap_or_else(|e| e.into_inner());
             j.starting = false;
             j.last_error = Some(format!("could not start llama-server: {e}"));
-            return Err(LateError::Message(format!("could not start llama-server: {e}")));
+            return Err(LateError::Message(format!(
+                "could not start llama-server: {e}"
+            )));
         }
     }
     Ok(llama_status(settings))
@@ -654,9 +658,8 @@ fn safe_gguf_name(name: &str) -> Result<()> {
 fn ensure_gguf_magic(path: &Path) -> Result<()> {
     let mut f = fs::File::open(path)?;
     let mut magic = [0u8; 4];
-    f.read_exact(&mut magic).map_err(|_| {
-        LateError::Message("downloaded file is too small to be a GGUF".into())
-    })?;
+    f.read_exact(&mut magic)
+        .map_err(|_| LateError::Message("downloaded file is too small to be a GGUF".into()))?;
     if &magic != b"GGUF" {
         return Err(LateError::Message(
             "downloaded file is not a GGUF (missing GGUF magic)".into(),
@@ -682,7 +685,8 @@ pub(crate) fn pick_gguf_file(files: &[String], want: Option<&str>) -> Result<Str
         .collect();
     if ggufs.is_empty() {
         return Err(LateError::Message(
-            "that Hugging Face repo has no single-file GGUF (need a *-GGUF repo, not safetensors)".into(),
+            "that Hugging Face repo has no single-file GGUF (need a *-GGUF repo, not safetensors)"
+                .into(),
         ));
     }
     if let Some(want) = want {
@@ -705,7 +709,10 @@ pub(crate) fn pick_gguf_file(files: &[String], want: Option<&str>) -> Result<Str
                 .map(|s| (*s).clone())
                 .ok_or_else(|| LateError::Message(format!("{want} is not in that repo")));
         }
-        if let Some(f) = ggufs.iter().find(|f| quant_token(f).is_some_and(|t| t == w)) {
+        if let Some(f) = ggufs
+            .iter()
+            .find(|f| quant_token(f).is_some_and(|t| t == w))
+        {
             return Ok((*f).clone());
         }
         return Err(LateError::Message(format!(
@@ -713,7 +720,10 @@ pub(crate) fn pick_gguf_file(files: &[String], want: Option<&str>) -> Result<Str
         )));
     }
     for q in QUANT_PREF {
-        if let Some(f) = ggufs.iter().find(|f| quant_token(f).is_some_and(|t| t == *q)) {
+        if let Some(f) = ggufs
+            .iter()
+            .find(|f| quant_token(f).is_some_and(|t| t == *q))
+        {
             return Ok((*f).clone());
         }
     }
@@ -733,8 +743,10 @@ fn quant_token(filename: &str) -> Option<String> {
 
 pub(crate) fn hf_download_host_ok(host: &str) -> bool {
     let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    matches!(h.as_str(), "huggingface.co" | "www.huggingface.co" | "hf.co")
-        || h.ends_with(".huggingface.co")
+    matches!(
+        h.as_str(),
+        "huggingface.co" | "www.huggingface.co" | "hf.co"
+    ) || h.ends_with(".huggingface.co")
         || h.ends_with(".xethub.hf.co")
 }
 
@@ -788,7 +800,10 @@ async fn download_gguf(spec: HubSpec) -> Result<PathBuf> {
     if let Some(t) = hf_token() {
         req = req.bearer_auth(t);
     }
-    let resp = req.send().await.map_err(|e| LateError::Http(redact_secrets(&e.to_string())))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| LateError::Http(redact_secrets(&e.to_string())))?;
     let status = resp.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
         return Err(LateError::Message(
@@ -859,7 +874,10 @@ async fn download_gguf(spec: HubSpec) -> Result<PathBuf> {
     if let Some(t) = hf_token() {
         req = req.bearer_auth(t);
     }
-    let mut resp = req.send().await.map_err(|e| LateError::Http(redact_secrets(&e.to_string())))?;
+    let mut resp = req
+        .send()
+        .await
+        .map_err(|e| LateError::Http(redact_secrets(&e.to_string())))?;
     if !resp.status().is_success() {
         let code = resp.status().as_u16();
         if code == 401 || code == 403 {
@@ -982,7 +1000,10 @@ async fn ollama_pull(root: &str, name: &str) -> Result<()> {
     }
     let mut buf = Vec::new();
     loop {
-        let chunk = resp.chunk().await.map_err(|e| LateError::Http(e.to_string()))?;
+        let chunk = resp
+            .chunk()
+            .await
+            .map_err(|e| LateError::Http(e.to_string()))?;
         let Some(chunk) = chunk else { break };
         buf.extend_from_slice(&chunk);
         while let Some(i) = buf.iter().position(|b| *b == b'\n') {
@@ -992,7 +1013,8 @@ async fn ollama_pull(root: &str, name: &str) -> Result<()> {
             if line.is_empty() {
                 continue;
             }
-            let v: serde_json::Value = serde_json::from_str(line).unwrap_or(serde_json::Value::Null);
+            let v: serde_json::Value =
+                serde_json::from_str(line).unwrap_or(serde_json::Value::Null);
             if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
                 return Err(LateError::Message(err.into()));
             }
@@ -1032,7 +1054,10 @@ fn list_gguf_models(gpu: &GpuProfile) -> Vec<LocalModel> {
         }
     }
     for r in &recs {
-        if !out.iter().any(|m| m.id == r.id || m.id.starts_with(&format!("{}:", r.id))) {
+        if !out
+            .iter()
+            .any(|m| m.id == r.id || m.id.starts_with(&format!("{}:", r.id)))
+        {
             out.push(LocalModel {
                 id: r.id.clone(),
                 complete: false,
@@ -1157,10 +1182,7 @@ fn scan_gguf_dir() -> Vec<LocalModel> {
         if !repo.path().is_dir() {
             continue;
         }
-        let id = repo
-            .file_name()
-            .to_string_lossy()
-            .replace("--", "/");
+        let id = repo.file_name().to_string_lossy().replace("--", "/");
         let Ok(files) = fs::read_dir(repo.path()) else {
             continue;
         };
@@ -1365,7 +1387,8 @@ fn probe_openai_models(url: &str) -> Vec<String> {
     if !out.status.success() {
         return vec![];
     }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
     v.get("data")
         .and_then(|d| d.as_array())
         .map(|arr| {
@@ -1388,7 +1411,8 @@ fn probe_ollama_tags(root: &str) -> Vec<String> {
     if !out.status.success() {
         return vec![];
     }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or(serde_json::Value::Null);
     v.get("models")
         .and_then(|d| d.as_array())
         .map(|arr| {
@@ -1422,7 +1446,10 @@ fn ollama_reachable(root: &str) -> bool {
 }
 
 fn is_loopback_hostname(host: &str) -> bool {
-    let h = host.trim().trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
+    let h = host
+        .trim()
+        .trim_matches(|c| c == '[' || c == ']')
+        .to_ascii_lowercase();
     h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
@@ -1487,7 +1514,8 @@ fn write_owned_pid(pid: u32) -> Result<()> {
     let starttime = proc_starttime(pid).unwrap_or(0);
     if starttime == 0 {
         return Err(LateError::Message(
-            "could not read llama-server starttime; Stop will only kill the child we spawned".into(),
+            "could not read llama-server starttime; Stop will only kill the child we spawned"
+                .into(),
         ));
     }
     write_private(
@@ -1582,10 +1610,14 @@ mod tests {
         assert_eq!(a.file, None);
         let b = parse_hub_spec("Qwen/Qwen3-8B-GGUF:Q4_K_M").unwrap();
         assert_eq!(b.file.as_deref(), Some("Q4_K_M"));
-        let named = parse_hub_spec("https://huggingface.co/Qwen/Qwen3-8B-GGUF:Qwen3-8B-Q8_0.gguf").unwrap();
+        let named =
+            parse_hub_spec("https://huggingface.co/Qwen/Qwen3-8B-GGUF:Qwen3-8B-Q8_0.gguf").unwrap();
         assert_eq!(named.repo, "Qwen/Qwen3-8B-GGUF");
         assert_eq!(named.file.as_deref(), Some("Qwen3-8B-Q8_0.gguf"));
-        let c = parse_hub_spec("https://huggingface.co/Qwen/Qwen3-8B-GGUF/blob/main/Qwen3-8B-Q8_0.gguf").unwrap();
+        let c = parse_hub_spec(
+            "https://huggingface.co/Qwen/Qwen3-8B-GGUF/blob/main/Qwen3-8B-Q8_0.gguf",
+        )
+        .unwrap();
         assert_eq!(c.repo, "Qwen/Qwen3-8B-GGUF");
         assert_eq!(c.file, None);
         assert!(parse_hub_spec("llama3.2").is_err());
@@ -1621,7 +1653,10 @@ mod tests {
             "Qwen3-8B-Q8_0.gguf".into(),
             "Qwen3-8B-Q4_K_M.gguf".into(),
         ];
-        assert_eq!(pick_gguf_file(&files, None).unwrap(), "Qwen3-8B-Q4_K_M.gguf");
+        assert_eq!(
+            pick_gguf_file(&files, None).unwrap(),
+            "Qwen3-8B-Q4_K_M.gguf"
+        );
         assert_eq!(
             pick_gguf_file(&files, Some("Q8_0")).unwrap(),
             "Qwen3-8B-Q8_0.gguf"
@@ -1681,8 +1716,16 @@ mod tests {
 
     #[test]
     fn catalogs_include_gemma_and_stay_sfw() {
-        let gguf: String = GGUF_LIBRARY.iter().map(|(id, _, _)| *id).collect::<Vec<_>>().join(" ");
-        let ollama: String = OLLAMA_LIBRARY.iter().map(|(id, _, _)| *id).collect::<Vec<_>>().join(" ");
+        let gguf: String = GGUF_LIBRARY
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ollama: String = OLLAMA_LIBRARY
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(gguf.contains("google/gemma-3-4b-it-qat-q4_0-gguf"));
         assert!(ollama.contains("gemma3:4b"));
         for blob in [gguf.as_str(), ollama.as_str()] {

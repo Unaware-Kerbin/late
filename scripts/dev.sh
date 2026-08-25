@@ -42,7 +42,7 @@ trap cleanup EXIT INT TERM
 start_daemon() {
   if DAEMON_BIN="$(find_daemon)"; then
     echo "late: starting daemon $DAEMON_BIN"
-    "$DAEMON_BIN" &
+    "$DAEMON_BIN" --bind 127.0.0.1:7420 &
     pids+=($!)
   else
     echo "late: daemon binary not found (build with: cargo build -p late-daemon)"

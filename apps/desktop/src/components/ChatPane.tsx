@@ -5,6 +5,7 @@ import {
   downloadInference,
   inferenceStatus,
   dockAgent,
+  openStagePane,
   setChatModelsH,
   setState,
   startInference,
@@ -283,6 +284,7 @@ export function ChatPane() {
     if (!text || busy) return;
     if (backend === "cursor" && !settings?.cloud_chat_enabled) {
       setStatus("Cloud AI is off. Turn it on in Settings to use Cursor.");
+      setState({ settingsOpen: true });
       return;
     }
     if (
@@ -320,7 +322,15 @@ export function ChatPane() {
           } else if (e.type === "tool") {
             const name = e.name || "tool";
             if (e.status === "start") setThinking(`Using ${name.replace(/_/g, " ")}`);
-            else if (e.status === "ok") setThinking("Thinking about the result");
+            else if (e.status === "ok") {
+              setThinking("Thinking about the result");
+              if (name === "propose_staged_artifact") {
+                const detail = e.detail && typeof e.detail === "object" ? (e.detail as Record<string, unknown>) : {};
+                const sid = String(detail.id ?? "");
+                const fmt = String(detail.format ?? "");
+                openStagePane(sid || undefined, fmt || undefined);
+              }
+            }
             else if (e.status === "denied") {
               const reason =
                 typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail ?? "permit list denied");
@@ -443,6 +453,7 @@ export function ChatPane() {
             const next = coerceChatBackend(e.target.value);
             if (next === "cursor" && !settings?.cloud_chat_enabled) {
               setStatus("Turn on Cloud AI in Settings to use Cursor.");
+              setState({ settingsOpen: true });
               return;
             }
             setBackend(next);

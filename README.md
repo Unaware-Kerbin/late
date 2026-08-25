@@ -1,10 +1,16 @@
 # Late — Local AI Terminal Emulator
 
-Late is a desktop app for SSH, serial consoles, file transfer (SFTP), REST APIs, and packet capture. An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
+Late is a desktop app for SSH, serial consoles, file transfer (SFTP), REST APIs, packet capture, and **Staging** drafts (CLI, Ansible, Netmiko, Salt, Chef). An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
 
 By default the helper uses a model **on your computer**. Cloud backends (Cursor and similar) stay off until they are enabled in Settings. Hugging Face model downloads stay available.
 
 Late is **not** SOC 2 or ISO 27001 certified. The project’s security documents are in [docs/isms/](docs/isms/README.md). Release notes: [CHANGELOG.md](CHANGELOG.md).
+
+## Demo
+
+<video src="docs/assets/late-demo.mp4" width="720" controls>
+  <a href="docs/assets/late-demo.mp4">Watch a short walkthrough of Late (MP4)</a>
+</video>
 
 ## Download
 
@@ -16,7 +22,7 @@ Prebuilt apps are on **[Releases](https://github.com/Unaware-Kerbin/late/release
 | macOS (Apple Silicon) | `Late-0.1.0-mac-arm64.dmg` (or `.zip`) | Open the disk image and drag Late to Applications. First open: **right-click** Late → **Open**. |
 | Linux | `Late-0.1.0-linux-x86_64.AppImage` or `Late-0.1.0-linux-amd64.deb` | AppImage: mark as executable, then double-click. Debian/Ubuntu: install the `.deb` from the download folder. |
 
-The `0.1.0` in the filename is the app version; the GitHub tag may be newer (`v0.1.3`). Installers are unsigned. Each package includes the UI, daemon, and agent helper. SSH still uses the `ssh` program already on your computer.
+The `0.1.0` in the filename is the app version; the GitHub tag may be newer (`v0.1.3`). Installers are unsigned. Each package includes the UI, daemon, and agent helper. SSH still uses the `ssh` program already on your computer. Ansible, Netmiko, Salt, Chef, and `sshpass` are **not** bundled — install those yourself if you want Staging **Run playbook**.
 
 If Releases has no files yet, [install from source](#install-from-source).
 
@@ -67,15 +73,35 @@ Then search for **Late**, or run `late` in a terminal. If the command is not fou
 
 ## First launch
 
-1. In the left sidebar, add an SSH or serial session and connect. Confirm the host key the first time you are asked.
+1. In the left sidebar, click **+** or right-click **Sessions** (or empty tree) to **Add folder** / **Add device**. Connect. Confirm the host key the first time you are asked.
 2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
-3. To use Cursor or other cloud chat, open Settings and turn on **Cloud AI**. Session text may then leave your computer.
+3. To use Cursor or other cloud chat, open Settings and turn on the **Cloud AI** switch. Save. Session text may then leave your computer.
+4. **Staging** (titlebar or Tools) holds CLI / Ansible / Netmiko / Salt / Chef drafts the helper writes on your computer. Ask for a playbook by name. **Push** is click-only (Enter does not confirm). See [Staging](#staging).
 
 ## Help
 
 - Questions and bugs: [GitHub Issues](https://github.com/Unaware-Kerbin/late/issues) — include your OS, Late version or commit, and what you expected vs what happened. Do not paste passwords, API keys, or `sidecar.token`.
 - Security reports: [SECURITY.md](SECURITY.md) (private advisory preferred).
 - Agent commands: Late waits for **Approve**. Network OS sessions also check a vendor permit list first; Linux CLI has no permit list (Approve every command). API GETs (`propose_api_get`) are operator click only (no vendor permit list). Host-key and approval dialogs are not dismissed by clicking outside. **Trust** and **Approve** need an explicit button click (not Enter). Escape does not Trust.
+- Staging: see [Staging](#staging).
+
+## Staging
+
+The helper can draft CLI, Ansible, Netmiko, Salt, or Chef into the Staging pane (`propose_staged_artifact`). That tool only **saves a draft** on your computer. It does not log in, does not Push, and does not run playbooks.
+
+**Push** is operator-only (click; Enter does not confirm):
+
+| Format | Button | What happens |
+|---|---|---|
+| CLI | Push CLI… | Types the draft into an SSH or serial session you already opened. |
+| Ansible | Run playbook… | Runs `ansible-playbook` on your computer against the **SSH inventory device** you pick (not the Push-session dropdown). |
+| Netmiko | Run script… | Runs `python3` on the saved script. |
+| Salt | Run state… | Runs `salt-call` / `salt-ssh`. |
+| Chef | Run recipe… | Runs `chef-apply` / `chef-client`. |
+
+Late does **not** install those PATH tools. If one is missing, you get an install error. Pick an SSH inventory host (hostname/IP + user + key, agent, or a password already saved in Late). An open serial **Push session** is only for Push CLI.
+
+Draft files reject password-like lines and never contain `ansible_ssh_pass`. Password-only Push injects the vault secret at run time (`sshpass -e` on the daemon child) — prefer a key or agent when you can. Generic Vendor/OS does not assume Cisco IOS.
 
 ## For developers
 
@@ -121,7 +147,7 @@ PTY output event:
 { "event": "session.data", "sessionId": "...", "data": "<base64>" }
 ```
 
-Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm`, `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`.
+Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm`, `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
 
 Agent tools call these same session/policy/pcap/api methods. The daemon does not talk to LLMs.
 
@@ -133,16 +159,16 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 
 The **ci** workflow on each push is Rust tests, isolation greps, and advisory scans. It does **not** attach `.exe` / `.dmg` / AppImage files. Those come from **Build installers** on a `v*` tag and show up under [Releases](https://github.com/Unaware-Kerbin/late/releases).
 
-`scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` so it must not contain `keyring`, `russh`, or `secrets.json` vault code. That grep does not mean the sidecar never reads `sidecar.token` — it does, for auth. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
+`scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` so it must not contain `keyring`, `russh`, or `secrets.json` vault code, and must not call `stage.push` / `stage.plan`. That grep does not mean the sidecar never reads `sidecar.token` — it does, for auth. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
 
 ## Layout
 
-- `crates/late-core` — inventory, secrets, SSH/serial/PTY/SFTP, policy, redact, pcap, API client
+- `crates/late-core` — inventory, secrets, SSH/serial/PTY/SFTP, policy, redact, pcap, API client, staging
 - `crates/late-daemon` — Axum JSON-RPC daemon
 - `crates/isolation-check` — sidecar firewall grep
 - `policies/` — vendor YAML permit lists
 - `apps/desktop` — Vite + React + xterm.js UI (Electron is the current shell; Tauri 2 is optional)
-- `apps/agent-sidecar` — six-tool agent (vLLM, llama.cpp, Ollama, or Cursor SDK)
+- `apps/agent-sidecar` — seven-tool agent (vLLM, llama.cpp, Ollama, or Cursor SDK), including `propose_staged_artifact`
 - `docker/` — optional Intel XPU vLLM example only
 
 ## Frontend + sidecar
@@ -162,9 +188,9 @@ npm run dev:sidecar
 
 UI talks to the daemon at `http://127.0.0.1:7420` (`GET /health`, `WS /ws` JSON-RPC). Connection errors surface in the status bar and toasts — the views are wired even if the daemon is still catching up.
 
-Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`GET /health` returns `{"ok":true}` only — it does not include a daemon boolean; `POST /chat`, `GET /models`, `GET /pending`, `POST /approve`, `POST /stop`). Privileged sidecar routes take the token from `X-Late-Token` or `Authorization: Bearer` (not a `?token=` query string). local vLLM: `http://127.0.0.1:8000/v1`. llama.cpp: `http://127.0.0.1:8080/v1`. Ollama: `http://127.0.0.1:11434/v1`. Cursor: `@cursor/sdk` with `tools: ["mcp"]` and six `local.customTools` — only after Settings **Cloud AI** is on. If the SDK import fails, the sidecar returns a clear error. vLLM Start/Download stay on the local vLLM backend (Intel compose gate). llama.cpp Download/Start and Ollama Pull are in the Agent pane when those backends are selected.
+Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`GET /health` returns `{"ok":true}` only — it does not include a daemon boolean; `POST /chat`, `GET /models`, `GET /pending`, `POST /approve`, `POST /stop`). Privileged sidecar routes take the token from `X-Late-Token` or `Authorization: Bearer` (not a `?token=` query string). local vLLM: `http://127.0.0.1:8000/v1`. llama.cpp: `http://127.0.0.1:8080/v1`. Ollama: `http://127.0.0.1:11434/v1`. Cursor: `@cursor/sdk` with `tools: ["mcp"]` and seven `local.customTools` (including `propose_staged_artifact`) — only after Settings **Cloud AI** is on. If the SDK import fails, the sidecar returns a clear error. vLLM Start/Download stay on the local vLLM backend (Intel compose gate). llama.cpp Download/Start and Ollama Pull are in the Agent pane when those backends are selected.
 
-Safety: dual-gate is sidecar-only. On network OS CLI, `propose_command` runs the vendor permit list, then you click **Approve**. Linux CLI has no permit list (Approve every command). `propose_api_get` is operator click only (no vendor permit list). Always-allow (non-Linux) still re-runs the permit check. Daemon `session.input` is ungated for a client that already has the token. Host-key and approval dialogs are not dismissed by clicking outside. **Trust** and **Approve** need an explicit button click (not Enter). Escape does not Trust. The sidecar reads `sidecar.token` for auth; it must not contain keyring, russh, or `secrets.json` vault code.
+Safety: dual-gate is sidecar-only. On network OS CLI, `propose_command` runs the vendor permit list, then you click **Approve**. Linux CLI has no permit list (Approve every command). `propose_api_get` is operator click only (no vendor permit list). Always-allow (non-Linux) still re-runs the permit check. Daemon `session.input` is ungated for a client that already has the token. Operator **Push** from Staging is UI-only (`stage.plan` / `stage.push`): CLI types into an open SSH/serial session; Ansible / Netmiko / Salt / Chef run PATH tools on your computer (Late does not bundle them). PATH Push uses the inventory device’s auth profile (key, agent, or a password already in the daemon vault — injected at run time, never written into staging files). The helper cannot Push. Host-key and approval dialogs are not dismissed by clicking outside. **Trust**, **Approve**, and Staging **Push** need an explicit button click (not Enter). Escape does not Trust. The sidecar reads `sidecar.token` for auth; it must not contain keyring, russh, or `secrets.json` vault code.
 
 When the operator asks a specific question, the agent proposes the show/display/GET needed to answer it. After **Approve**, it sends the command, reads the device output, and continues. If it finds a problem, it also proposes the specific command to implement the fix (still gated the same way).
 

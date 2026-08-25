@@ -1,8 +1,14 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+
+const desktopDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(desktopDir, "../..");
 
 function lateConfigDir(): string {
   const home = os.homedir();
@@ -30,6 +36,67 @@ function lateDevOrigin(origin: string | undefined): boolean {
 function sameOriginFetch(req: { headers: Record<string, string | string[] | undefined> }): boolean {
   const site = req.headers["sec-fetch-site"];
   return site === "same-origin";
+}
+
+function httpOk(url: string, timeoutMs = 800): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get(url, (res) => {
+      res.resume();
+      resolve(Boolean(res.statusCode && res.statusCode < 500));
+    });
+    req.on("error", () => resolve(false));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
+function findDevDaemonBin(): string | null {
+  const name = process.platform === "win32" ? "late-daemon.exe" : "late-daemon";
+  const built = [
+    path.join(repoRoot, "target", "debug", name),
+    path.join(repoRoot, "target", "release", name),
+  ].filter((p) => fs.existsSync(p));
+  if (built.length) {
+    built.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+    return built[0];
+  }
+  return null;
+}
+
+function lateDaemonPlugin(): Plugin {
+  let child: ChildProcess | undefined;
+  return {
+    name: "late-daemon-boot",
+    async configureServer() {
+      if (await httpOk("http://127.0.0.1:7420/health")) return;
+      const bin = findDevDaemonBin();
+      if (!bin) {
+        console.warn("late: daemon binary not found; UI will not connect until cargo build -p late-daemon");
+        return;
+      }
+      let log: number | "ignore" = "ignore";
+      try {
+        log = fs.openSync(path.join(os.tmpdir(), "late-daemon.log"), "a");
+      } catch {
+        log = "ignore";
+      }
+      console.log("late: starting daemon", bin);
+      const policies = path.join(desktopDir, "resources", "policies");
+      const env = { ...process.env };
+      if (fs.existsSync(policies)) env.LATE_POLICIES_DIR = policies;
+      child = spawn(bin, ["--bind", "127.0.0.1:7420"], {
+        stdio: log === "ignore" ? "ignore" : ["ignore", log, log],
+        windowsHide: true,
+        env,
+      });
+      child.on("error", (err) => console.error("late: daemon spawn failed", err));
+    },
+    closeBundle() {
+      child?.kill();
+    },
+  };
 }
 
 function lateTokenPlugin(): Plugin {
@@ -68,7 +135,7 @@ function lateTokenPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), lateTokenPlugin()],
+  plugins: [react(), lateTokenPlugin(), lateDaemonPlugin()],
   base: "./",
   server: {
     host: "127.0.0.1",

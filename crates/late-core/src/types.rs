@@ -108,9 +108,10 @@ impl<'de> Deserialize<'de> for Vendor {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceKind {
+    #[default]
     Ssh,
     Serial,
     Local,
@@ -129,7 +130,7 @@ impl DeviceKind {
 
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "ssh" => Some(Self::Ssh),
+            "ssh" | "host" | "ip" | "tcp" | "" => Some(Self::Ssh),
             "serial" | "tty" | "console" => Some(Self::Serial),
             "local" | "shell" => Some(Self::Local),
             "api" | "http" => Some(Self::Api),
@@ -215,6 +216,7 @@ pub struct Device {
     #[serde(default)]
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub kind: DeviceKind,
     pub vendor: Vendor,
     #[serde(default)]
@@ -418,6 +420,7 @@ mod tests {
             ("kind = \"ssh\"", DeviceKind::Ssh),
             ("kind = \"SSH\"", DeviceKind::Ssh),
             ("kind = \"Ssh\"", DeviceKind::Ssh),
+            ("kind = \"host\"", DeviceKind::Ssh),
             ("kind = \"serial\"", DeviceKind::Serial),
             ("kind = \"Serial\"", DeviceKind::Serial),
         ] {

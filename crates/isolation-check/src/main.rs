@@ -54,6 +54,13 @@ fn walk(dir: &Path, hits: &mut Vec<String>) {
             if lower.contains("keyring") || lower.contains("russh") || lower.contains("secret") {
                 hits.push(format!("{}:{}:{}", path.display(), i + 1, line.trim()));
             }
+            if lower.contains("stage.push") || lower.contains("stage.plan") {
+                hits.push(format!(
+                    "{}:{}: sidecar must not call operator Push RPCs",
+                    path.display(),
+                    i + 1
+                ));
+            }
             if is_tools
                 && (lower.contains("provider-keys")
                     || lower.contains("sidecar.token")

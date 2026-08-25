@@ -24,6 +24,7 @@ pub mod serial;
 pub mod session;
 pub mod sftp;
 pub mod ssh;
+pub mod stage;
 pub mod types;
 pub mod weights;
 

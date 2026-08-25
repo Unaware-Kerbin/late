@@ -58,7 +58,11 @@ pub fn validate_bpf(bpf: &str) -> Result<()> {
         return Err(LateError::Pcap("filter too long".into()));
     }
     if !bpf.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, ' ' | '\t' | '.' | ':' | '/' | '(' | ')' | '=' | '!' | '-' | '>' | '<' | '\\')
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                ' ' | '\t' | '.' | ':' | '/' | '(' | ')' | '=' | '!' | '-' | '>' | '<' | '\\'
+            )
     }) {
         return Err(LateError::Pcap("filter contains unsafe characters".into()));
     }

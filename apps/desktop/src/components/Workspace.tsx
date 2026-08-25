@@ -2,6 +2,7 @@ import { Component, useEffect, useRef, type ErrorInfo, type ReactNode } from "re
 import { ApiPane } from "./ApiPane";
 import { PcapPane } from "./PcapPane";
 import { SftpPane } from "./SftpPane";
+import { StagePane } from "./StagePane";
 import { TerminalPane } from "./TerminalPane";
 import {
   closePaneSession,
@@ -123,6 +124,7 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
   if (pane.kind === "sftp") body = <SftpPane pane={pane} />;
   else if (pane.kind === "pcap") body = <PcapPane pane={pane} />;
   else if (pane.kind === "api") body = <ApiPane pane={pane} />;
+  else if (pane.kind === "stage") body = <StagePane key={`${pane.id}:${pane.stageId ?? ""}`} pane={pane} />;
   else if (pane.kind === "empty") {
     body = (
       <div className="empty">
@@ -140,7 +142,7 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
         <span className="kind-pill">{pane.kind}</span>
         <span className="pane-title">{pane.session?.name ?? pane.kind}</span>
         <span style={{ flex: 1 }} />
-        {pane.session && pane.kind !== "pcap" && pane.kind !== "empty" && (
+        {pane.session && pane.kind !== "pcap" && pane.kind !== "empty" && pane.kind !== "stage" && (
           <button
             type="button"
             className={`ghost ${pane.logging ? "on" : ""}`}

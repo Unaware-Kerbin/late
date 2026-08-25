@@ -217,7 +217,9 @@ export type SplitNode =
 
 export interface PaneState {
   id: string;
-  kind: SessionKind | "empty";
+  kind: SessionKind | "empty" | "stage";
+  stageId?: string;
+  stageFormat?: string;
   session?: SessionInfo;
   deviceId?: string;
   disconnected: boolean;
@@ -278,6 +280,7 @@ function pickStr(r: Record<string, unknown>, ...keys: string[]): string | null {
 export function coerceDeviceKind(v: unknown): DeviceKind {
   const s = String(v ?? "").toLowerCase();
   if (s === "serial" || s === "local" || s === "api" || s === "ssh") return s;
+  if (s === "host" || s === "ip" || s === "tcp") return "ssh";
   return "ssh";
 }
 
