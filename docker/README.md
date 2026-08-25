@@ -2,7 +2,7 @@
 
 Late does not bundle a GPU runtime. Point the Agent pane at **vLLM**, **llama.cpp**, or **Ollama** on loopback. NVIDIA, AMD, and Intel GPUs all work if the server you run uses them.
 
-SSH, serial, SFTP, and the UI stay on the host. Docker in this folder is optional.
+SSH, serial, SCP, and the UI stay on the host. Docker in this folder is optional.
 
 ## Pick a stack
 

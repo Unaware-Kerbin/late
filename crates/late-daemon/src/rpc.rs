@@ -232,34 +232,36 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 Ok(serde_json::to_value(app.check_policy(vendor, &cmd))?)
             }
         }
-        "sftp.list" | "sftp.ls" => {
+        "sftp.list" | "sftp.ls" | "scp.list" | "scp.ls" => {
             let id = req_str(&params, &["id", "session_id"])?;
             let path = pstr(&params, &["path"]).unwrap_or_else(|| "/".into());
             let app = app.clone();
             blocking(move || Ok(serde_json::to_value(app.sftp_list(&id, &path)?)?)).await
         }
-        "sftp.local" | "sftp.local_list" | "fs.list" => {
+        "sftp.local" | "sftp.local_list" | "scp.local" | "fs.list" => {
             let path = pstr(&params, &["path"]).unwrap_or_default();
             blocking(move || Ok(serde_json::to_value(sftp::list_local(&path)?)?)).await
         }
-        "sftp.get" | "sftp.download" => {
+        "sftp.get" | "sftp.download" | "scp.get" | "scp.download" => {
             let id = req_str(&params, &["id", "session_id"])?;
             let remote = req_str(&params, &["remote", "src"])?;
             let local = req_str(&params, &["local", "dst"])?;
+            let recursive = json_flag(&params, &["recursive", "is_dir"]);
             let app = app.clone();
             blocking(move || {
-                app.sftp_download(&id, &remote, &local)?;
+                app.sftp_download(&id, &remote, &local, recursive)?;
                 Ok(json!({"ok": true}))
             })
             .await
         }
-        "sftp.put" | "sftp.upload" => {
+        "sftp.put" | "sftp.upload" | "scp.put" | "scp.upload" => {
             let id = req_str(&params, &["id", "session_id"])?;
             let local = req_str(&params, &["local", "src"])?;
             let remote = req_str(&params, &["remote", "dst"])?;
+            let recursive = json_flag(&params, &["recursive", "is_dir"]);
             let app = app.clone();
             blocking(move || {
-                app.sftp_upload(&id, &local, &remote)?;
+                app.sftp_upload(&id, &local, &remote, recursive)?;
                 Ok(json!({"ok": true}))
             })
             .await
@@ -539,7 +541,7 @@ fn parse_kind(s: &str) -> Result<SessionKind, LateError> {
         "ssh" => Ok(SessionKind::Ssh),
         "serial" => Ok(SessionKind::Serial),
         "local" => Ok(SessionKind::Local),
-        "sftp" => Ok(SessionKind::Sftp),
+        "sftp" | "scp" => Ok(SessionKind::Sftp),
         "pcap" => Ok(SessionKind::Pcap),
         "api" => Ok(SessionKind::Api),
         other => Err(LateError::Message(format!("unknown session kind: {other}"))),

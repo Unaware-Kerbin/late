@@ -2,13 +2,24 @@ import { useRef, useSyncExternalStore } from "react";
 import {
   applyChrome,
   loadAppearance,
+  loadTermFont,
+  termFontCss,
+  TERM_FONT_SIZE,
   type Appearance,
   type DensityId,
   type FontId,
   type LayoutId,
   type RadiusId,
+  type TermFontId,
   type ThemeId,
 } from "./appearance";
+import {
+  DEFAULT_TERM_HIGHLIGHTS,
+  loadTermHighlights,
+  persistTermHighlights,
+  sanitizeHighlights,
+  type TermHighlightSettings,
+} from "./termHighlight";
 import {
   CHAT_H,
   CHAT_W,
@@ -82,11 +93,14 @@ export type AppState = {
   lastDiff: DiffLine[] | null;
   uiScale: number;
   termFontSize: number;
+  termFont: TermFontId;
+  termFontCustom: string;
   theme: ThemeId;
   density: DensityId;
   radius: RadiusId;
   uiFont: FontId;
   layout: LayoutId;
+  termHighlights: TermHighlightSettings;
   shellOrder: ShellPaneId[];
   sideW: number;
   chatW: number;
@@ -132,15 +146,18 @@ function bootstrap(): AppState {
     captures: [],
     lastDiff: null,
     uiScale: readStored("late.uiScale", 1.15, 0.85, 2),
-    termFontSize: readStored("late.termFontSize", 18, 12, 36),
+    termFontSize: readStored("late.termFontSize", TERM_FONT_SIZE.fallback, TERM_FONT_SIZE.min, TERM_FONT_SIZE.max),
     ...(() => {
       const a = loadAppearance();
+      const tf = loadTermFont();
       return {
         theme: a.theme,
         density: a.density,
         radius: a.radius,
         uiFont: a.font,
         layout: a.layout,
+        termFont: tf.termFont,
+        termFontCustom: tf.termFontCustom,
         shellOrder: loadShellOrder(a.layout),
         sideW: readStored("late.sideW", SIDE_W.fallback, SIDE_W.min, SIDE_W.max),
         chatW: readStored("late.chatW", CHAT_W.fallback, CHAT_W.min, CHAT_W.max),
@@ -148,6 +165,7 @@ function bootstrap(): AppState {
         chatModelsH: readModelsH(),
       };
     })(),
+    termHighlights: loadTermHighlights(),
     providerStatus: {},
   };
 }
@@ -166,8 +184,11 @@ export function applyAppearance(s: AppState = state) {
   try {
     document.documentElement.style.fontSize = `${(13 * s.uiScale).toFixed(1)}px`;
     document.documentElement.style.setProperty("--term-font-size", `${s.termFontSize}px`);
+    document.documentElement.style.setProperty("--term-font-family", termFontCss(s.termFont, s.termFontCustom));
     localStorage.setItem("late.uiScale", String(s.uiScale));
     localStorage.setItem("late.termFontSize", String(s.termFontSize));
+    localStorage.setItem("late.termFont", s.termFont);
+    localStorage.setItem("late.termFontCustom", s.termFontCustom);
     applyChrome({
       theme: s.theme,
       density: s.density,
@@ -215,7 +236,7 @@ export function bumpUiScale(delta: number) {
 
 export function bumpTermFont(delta: number) {
   setState((s) => {
-    const termFontSize = Math.min(36, Math.max(12, s.termFontSize + delta));
+    const termFontSize = Math.min(TERM_FONT_SIZE.max, Math.max(TERM_FONT_SIZE.min, s.termFontSize + delta));
     const next = { ...s, termFontSize };
     queueMicrotask(() => applyAppearance(next));
     return next;
@@ -234,7 +255,9 @@ export function resetAppearance() {
     const next = {
       ...s,
       uiScale: 1.15,
-      termFontSize: 18,
+      termFontSize: TERM_FONT_SIZE.fallback,
+      termFont: "system" as const,
+      termFontCustom: "",
       ...a,
       shellOrder: defaultOrder(a.layout),
       sideW: SIDE_W.fallback,
@@ -259,6 +282,19 @@ export function setAppearance(uiScale?: number, termFontSize?: number) {
   });
 }
 
+export function setTermType(patch: { termFont?: TermFontId; termFontCustom?: string; termFontSize?: number }) {
+  setState((s) => {
+    const next = {
+      ...s,
+      termFont: patch.termFont ?? s.termFont,
+      termFontCustom: patch.termFontCustom !== undefined ? patch.termFontCustom : s.termFontCustom,
+      termFontSize: patch.termFontSize ?? s.termFontSize,
+    };
+    queueMicrotask(() => applyAppearance(next));
+    return next;
+  });
+}
+
 export function patchAppearance(patch: Partial<Appearance> & { uiFont?: FontId }) {
   setState((s) => {
     const next = {
@@ -272,6 +308,14 @@ export function patchAppearance(patch: Partial<Appearance> & { uiFont?: FontId }
     };
     queueMicrotask(() => applyAppearance(next));
     return next;
+  });
+}
+
+export function setTermHighlights(next: TermHighlightSettings | null) {
+  setState((s) => {
+    const termHighlights = sanitizeHighlights(next ?? structuredClone(DEFAULT_TERM_HIGHLIGHTS));
+    persistTermHighlights(termHighlights);
+    return { ...s, termHighlights };
   });
 }
 

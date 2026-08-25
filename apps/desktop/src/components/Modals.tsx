@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { dismissProposal } from "../lib/approvals-ui";
 import { approve } from "../lib/sidecar";
+import { TermHighlightEditor } from "./TermHighlightEditor";
 import {
   DENSITIES,
   FONTS,
   LAYOUTS,
   RADII,
+  TERM_FONTS,
+  TERM_FONT_SIZE,
   THEMES,
+  termFontCss,
 } from "../appearance";
 import {
   deleteAuth,
@@ -32,6 +36,8 @@ import {
   bumpTermFont,
   bumpUiScale,
   resetAppearance,
+  setTermHighlights,
+  setTermType,
   startDeviceEditor,
   upsertAuth,
   upsertCollection,
@@ -281,20 +287,24 @@ function Palette() {
     { id: "split-d", label: "Split down", run: () => splitFocused("down") },
     { id: "import", label: "Import inventory", run: () => setState({ importOpen: true }) },
     { id: "settings", label: "Settings", run: () => setState({ settingsOpen: true }) },
+    { id: "highlights", label: "Keyword highlights (up / down colors)", run: () => setState({ settingsOpen: true }) },
     { id: "keys", label: "API keys", run: () => setState({ keysOpen: true }) },
     { id: "auth", label: "Auth profiles", run: () => setState({ authOpen: true }) },
     { id: "cap", label: "Captures / diff", run: () => setState({ captureOpen: true }) },
     { id: "add-ssh", label: "New SSH session", run: () => startDeviceEditor(undefined, "ssh") },
     { id: "add-serial", label: "New serial console", run: () => startDeviceEditor(undefined, "serial") },
     { id: "add-api", label: "New API controller", run: () => startDeviceEditor(undefined, "api") },
-    { id: "zoom-in", label: "Larger text", run: () => { bumpUiScale(0.1); bumpTermFont(1); } },
-    { id: "zoom-out", label: "Smaller text", run: () => { bumpUiScale(-0.1); bumpTermFont(-1); } },
+    { id: "zoom-in", label: "Larger terminal text", run: () => bumpTermFont(1) },
+    { id: "zoom-out", label: "Smaller terminal text", run: () => bumpTermFont(-1) },
     { id: "zoom-reset", label: "Reset appearance", run: () => resetAppearance() },
     { id: "theme-midnight", label: "Theme: Midnight", run: () => patchAppearance({ theme: "midnight" }) },
     { id: "theme-paper", label: "Theme: Paper", run: () => patchAppearance({ theme: "paper" }) },
     { id: "theme-contrast", label: "Theme: High contrast", run: () => patchAppearance({ theme: "contrast" }) },
     { id: "theme-nord", label: "Theme: Nord", run: () => patchAppearance({ theme: "nord" }) },
     ...devices.map((d) => ({ id: d.id, label: `Connect ${d.name}`, run: () => void openSession(d) })),
+    ...devices
+      .filter((d) => d.kind === "ssh")
+      .map((d) => ({ id: `scp-${d.id}`, label: `SCP ${d.name}`, run: () => void openSession(d, "sftp") })),
   ].filter((i) => i.label.toLowerCase().includes(q.toLowerCase()));
   return (
     <div className="modal-root" onMouseDown={() => setState({ paletteOpen: false })}>
@@ -438,11 +448,14 @@ function SettingsModal() {
   const settings = useApp((s) => s.settings);
   const uiScale = useApp((s) => s.uiScale);
   const termFontSize = useApp((s) => s.termFontSize);
+  const termFont = useApp((s) => s.termFont);
+  const termFontCustom = useApp((s) => s.termFontCustom);
   const theme = useApp((s) => s.theme);
   const density = useApp((s) => s.density);
   const radius = useApp((s) => s.radius);
   const uiFont = useApp((s) => s.uiFont);
   const layout = useApp((s) => s.layout);
+  const termHighlights = useApp((s) => s.termHighlights);
   const [bind, setBind] = useState(settings?.bind ?? "127.0.0.1:7420");
   const [vllm, setVllm] = useState(settings?.vllm_base_url ?? "http://127.0.0.1:8000/v1");
   const [model, setModel] = useState(settings?.vllm_model ?? "local");
@@ -541,18 +554,62 @@ function SettingsModal() {
           />
         </label>
         <label>
-          Terminal font ({termFontSize}px)
+          Terminal size ({termFontSize}px)
           <input
             type="range"
-            min={12}
-            max={36}
+            min={TERM_FONT_SIZE.min}
+            max={TERM_FONT_SIZE.max}
             step={1}
             value={termFontSize}
             onChange={(e) => setAppearance(undefined, Number(e.target.value))}
           />
         </label>
+        <label>
+          Size (px)
+          <input
+            type="number"
+            min={TERM_FONT_SIZE.min}
+            max={TERM_FONT_SIZE.max}
+            step={1}
+            value={termFontSize}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (!Number.isFinite(n)) return;
+              setAppearance(undefined, Math.min(TERM_FONT_SIZE.max, Math.max(TERM_FONT_SIZE.min, Math.round(n))));
+            }}
+          />
+        </label>
         <p className="hint">Ctrl + / − / 0 or Ctrl+mouse wheel also zoom. Default is 115% UI and 18px terminal.</p>
         <div className="appearance-block">
+          <h3>Terminal font</h3>
+          <p className="hint">Uses fonts already on this computer. Late does not download typefaces.</p>
+          <div className="choice-grid">
+            {TERM_FONTS.map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                className={termFont === f.id ? "choice on" : "choice"}
+                style={{ fontFamily: f.id === "custom" ? termFontCss("custom", termFontCustom) : f.css }}
+                onClick={() => setTermType({ termFont: f.id })}
+              >
+                <strong>{f.name}</strong>
+                <span>{f.hint}</span>
+              </button>
+            ))}
+          </div>
+          {termFont === "custom" && (
+            <label>
+              Custom font family
+              <input
+                value={termFontCustom}
+                placeholder="Fira Code"
+                onChange={(e) => setTermType({ termFontCustom: e.target.value })}
+              />
+            </label>
+          )}
+          <pre className="hl-preview" style={{ fontFamily: termFontCss(termFont, termFontCustom), fontSize: termFontSize }}>
+            GigabitEthernet1/0/1 is up, line protocol is down
+          </pre>
           <h3>Theme</h3>
           <div className="choice-grid">
             {THEMES.map((t) => (
@@ -598,7 +655,7 @@ function SettingsModal() {
               </button>
             ))}
           </div>
-          <h3>Typeface</h3>
+          <h3>UI typeface</h3>
           <div className="choice-grid">
             {FONTS.map((f) => (
               <button
@@ -635,6 +692,7 @@ function SettingsModal() {
             Reset look
           </button>
         </div>
+        <TermHighlightEditor value={termHighlights} onChange={setTermHighlights} />
         <h3 className="hint" style={{ marginTop: 12 }}>API keys (your computer only)</h3>
         <p className="hint">
           Keys are stored in <code>~/.config/late/provider-keys.json</code> mode 0600, separate from SSH passwords.

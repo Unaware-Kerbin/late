@@ -134,12 +134,12 @@ export function SftpPane({ pane }: { pane: PaneState }) {
 
   async function transfer(kind: "upload" | "download") {
     if (!sessionId) {
-      toast("error", "Connect an SFTP session from the sidebar first.");
+      toast("error", "Connect SCP / SFTP from the sidebar first.");
       return;
     }
     const src = kind === "upload" ? localSel : remoteSel;
-    if (!src || src.isDir) {
-      toast("error", kind === "upload" ? "Select a local file to upload." : "Select a remote file to download.");
+    if (!src) {
+      toast("error", kind === "upload" ? "Select a local file or folder to upload." : "Select a remote file or folder to download.");
       return;
     }
     const destDir = kind === "upload" ? remotePath : localPath;
@@ -148,15 +148,25 @@ export function SftpPane({ pane }: { pane: PaneState }) {
       return;
     }
     const dest = joinPath(destDir, src.name);
+    const recursive = src.isDir;
+    const timeout = recursive ? 600_000 : 120_000;
     setBusy(kind);
     try {
       if (kind === "upload") {
-        await rpc.call("sftp.upload", { sessionId, session_id: sessionId, local: src.path, remote: dest }, 120_000);
-        toast("ok", `uploaded ${src.name}`);
+        await rpc.call(
+          "scp.upload",
+          { sessionId, session_id: sessionId, local: src.path, remote: dest, recursive, isDir: recursive },
+          timeout,
+        );
+        toast("ok", recursive ? `uploaded folder ${src.name}` : `uploaded ${src.name}`);
         await loadRemote(remotePath);
       } else {
-        await rpc.call("sftp.download", { sessionId, session_id: sessionId, remote: src.path, local: dest }, 120_000);
-        toast("ok", `downloaded ${src.name}`);
+        await rpc.call(
+          "scp.download",
+          { sessionId, session_id: sessionId, remote: src.path, local: dest, recursive, isDir: recursive },
+          timeout,
+        );
+        toast("ok", recursive ? `downloaded folder ${src.name}` : `downloaded ${src.name}`);
         await loadLocal(localPath);
       }
     } catch (err) {
@@ -180,7 +190,7 @@ export function SftpPane({ pane }: { pane: PaneState }) {
   return (
     <div className="sftp-pane">
       {!sessionId && (
-        <div className="sftp-banner">SFTP session not connected — local files still work. Open SFTP from the sidebar to browse the remote host.</div>
+        <div className="sftp-banner">SCP session not connected — local files still work. Open SCP / SFTP from the sidebar to browse the remote host.</div>
       )}
       <div className="dual sftp-dual">
         <Column
@@ -212,16 +222,16 @@ export function SftpPane({ pane }: { pane: PaneState }) {
         />
       </div>
       <div className="sftp-actions">
-        <button className="primary" disabled={!sessionId || !localSel || localSel.isDir || !!busy} onClick={() => void transfer("upload")}>
+        <button className="primary" disabled={!sessionId || !localSel || !!busy} onClick={() => void transfer("upload")}>
           {busy === "upload" ? "Uploading…" : "Upload →"}
         </button>
-        <button className="ghost" disabled={!sessionId || !remoteSel || remoteSel.isDir || !!busy} onClick={() => void transfer("download")}>
+        <button className="ghost" disabled={!sessionId || !remoteSel || !!busy} onClick={() => void transfer("download")}>
           {busy === "download" ? "Downloading…" : "← Download"}
         </button>
         <button className="ghost" disabled={!!busy} onClick={() => { void loadLocal(localPath); if (sessionId) void loadRemote(remotePath); }}>
           Refresh
         </button>
-        <span className="sftp-hint">Double-click a folder to open it. Agent tools cannot use SFTP.</span>
+        <span className="sftp-hint">Copies use OpenSSH scp (folders use scp -r). Double-click a folder to open it. Agent tools cannot transfer files.</span>
       </div>
     </div>
   );

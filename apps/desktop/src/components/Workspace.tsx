@@ -139,7 +139,7 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
       onMouseDown={() => setState({ focusedPaneId: pane.id })}
     >
       <div className="pane-bar" style={accent ? { boxShadow: `inset 3px 0 0 ${accent}` } : undefined}>
-        <span className="kind-pill">{pane.kind}</span>
+        <span className="kind-pill">{pane.kind === "sftp" ? "scp" : pane.kind}</span>
         <span className="pane-title">{pane.session?.name ?? pane.kind}</span>
         <span style={{ flex: 1 }} />
         {pane.session && pane.kind !== "pcap" && pane.kind !== "empty" && pane.kind !== "stage" && (

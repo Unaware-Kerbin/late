@@ -32,6 +32,9 @@ const SKIP: &[&str] = &[
     "sftp.ls",
     "sftp.local",
     "sftp.local_list",
+    "scp.list",
+    "scp.ls",
+    "scp.local",
     "fs.list",
 ];
 
@@ -97,6 +100,8 @@ mod tests {
         assert!(should_log("auth.upsert"));
         assert!(should_log("providers.set"));
         assert!(should_log("sftp.download"));
+        assert!(should_log("scp.download"));
+        assert!(should_log("scp.upload"));
         assert!(should_log("settings.cloud_chat"));
         assert!(should_log("chat"));
     }

@@ -1017,7 +1017,7 @@ export function Sidebar() {
           </button>
           {selectedDevice.kind === "ssh" && (
             <button className="ghost" type="button" onClick={() => connect(selectedDevice, "sftp")}>
-              SFTP
+              SCP / SFTP
             </button>
           )}
         </div>
@@ -1108,7 +1108,7 @@ export function Sidebar() {
                   if (d) connect(d, "sftp");
                 }}
               >
-                SFTP
+                SCP / SFTP
               </button>
             )}
             <button

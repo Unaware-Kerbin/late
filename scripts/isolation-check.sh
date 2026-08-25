@@ -20,4 +20,11 @@ if hits=$(grep -RInE 'stage\.push|stage\.plan' "$SIDECAR" \
   echo "$hits"
   exit 1
 fi
+if hits=$(grep -RInE 'sftp\.(get|put|upload|download)|scp\.(get|put|upload|download)' "$SIDECAR" \
+    --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' --include='*.cjs' \
+    --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.git 2>/dev/null); then
+  echo "FAIL: agent-sidecar must not call file-transfer RPCs"
+  echo "$hits"
+  exit 1
+fi
 echo "isolation-check: OK"

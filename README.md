@@ -1,6 +1,6 @@
 # Late — Local AI Terminal Emulator
 
-Late is a desktop app for SSH, serial consoles, file transfer (SFTP), REST APIs, packet capture, and **Staging** drafts (CLI, Ansible, Netmiko, Salt, Chef). An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
+Late is a desktop app for SSH, serial consoles, file transfer (SCP), REST APIs, packet capture, and **Staging** drafts (CLI, Ansible, Netmiko, Salt, Chef). Terminals can color keywords (down/up) and use a font and size you pick. An optional AI helper can propose commands; Late only sends them after you click **Approve**. Passwords and keys stay on your computer.
 
 By default the helper uses a model **on your computer**. Cloud backends (Cursor and similar) stay off until they are enabled in Settings. Hugging Face model downloads stay available.
 
@@ -77,6 +77,8 @@ Then search for **Late**, or run `late` in a terminal. If the command is not fou
 2. The Agent pane is optional. For local AI, install [Ollama](https://ollama.com), choose **Ollama** in Late, then **Pull** a model (for example `gemma3:4b`).
 3. To use Cursor or other cloud chat, open Settings and turn on the **Cloud AI** switch. Save. Session text may then leave your computer.
 4. **Staging** (titlebar or Tools) holds CLI / Ansible / Netmiko / Salt / Chef drafts the helper writes on your computer. Ask for a playbook by name. **Push** is click-only (Enter does not confirm). See [Staging](#staging).
+5. On an SSH device, **SCP / SFTP** copies files and folders with OpenSSH `scp`. See [File transfer](#file-transfer-scp).
+6. Settings → **Keyword highlights** colors `down` / `up` (and the rest of those schemes). **Terminal font** and **size** are on the same Settings page. See [Keyword highlights](#keyword-highlights) and [Terminal look](#terminal-look).
 
 ## Help
 
@@ -84,6 +86,9 @@ Then search for **Late**, or run `late` in a terminal. If the command is not fou
 - Security reports: [SECURITY.md](SECURITY.md) (private advisory preferred).
 - Agent commands: Late waits for **Approve**. Network OS sessions also check a vendor permit list first; Linux CLI has no permit list (Approve every command). API GETs (`propose_api_get`) are operator click only (no vendor permit list). Host-key and approval dialogs are not dismissed by clicking outside. **Trust** and **Approve** need an explicit button click (not Enter). Escape does not Trust.
 - Staging: see [Staging](#staging).
+- File copies: see [File transfer](#file-transfer-scp). The helper cannot SCP.
+- Keyword colors: Settings → **Keyword highlights**. Change the Down / Up / Warn scheme colors; they apply to SSH, serial, and local terminals. Display only.
+- Terminal font and size: Settings → **Terminal font**. See [Terminal look](#terminal-look).
 
 ## Staging
 
@@ -102,6 +107,18 @@ The helper can draft CLI, Ansible, Netmiko, Salt, or Chef into the Staging pane 
 Late does **not** install those PATH tools. If one is missing, you get an install error. Pick an SSH inventory host (hostname/IP + user + key, agent, or a password already saved in Late). An open serial **Push session** is only for Push CLI.
 
 Draft files reject password-like lines and never contain `ansible_ssh_pass`. Password-only Push injects the vault secret at run time (`sshpass -e` on the daemon child) — prefer a key or agent when you can. Generic Vendor/OS does not assume Cisco IOS.
+
+## File transfer (SCP)
+
+On an SSH device, **SCP / SFTP** opens a dual-pane browser. Listing uses `ssh … ls`; copies use OpenSSH `scp` on your computer (folders use `scp -r`). Local paths stay under your home directory or Late data. Passwords use the same ASKPASS helper as SSH — not the process command line, and not the agent. The helper cannot upload or download files.
+
+## Keyword highlights
+
+Settings → **Keyword highlights** colors words in SSH, serial, and local output (SecureCRT-style). **Down / bad**, **Up / good**, and **Warn** each have a color you pick — every keyword in that scheme follows. Individual keywords can use a custom color. Optional fill paints a background. This is display-only: session logs and the agent still see the raw text. Stored on this computer, not in the daemon.
+
+## Terminal look
+
+Settings → **Terminal font** picks a monospace family already on your computer (system default, Cascadia, Consolas, Menlo/SF Mono, DejaVu, Ubuntu Mono, Courier, or a **Custom** name such as Fira Code). Late does not download fonts. **Size** is 10–48px (slider or the box); Ctrl+mouse wheel also zooms. UI typeface (system / accessible / all mono) is separate, under **UI typeface**.
 
 ## For developers
 
@@ -147,7 +164,7 @@ PTY output event:
 { "event": "session.data", "sessionId": "...", "data": "<base64>" }
 ```
 
-Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm`, `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
+Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`; `scp` is an alias for `sftp`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm` (aliases `scp.list|get|put|upload|download`; `recursive` copies folders with `scp -r`), `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
 
 Agent tools call these same session/policy/pcap/api methods. The daemon does not talk to LLMs.
 
@@ -159,11 +176,11 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 
 The **ci** workflow on each push is Rust tests, isolation greps, and advisory scans. It does **not** attach `.exe` / `.dmg` / AppImage files. Those come from **Build installers** on a `v*` tag and show up under [Releases](https://github.com/Unaware-Kerbin/late/releases).
 
-`scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` so it must not contain `keyring`, `russh`, or `secrets.json` vault code, and must not call `stage.push` / `stage.plan`. That grep does not mean the sidecar never reads `sidecar.token` — it does, for auth. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
+`scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` so it must not contain `keyring`, `russh`, or `secrets.json` vault code, and must not call `stage.push` / `stage.plan` or file-transfer RPCs (`sftp.upload`, `scp.download`, and similar). That grep does not mean the sidecar never reads `sidecar.token` — it does, for auth. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
 
 ## Layout
 
-- `crates/late-core` — inventory, secrets, SSH/serial/PTY/SFTP, policy, redact, pcap, API client, staging
+- `crates/late-core` — inventory, secrets, SSH/serial/PTY/SCP, policy, redact, pcap, API client, staging
 - `crates/late-daemon` — Axum JSON-RPC daemon
 - `crates/isolation-check` — sidecar firewall grep
 - `policies/` — vendor YAML permit lists

@@ -570,7 +570,7 @@ impl App {
     pub fn open_sftp(&self, device_id: &str) -> Result<SessionInfo> {
         let device = self.inventory.get(device_id)?;
         self.attach(
-            format!("sftp:{}", device.name),
+            format!("scp:{}", device.name),
             SessionKind::Sftp,
             device.vendor,
             Some(device.id.clone()),
@@ -615,7 +615,13 @@ impl App {
         roots
     }
 
-    pub fn sftp_download(&self, session_id: &str, remote: &str, local: &str) -> Result<()> {
+    pub fn sftp_download(
+        &self,
+        session_id: &str,
+        remote: &str,
+        local: &str,
+        recursive: bool,
+    ) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
         let dest =
             confine::confine_under_roots(Path::new(local), &self.operator_fs_roots(), false)?;
@@ -626,12 +632,25 @@ impl App {
             device.port.unwrap_or(22),
             remote,
             &dest.to_string_lossy(),
+            recursive,
         )
     }
 
-    pub fn sftp_upload(&self, session_id: &str, local: &str, remote: &str) -> Result<()> {
+    pub fn sftp_upload(
+        &self,
+        session_id: &str,
+        local: &str,
+        remote: &str,
+        recursive: bool,
+    ) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
-        let src = confine::confine_under_roots(Path::new(local), &self.operator_fs_roots(), true)?;
+        let local_path = Path::new(local);
+        let recursive = recursive || local_path.is_dir();
+        let src = if recursive {
+            confine::confine_dir(local_path, &self.operator_fs_roots())?
+        } else {
+            confine::confine_under_roots(local_path, &self.operator_fs_roots(), true)?
+        };
         sftp::upload(
             &profile,
             &self.secrets,
@@ -639,6 +658,7 @@ impl App {
             device.port.unwrap_or(22),
             &src.to_string_lossy(),
             remote,
+            recursive,
         )
     }
 

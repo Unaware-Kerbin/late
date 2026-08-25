@@ -61,6 +61,21 @@ fn walk(dir: &Path, hits: &mut Vec<String>) {
                     i + 1
                 ));
             }
+            if lower.contains("sftp.get")
+                || lower.contains("sftp.put")
+                || lower.contains("sftp.upload")
+                || lower.contains("sftp.download")
+                || lower.contains("scp.get")
+                || lower.contains("scp.put")
+                || lower.contains("scp.upload")
+                || lower.contains("scp.download")
+            {
+                hits.push(format!(
+                    "{}:{}: sidecar must not call file-transfer RPCs",
+                    path.display(),
+                    i + 1
+                ));
+            }
             if is_tools
                 && (lower.contains("provider-keys")
                     || lower.contains("sidecar.token")

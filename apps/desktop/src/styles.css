@@ -685,7 +685,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.modal.wide { width: min(640px, calc(100vw - 32px)); }
+.modal.wide { width: min(720px, calc(100vw - 32px)); }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; text-transform: none; letter-spacing: 0; }
 .kind-grid {
   display: grid;
@@ -1586,4 +1586,76 @@ html[data-font="mono"] {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.hl-block { margin: 12px 0 4px; }
+.hl-block h3 {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.hl-schemes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+.hl-scheme {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px;
+  background: var(--bg);
+  min-width: 0;
+}
+.hl-scheme strong { display: block; font-size: 12px; margin-bottom: 6px; }
+.hl-color { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.hl-color input[type="color"] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+}
+.hl-swatches { display: flex; flex-wrap: wrap; gap: 3px; }
+.hl-swatches button {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  padding: 0;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+}
+.hl-swatches button.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hl-head,
+.hl-row {
+  display: grid;
+  grid-template-columns: minmax(6rem, 1fr) minmax(8rem, 1.3fr) 2.2rem 2.2rem 2rem;
+  gap: 6px;
+  align-items: center;
+}
+.hl-head {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-top: 4px;
+}
+.hl-rows { display: flex; flex-direction: column; gap: 6px; max-height: 16rem; overflow: auto; }
+.hl-row input,
+.hl-row select { min-width: 0; width: 100%; }
+.hl-scheme-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hl-flag { display: flex; align-items: center; gap: 4px; margin: 0; font-size: 11px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.hl-actions { display: flex; gap: 8px; margin: 8px 0; }
+.hl-preview {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
 }

@@ -1,4 +1,4 @@
-import { xtermTheme } from "../appearance";
+import { termFontCss, xtermTheme } from "../appearance";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { Terminal } from "@xterm/xterm";
@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { clipboardRead, clipboardWrite } from "../lib/clipboard";
 import { rpc } from "../lib/rpc";
 import { bumpTermFont, reconnectPane, resizeSession, sendBreak, sendInput, setState, useApp } from "../store";
+import { StreamHighlighter } from "../termHighlight";
 import type { PaneState } from "../types";
 
 function isCopyKey(e: KeyboardEvent) {
@@ -32,7 +33,12 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   const searchRef = useRef<SearchAddon>();
   const fitRef = useRef<FitAddon>();
   const termFontSize = useApp((s) => s.termFontSize);
+  const termFont = useApp((s) => s.termFont);
+  const termFontCustom = useApp((s) => s.termFontCustom);
   const theme = useApp((s) => s.theme);
+  const termHighlights = useApp((s) => s.termHighlights);
+  const hlRef = useRef(new StreamHighlighter(termHighlights));
+  const decRef = useRef(new TextDecoder("utf-8"));
   const activeTabId = useApp((s) => s.activeTabId);
   const focusedPaneId = useApp((s) => s.focusedPaneId);
   const [query, setQuery] = useState("");
@@ -49,7 +55,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     if (!host.current || !pane.session) return;
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "ui-monospace, Cascadia Mono, SF Mono, Menlo, Consolas, monospace",
+      fontFamily: termFontCss(termFont, termFontCustom),
       fontSize: termFontSize,
       theme: xtermTheme(theme),
       scrollback: 50000,
@@ -84,7 +90,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       })
       .then((r) => {
         const text = r?.text ?? "";
-        if (text) term.write(text.replace(/\n/g, "\r\n"));
+        if (text) term.write(hlRef.current.feed(text.replace(/\n/g, "\r\n")) + hlRef.current.flush());
       })
       .catch(() => undefined);
     termRef.current = term;
@@ -92,7 +98,9 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     fitRef.current = fit;
 
     const unsub = rpc.onBytes((sessionId, bytes) => {
-      if (sessionId === pane.session?.id) term.write(bytes);
+      if (sessionId !== pane.session?.id) return;
+      const text = decRef.current.decode(bytes, { stream: true });
+      if (text) term.write(hlRef.current.feed(text));
     });
     const onData = term.onData((data) => {
       if (pane.disconnected) {
@@ -187,12 +195,17 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   }, [pane.id, pane.session?.id, pane.disconnected]);
 
   useEffect(() => {
+    hlRef.current.setSettings(termHighlights);
+  }, [termHighlights]);
+
+  useEffect(() => {
     if (!visible) return;
     const term = termRef.current;
     const fit = fitRef.current;
     const el = host.current;
     if (!term || !fit || !el || el.clientWidth < 8 || el.clientHeight < 8) return;
     term.options.fontSize = termFontSize;
+    term.options.fontFamily = termFontCss(termFont, termFontCustom);
     term.options.theme = xtermTheme(theme);
     try {
       fit.fit();
@@ -202,7 +215,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     if (pane.session) {
       void resizeSession(pane.session.id, term.cols, term.rows);
     }
-  }, [visible, termFontSize, theme, pane.session?.id, activeTabId, focusedPaneId]);
+  }, [visible, termFontSize, termFont, termFontCustom, theme, pane.session?.id, activeTabId, focusedPaneId]);
 
   return (
     <>
@@ -309,6 +322,15 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
             }}
           >
             Select all
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMenu(null);
+              setState({ settingsOpen: true });
+            }}
+          >
+            Highlight keywords…
           </button>
         </div>
       )}

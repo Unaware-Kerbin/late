@@ -2,6 +2,7 @@ export type ThemeId = "midnight" | "nord" | "amber" | "forest" | "paper" | "cont
 export type DensityId = "compact" | "cozy" | "roomy";
 export type RadiusId = "sharp" | "soft" | "round";
 export type FontId = "plex" | "atkinson" | "mono";
+export type TermFontId = "system" | "cascadia" | "consolas" | "menlo" | "dejavu" | "ubuntu" | "courier" | "custom";
 export type LayoutId = "chat-right" | "chat-left" | "folders-right" | "agent-top" | "custom";
 
 export type Appearance = {
@@ -38,6 +39,85 @@ export const FONTS: { id: FontId; name: string; hint: string }[] = [
   { id: "atkinson", name: "Accessible", hint: "Segoe / system, a11y" },
   { id: "mono", name: "All mono", hint: "Operator console" },
 ];
+
+export const TERM_FONT_SIZE = { min: 10, max: 48, fallback: 18 };
+
+export const TERM_FONTS: { id: TermFontId; name: string; hint: string; css: string }[] = [
+  {
+    id: "system",
+    name: "System mono",
+    hint: "OS console default",
+    css: "ui-monospace, Cascadia Mono, 'SF Mono', Menlo, Consolas, monospace",
+  },
+  {
+    id: "cascadia",
+    name: "Cascadia",
+    hint: "Windows Terminal",
+    css: "'Cascadia Code', 'Cascadia Mono', Consolas, monospace",
+  },
+  {
+    id: "consolas",
+    name: "Consolas",
+    hint: "Windows classic",
+    css: "Consolas, 'Lucida Console', monospace",
+  },
+  {
+    id: "menlo",
+    name: "Menlo / SF Mono",
+    hint: "macOS",
+    css: "'SF Mono', Menlo, Monaco, monospace",
+  },
+  {
+    id: "dejavu",
+    name: "DejaVu",
+    hint: "Linux",
+    css: "'DejaVu Sans Mono', 'Liberation Mono', monospace",
+  },
+  {
+    id: "ubuntu",
+    name: "Ubuntu Mono",
+    hint: "Ubuntu",
+    css: "'Ubuntu Mono', 'DejaVu Sans Mono', monospace",
+  },
+  {
+    id: "courier",
+    name: "Courier",
+    hint: "Fixed-pitch fallback",
+    css: "'Courier New', Courier, monospace",
+  },
+  { id: "custom", name: "Custom", hint: "Any monospace installed on this computer", css: "" },
+];
+
+export function sanitizeTermFontName(raw: string): string {
+  const t = raw.trim().slice(0, 64);
+  if (!t || /[;{}<>\\"']/.test(t)) return "";
+  if (!/^[\w][\w .+-]*$/.test(t)) return "";
+  return t;
+}
+
+export function termFontCss(id: TermFontId, custom = ""): string {
+  if (id === "custom") {
+    const name = sanitizeTermFontName(custom);
+    if (name) return `"${name}", ui-monospace, monospace`;
+    return TERM_FONTS[0].css;
+  }
+  return TERM_FONTS.find((f) => f.id === id)?.css || TERM_FONTS[0].css;
+}
+
+export function loadTermFont(): { termFont: TermFontId; termFontCustom: string } {
+  const termFont = readEnum(
+    "late.termFont",
+    TERM_FONTS.map((f) => f.id),
+    "system",
+  );
+  let termFontCustom = "";
+  try {
+    termFontCustom = sanitizeTermFontName(localStorage.getItem("late.termFontCustom") ?? "");
+  } catch {
+    /* ignore */
+  }
+  return { termFont, termFontCustom };
+}
 
 export const LAYOUTS: { id: Exclude<LayoutId, "custom">; name: string; hint: string }[] = [
   { id: "chat-right", name: "Agent on the right", hint: "Folders · Terminal · Agent" },

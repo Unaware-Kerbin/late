@@ -70,7 +70,7 @@ function bodyMatchesFormat(format: StageFormatName, body: string): boolean {
   }
 }
 
-/** Six operator-gated tools plus one draft-only staging write. Never add SFTP — file transfer is UI-only. */
+/** Six operator-gated tools plus one draft-only staging write. Never add file-transfer RPCs — copies stay UI-only. */
 export const OPENAI_TOOLS: OpenAiTool[] = [
   {
     type: "function",
@@ -251,7 +251,7 @@ export async function liveSessionContext(): Promise<string> {
     let body = "(no scrollback yet)";
     try {
       if (s.kind === "sftp") {
-        body = "(SFTP session — listing only; propose_command is disabled)";
+        body = "(SCP/SFTP session — listing only; propose_command is disabled)";
       } else if (s.kind === "pcap") {
         let digest: unknown;
         try {

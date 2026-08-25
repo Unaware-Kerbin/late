@@ -50,6 +50,7 @@ pub fn list_dir(
     path: &str,
 ) -> Result<Vec<SftpEntry>> {
     let remote = if path.trim().is_empty() { "/" } else { path };
+    reject_remote(remote)?;
     let mut cmd = ssh_base(profile, host, port, secrets)?;
     cmd.arg(format!("ls -la {}", shell_escape(remote)));
     let out = cmd.output().map_err(|e| LateError::Sftp(e.to_string()))?;
@@ -198,13 +199,15 @@ pub fn download(
     port: u16,
     remote: &str,
     local: &str,
+    recursive: bool,
 ) -> Result<()> {
-    if Path::new(local).is_dir() {
+    reject_remote(remote)?;
+    if !recursive && Path::new(local).is_dir() {
         return Err(LateError::Sftp(
             "download destination is a directory; pick a file path".into(),
         ));
     }
-    scp(profile, secrets, host, port, remote, local, false)
+    scp(profile, secrets, host, port, remote, local, false, recursive)
 }
 
 pub fn upload(
@@ -214,11 +217,29 @@ pub fn upload(
     port: u16,
     local: &str,
     remote: &str,
+    recursive: bool,
 ) -> Result<()> {
-    if !Path::new(local).is_file() {
+    reject_remote(remote)?;
+    let p = Path::new(local);
+    if recursive {
+        if !p.is_dir() {
+            return Err(LateError::Sftp(format!("local folder not found: {local}")));
+        }
+    } else if !p.is_file() {
         return Err(LateError::Sftp(format!("local file not found: {local}")));
     }
-    scp(profile, secrets, host, port, local, remote, true)
+    scp(profile, secrets, host, port, local, remote, true, recursive)
+}
+
+fn reject_remote(path: &str) -> Result<()> {
+    let t = path.trim();
+    if t.is_empty() || t.contains('\0') || t.contains('\n') || t.contains('\r') {
+        return Err(LateError::Sftp("remote path rejected".into()));
+    }
+    if t.split(['/', '\\']).any(|p| p == "..") {
+        return Err(LateError::Sftp("remote path must not contain ..".into()));
+    }
+    Ok(())
 }
 
 fn scp(
@@ -229,6 +250,7 @@ fn scp(
     src: &str,
     dst: &str,
     upload: bool,
+    recursive: bool,
 ) -> Result<()> {
     let remote = format!(
         "{}@{}:{}",
@@ -247,6 +269,12 @@ fn scp(
         None
     };
     let mut cmd = crate::ssh::ssh_command_with_secret("scp", pw.as_deref())?;
+    if !profile.has_password {
+        cmd.arg("-o").arg("BatchMode=yes");
+    }
+    if recursive {
+        cmd.arg("-r");
+    }
     cmd.arg("-P").arg(port.to_string());
     if let Some(key) = crate::ssh::confined_identity(profile)? {
         cmd.arg("-i").arg(key);
@@ -269,6 +297,7 @@ pub fn mkdir(
     port: u16,
     path: &str,
 ) -> Result<()> {
+    reject_remote(path)?;
     let mut cmd = ssh_base(profile, host, port, secrets)?;
     cmd.arg(format!("mkdir -p {}", shell_escape(path)));
     let out = cmd.output().map_err(|e| LateError::Sftp(e.to_string()))?;
@@ -288,6 +317,7 @@ pub fn remove(
     path: &str,
     dir: bool,
 ) -> Result<()> {
+    reject_remote(path)?;
     let mut cmd = ssh_base(profile, host, port, secrets)?;
     cmd.arg(format!(
         "{} {}",
@@ -337,6 +367,13 @@ drwxr-xr-x 2 lab lab 64 2024-01-01 12:00:00 bin
         assert_eq!(iso_entries[0].name, "bin");
         assert!(iso_entries[0].is_dir);
         assert_eq!(iso_entries[1].name, "readme");
+    }
+
+    #[test]
+    fn reject_remote_dotdot() {
+        assert!(reject_remote("../etc/passwd").is_err());
+        assert!(reject_remote("/tmp\n/evil").is_err());
+        assert!(reject_remote("/var/log").is_ok());
     }
 
     #[test]

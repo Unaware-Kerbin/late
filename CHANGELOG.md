@@ -4,9 +4,12 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-25
 
-**README demo video, Staging PATH Push, and Sessions add UI.**
+**SCP copies, keyword colors, and adjustable terminal fonts.**
 
-- README **Demo** embeds `docs/assets/late-demo.mp4`. Staging, Cloud AI, and PATH Push (tools on your computer, not bundled) are documented for operators.
+- File transfer is OpenSSH **scp** (folders use `scp -r`). The sidebar button is **SCP / SFTP**. RPC aliases `scp.upload` / `scp.download`. Local paths stay under home or Late data. The helper still cannot copy files.
+- Terminal **keyword highlights** (Settings): `down` / `up` / warn color schemes are adjustable (not a single baked-in red/green). Display only — logs and the agent still see the raw text.
+- Terminal **font and size** are adjustable in Settings (system stacks plus a custom family already on this computer; 10–48px). Ctrl+wheel still zooms size.
+- README **Demo** embeds `docs/assets/late-demo.mp4`. Staging, Cloud AI, PATH Push, SCP, keyword colors, and terminal fonts are documented for operators.
 - Sessions **+** and right-click **Add folder** / **Add device** stay inside the Late window.
 
 ## 2026-08-24
