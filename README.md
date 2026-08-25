@@ -8,9 +8,9 @@ Late is **not** SOC 2 or ISO 27001 certified. The project’s security documents
 
 ## Demo
 
-<video src="https://github.com/Unaware-Kerbin/late/releases/download/readme-demo/late-demo.mp4" poster="https://raw.githubusercontent.com/Unaware-Kerbin/late/main/docs/assets/late-demo.jpg" controls muted playsinline width="720"></video>
+[![Late walkthrough](docs/assets/late-demo.webp)](https://github.com/Unaware-Kerbin/late/blob/main/docs/assets/late-demo.mp4)
 
-https://github.com/Unaware-Kerbin/late/releases/download/readme-demo/late-demo.mp4
+[Full walkthrough (MP4)](https://github.com/Unaware-Kerbin/late/blob/main/docs/assets/late-demo.mp4)
 
 ## Download
 
