@@ -1268,12 +1268,6 @@ pre.fp {
   text-transform: uppercase;
   flex: 0 0 auto;
 }
-.pcap-hint {
-  color: var(--muted);
-  font-size: 12px;
-  flex: 1;
-  min-width: 8rem;
-}
 .pcap-toolbar select.pcap-input {
   background: var(--bg);
   color: var(--text);

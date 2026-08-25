@@ -4,15 +4,6 @@ import { rpc } from "../lib/rpc";
 import { setState, toast, useApp } from "../store";
 import type { PacketSummary, PaneState, PcapFinding, SessionInfo } from "../types";
 
-type EdgesharkStatus = {
-  running: boolean;
-  starting: boolean;
-  url: string;
-  wireshark: boolean;
-  plugin: boolean;
-  detail: string;
-};
-
 type PcapOpen = {
   packets?: PacketSummary[];
   findings?: PcapFinding[];
@@ -169,7 +160,6 @@ export function PcapPane({ pane }: { pane: PaneState }) {
   const [savePath, setSavePath] = useState("");
   const [total, setTotal] = useState(0);
   const [truncated, setTruncated] = useState(false);
-  const [edgeshark, setEdgeshark] = useState<EdgesharkStatus | null>(null);
   const [sshTarget, setSshTarget] = useState("");
   const [remoteIface, setRemoteIface] = useState("any");
   const [remoteCount, setRemoteCount] = useState("200");
@@ -210,7 +200,6 @@ export function PcapPane({ pane }: { pane: PaneState }) {
   }
 
   useEffect(() => {
-    void refreshEdgeshark();
     void refreshSaved();
     void rpc
       .call<string[]>("pcap.interfaces")
@@ -225,18 +214,7 @@ export function PcapPane({ pane }: { pane: PaneState }) {
         });
       })
       .catch(() => undefined);
-    const t = window.setInterval(() => void refreshEdgeshark(), 4000);
-    return () => window.clearInterval(t);
   }, []);
-
-  async function refreshEdgeshark() {
-    try {
-      const st = await rpc.call<EdgesharkStatus>("pcap.edgeshark.status");
-      setEdgeshark(st);
-    } catch {
-      /* daemon may still be coming up */
-    }
-  }
 
   function applyOpen(r: PcapOpen, fallbackMsg?: string) {
     const list = (r.packets ?? []).slice(0, 400);
@@ -467,37 +445,6 @@ export function PcapPane({ pane }: { pane: PaneState }) {
     }
   }
 
-  async function startEdgeshark() {
-    setBusy("starting Edgeshark…");
-    try {
-      const st = await rpc.call<EdgesharkStatus>("pcap.edgeshark.start", {}, 90_000);
-      setEdgeshark(st);
-      toast("ok", st.detail || "Edgeshark starting");
-    } catch (err) {
-      toast("error", rpcErr(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function stopEdgeshark() {
-    setBusy("stopping Edgeshark…");
-    try {
-      const st = await rpc.call<EdgesharkStatus>("pcap.edgeshark.stop");
-      setEdgeshark(st);
-      toast("ok", "Edgeshark stopped");
-    } catch (err) {
-      toast("error", err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function openEdgesharkUi() {
-    const url = edgeshark?.url || "http://127.0.0.1:5001";
-    window.open(url, "_blank");
-  }
-
   async function openWireshark() {
     try {
       await rpc.call("pcap.wireshark", { sessionId, path: path || savePath || undefined });
@@ -508,7 +455,6 @@ export function PcapPane({ pane }: { pane: PaneState }) {
   }
 
   const fields = sel?.fields && typeof sel.fields === "object" ? Object.entries(sel.fields) : [];
-  const es = edgeshark;
   const highlightIdx = new Set(findings.find((f) => f.id === activeFinding)?.packet_indexes ?? []);
   const openFilePath = savePath || path;
   const capturing = !!(localCaptureId || sshCaptureId);
@@ -784,21 +730,6 @@ export function PcapPane({ pane }: { pane: PaneState }) {
             onChange={(e) => setRemoteCount(e.target.value)}
             title="One-shot packet count if live start is unavailable"
           />
-          <span className="pcap-sep" />
-          <span className="pcap-label">Edgeshark</span>
-          <span className="pcap-hint">
-            {es?.starting ? "starting…" : es?.running ? "running" : "Docker containers"}
-            {es && !es.plugin ? " · needs cshargextcap" : ""}
-          </span>
-          <button type="button" className="ghost" onClick={() => void startEdgeshark()}>
-            Start
-          </button>
-          <button type="button" className="ghost" onClick={openEdgesharkUi}>
-            UI
-          </button>
-          <button type="button" className="ghost" onClick={() => void stopEdgeshark()}>
-            Stop
-          </button>
         </div>
       )}
       <div className="pcap-statusbar">

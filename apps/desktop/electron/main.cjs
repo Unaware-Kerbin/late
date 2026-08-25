@@ -237,7 +237,7 @@ function isLoopbackHttpHost(hostname) {
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
-/** https anywhere, or http/https on loopback (Edgeshark). */
+/** https anywhere, or http/https on loopback. */
 function isAllowedExternal(url) {
   try {
     const u = new URL(url);

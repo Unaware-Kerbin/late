@@ -33,7 +33,7 @@ type VisRow =
   | { key: string; type: "folder"; path: string; name: string; depth: number; count: number }
   | { key: string; type: "device"; device: Device; depth: number }
   | { key: string; type: "tools"; depth: number }
-  | { key: string; type: "tool"; id: "pty" | "pcap" | "edgeshark" | "stage"; depth: number };
+  | { key: string; type: "tool"; id: "pty" | "pcap" | "stage"; depth: number };
 
 const ROOT_COLLAPSE = "__sessions__";
 const TOOLS_COLLAPSE = "__tools__";
@@ -380,7 +380,6 @@ export function Sidebar() {
       out.push({ key: "t:pty", type: "tool", id: "pty", depth: 1 });
       out.push({ key: "t:pcap", type: "tool", id: "pcap", depth: 1 });
       out.push({ key: "t:stage", type: "tool", id: "stage", depth: 1 });
-      out.push({ key: "t:edgeshark", type: "tool", id: "edgeshark", depth: 1 });
     }
     return out;
   }, [tree, collapsed, filtering, toolsOpen]);
@@ -689,21 +688,9 @@ export function Sidebar() {
     }
     if (row.type === "tool") {
       const label =
-        row.id === "pty"
-          ? "Local PTY"
-          : row.id === "pcap"
-            ? "Packet capture"
-            : row.id === "stage"
-              ? "Staging"
-              : "Edgeshark";
+        row.id === "pty" ? "Local PTY" : row.id === "pcap" ? "Packet capture" : "Staging";
       const meta =
-        row.id === "pty"
-          ? "host shell"
-          : row.id === "pcap"
-            ? "pcap / tcpdump"
-            : row.id === "stage"
-              ? "CLI / Ansible drafts"
-              : "127.0.0.1:5001";
+        row.id === "pty" ? "host shell" : row.id === "pcap" ? "pcap / tcpdump" : "CLI / Ansible drafts";
       return (
         <button
           key={row.key}

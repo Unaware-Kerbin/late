@@ -6,6 +6,7 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 **SCP copies, keyword colors, and adjustable terminal fonts.**
 
+- Removed **Edgeshark** (compose file, Tools entry, and `pcap.edgeshark.*` RPCs). Stop targeted compose project `late-edgeshark` while Ghostwire kept running as `edgeshark`, and `docker compose down` held the daemon’s blocking RPC pool so **Open in Wireshark** timed out. Packet capture, dumpcap/tcpdump, and Wireshark stay.
 - File transfer is OpenSSH **scp** (folders use `scp -r`). The sidebar button is **SCP / SFTP**. RPC aliases `scp.upload` / `scp.download`. Local paths stay under home or Late data. The helper still cannot copy files.
 - Terminal **keyword highlights** (Settings): `down` / `up` / warn color schemes are adjustable (not a single baked-in red/green). Display only — logs and the agent still see the raw text.
 - Terminal **font and size** are adjustable in Settings (system stacks plus a custom family already on this computer; 10–48px). Ctrl+wheel still zooms size.

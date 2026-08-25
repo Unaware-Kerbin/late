@@ -361,15 +361,6 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             })
             .await
         }
-        "pcap.edgeshark.status" | "edgeshark.status" => {
-            Ok(serde_json::to_value(late_core::edgeshark::status())?)
-        }
-        "pcap.edgeshark.start" | "edgeshark.start" => {
-            blocking(|| Ok(serde_json::to_value(late_core::edgeshark::start()?)?)).await
-        }
-        "pcap.edgeshark.stop" | "edgeshark.stop" => {
-            blocking(|| Ok(serde_json::to_value(late_core::edgeshark::stop()?)?)).await
-        }
         "pcap.packets" | "pcap.filter" => {
             let id = req_str(&params, &["id", "session_id"])?;
             if let Some(expr) = pstr(&params, &["filter", "expr"]) {

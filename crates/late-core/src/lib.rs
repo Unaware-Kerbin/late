@@ -3,7 +3,6 @@ pub mod capture;
 pub mod collections;
 pub mod config;
 pub mod confine;
-pub mod edgeshark;
 pub mod error;
 pub mod fsutil;
 pub mod hardware;
