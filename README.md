@@ -16,9 +16,7 @@ That is the whole idea.
 
 ## Watch it
 
-Click the picture to play.
-
-[![Watch how Late works](docs/assets/late-demo.jpg)](https://github.com/Unaware-Kerbin/late/blob/main/docs/assets/late-demo.mp4)
+![Watch how Late works](docs/assets/late-demo.webp)
 
 ## Install
 
