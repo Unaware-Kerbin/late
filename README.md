@@ -1,13 +1,13 @@
 # Late
 
-Late is a window on **your computer**. You use it to talk to other computers.
+Late is a window on **your computer**. You use it to talk to network devices.
 
 You can open a terminal (SSH), a serial port, a shell on this computer, copy files, look at packets, and save command drafts. A helper can *suggest* a command. Late will not send it until you click **Approve**. Passwords and keys stay on your computer.
 
 ## How it works
 
-1. You add a computer on the left (a name, an address, a login).
-2. You click it. Late opens a terminal to that computer.
+1. You add a device on the left (a name, an address, a login).
+2. You click it. Late opens a terminal to that device.
 3. You type, like any other terminal.
 4. If you ask the helper, it may propose a command. You read it. You click **Approve** or **Deny**. It does not send on Enter, and it does not send by itself.
 5. Cloud helpers stay **off** until you turn on **Cloud AI** in Settings. The usual helper is a model on your computer.
@@ -16,9 +16,9 @@ That is the whole idea.
 
 ## Watch it
 
-Click the picture. The video plays from Late’s demo release (not the source-file page).
+Click the picture to play.
 
-[![Watch how Late works](docs/assets/late-demo.jpg)](https://github.com/Unaware-Kerbin/late/releases/download/readme-demo/late-demo.mp4)
+[![Watch how Late works](docs/assets/late-demo.jpg)](https://github.com/Unaware-Kerbin/late/blob/main/docs/assets/late-demo.mp4)
 
 ## Install
 
