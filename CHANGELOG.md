@@ -14,6 +14,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 - Native adapters: Anthropic Messages, Gemini generateContent, Azure OpenAI deployments (`api-key`). Same private-network gate as vLLM. Public SaaS hosts still need Cloud AI. Tool calls still drive Approve. Keys: Anthropic, Gemini, Azure.
 
+**v0.1.6 installers.**
+
+- GitHub Release [v0.1.6](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.6) packs Linux, macOS, and Windows from this `main` (homelab helper, **Local** / **Add server**, Anthropic / Gemini / Azure). File names are `Late-0.1.6-…`. Still unsigned.
+
 **v0.1.5 installers.**
 
 - GitHub Release [v0.1.5](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.5) rebuilds Linux, macOS, and Windows apps from this `main` (Electron 44, session tabs/splits, Staging editor, SCP, `undici` pin). File names are `Late-0.1.5-…`. Still unsigned. macOS pack looks for `Electron.app` (Electron 42+ no longer unzips `dist/electron` on Darwin).

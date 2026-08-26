@@ -1,7 +1,7 @@
 {
   "name": "late",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Late — Local AI Terminal Emulator",
   "author": "Late contributors <noreply@users.noreply.github.com>",
   "homepage": "https://github.com/Unaware-Kerbin/late",
