@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-26
 
+**v0.1.4 installers.**
+
+- GitHub Release [v0.1.4](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.4) rebuilds Linux, macOS, and Windows apps from this `main` (Electron 44, session tabs/splits, Staging editor, SCP, `undici` pin). File names are `Late-0.1.4-…`. Still unsigned.
+
 **Staging editor (syntax, suggestions, secret-line marks).**
 
 - Staging drafts use a VS Code-style editor instead of a plain box. Format picks the language (YAML for Ansible/Salt, Python for Netmiko, Ruby for Chef, plain for CLI). Ctrl+Space inserts the right skeleton — no password fields. Lines that look like credentials get a red mark before Save. Theme and terminal font follow Settings. Monaco workers stay same-origin / blob only.

@@ -70,7 +70,7 @@ jobs:
           fail_on_unmatched_files: true
           files: dist/*
           body: |
-            First downloadable Late build. Installers are **unsigned** (no Apple notarization or Windows Authenticode yet).
+            Installers are **unsigned** (no Apple notarization or Windows Authenticode).
 
             - **macOS:** right-click Late → Open the first time.
             - **Windows:** if SmartScreen appears, More info → Run anyway.
