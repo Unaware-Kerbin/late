@@ -130,17 +130,36 @@ export interface DiffLine {
   text: string;
 }
 
-export type ChatBackend = "local" | "cursor" | "ollama" | "llamacpp";
+export type ChatBackend = "local" | "cursor" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure";
+
+export type InferenceEngineBackend = "local" | "llamacpp" | "ollama";
+
+export const LOCAL_INFERENCE_URL: Record<InferenceEngineBackend, string> = {
+  local: "http://127.0.0.1:8000/v1",
+  llamacpp: "http://127.0.0.1:8080/v1",
+  ollama: "http://127.0.0.1:11434/v1",
+};
 
 export interface AppSettings {
   bind: string;
   vllm_base_url: string;
   vllm_model: string;
+  /** Extra vLLM URL on your network. Chat uses `vllm_base_url` (this computer or this field). */
+  vllm_remote_url?: string;
   cursor_model: string;
   ollama_base_url: string;
   ollama_model: string;
+  ollama_remote_url?: string;
   llama_cpp_base_url: string;
   llama_cpp_model: string;
+  llama_cpp_remote_url?: string;
+  anthropic_base_url: string;
+  anthropic_model: string;
+  gemini_base_url: string;
+  gemini_model: string;
+  azure_base_url: string;
+  azure_deployment: string;
+  azure_api_version: string;
   default_backend: ChatBackend | string;
   scrollback_lines: number;
   turn_timeout_secs: number;
@@ -149,12 +168,19 @@ export interface AppSettings {
   log_dir?: string;
   api_insecure_tls?: boolean;
   cloud_chat_enabled?: boolean;
+  /** Extra hostnames for air-gapped OpenAI-compatible servers (not RFC1918 / .internal). */
+  private_inference_hosts?: string;
 }
 
 export function coerceChatBackend(v: unknown): ChatBackend {
   const s = String(v ?? "").toLowerCase().replace(/[\s_]+/g, "-");
-  if (s === "cursor" || s === "ollama" || s === "llamacpp") return s;
+  if (s === "cursor" || s === "ollama" || s === "llamacpp" || s === "anthropic" || s === "gemini" || s === "azure") {
+    return s;
+  }
   if (s === "llama.cpp" || s === "llama-cpp") return "llamacpp";
+  if (s === "claude") return "anthropic";
+  if (s === "google" || s === "vertex") return "gemini";
+  if (s === "azure-openai" || s === "azureopenai") return "azure";
   return "local";
 }
 
@@ -162,7 +188,82 @@ export function backendLabel(backend: ChatBackend): string {
   if (backend === "ollama") return "Ollama";
   if (backend === "llamacpp") return "llama.cpp";
   if (backend === "cursor") return "Cursor SDK";
-  return "local vLLM";
+  if (backend === "anthropic") return "Anthropic Claude";
+  if (backend === "gemini") return "Gemini";
+  if (backend === "azure") return "Azure";
+  return "vLLM";
+}
+
+export function isInferenceEngine(backend: ChatBackend): backend is InferenceEngineBackend {
+  return backend === "local" || backend === "llamacpp" || backend === "ollama";
+}
+
+export function isLoopbackInferenceUrl(raw: string): boolean {
+  try {
+    const host = new URL(raw.trim()).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "localhost.localdomain" ||
+      host === "::1" ||
+      host === "0.0.0.0" ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function inferenceHostLabel(raw: string): string {
+  try {
+    const u = new URL(raw.trim());
+    const host = u.hostname || raw.trim();
+    if (u.port && u.port !== "80" && u.port !== "443") return `${host}:${u.port}`;
+    return host;
+  } catch {
+    return raw.trim() || "server";
+  }
+}
+
+function activeUrl(settings: AppSettings, backend: InferenceEngineBackend): string {
+  if (backend === "llamacpp") return settings.llama_cpp_base_url;
+  if (backend === "ollama") return settings.ollama_base_url;
+  return settings.vllm_base_url;
+}
+
+function storedRemoteUrl(settings: AppSettings, backend: InferenceEngineBackend): string {
+  if (backend === "llamacpp") return settings.llama_cpp_remote_url?.trim() ?? "";
+  if (backend === "ollama") return settings.ollama_remote_url?.trim() ?? "";
+  return settings.vllm_remote_url?.trim() ?? "";
+}
+
+/** Saved LAN URL, or the active URL when it is already not this computer. */
+export function remoteInferenceUrl(settings: AppSettings | null, backend: InferenceEngineBackend): string {
+  if (!settings) return "";
+  const stored = storedRemoteUrl(settings, backend);
+  if (stored) return stored;
+  const active = activeUrl(settings, backend).trim();
+  if (active && !isLoopbackInferenceUrl(active)) return active;
+  return "";
+}
+
+export function usingRemoteInference(settings: AppSettings | null, backend: InferenceEngineBackend): boolean {
+  if (!settings) return false;
+  const active = activeUrl(settings, backend).trim();
+  return Boolean(active) && !isLoopbackInferenceUrl(active);
+}
+
+export function withInferenceServer(
+  settings: AppSettings,
+  backend: InferenceEngineBackend,
+  next: { base: string; remote: string },
+): AppSettings {
+  if (backend === "llamacpp") {
+    return { ...settings, llama_cpp_base_url: next.base, llama_cpp_remote_url: next.remote };
+  }
+  if (backend === "ollama") {
+    return { ...settings, ollama_base_url: next.base, ollama_remote_url: next.remote };
+  }
+  return { ...settings, vllm_base_url: next.base, vllm_remote_url: next.remote };
 }
 
 export function coerceSettings(raw: unknown): AppSettings | null {
@@ -193,11 +294,21 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     bind: str("bind") ?? "127.0.0.1:7420",
     vllm_base_url: str("vllm_base_url", "vllmBaseUrl") ?? "http://127.0.0.1:8000/v1",
     vllm_model: str("vllm_model", "vllmModel") ?? "local",
+    vllm_remote_url: str("vllm_remote_url", "vllmRemoteUrl") ?? "",
     cursor_model: str("cursor_model", "cursorModel") ?? "composer-2.5",
     ollama_base_url: str("ollama_base_url", "ollamaBaseUrl") ?? "http://127.0.0.1:11434/v1",
     ollama_model: str("ollama_model", "ollamaModel") ?? "",
+    ollama_remote_url: str("ollama_remote_url", "ollamaRemoteUrl") ?? "",
     llama_cpp_base_url: str("llama_cpp_base_url", "llamaCppBaseUrl") ?? "http://127.0.0.1:8080/v1",
     llama_cpp_model: str("llama_cpp_model", "llamaCppModel") ?? "",
+    llama_cpp_remote_url: str("llama_cpp_remote_url", "llamaCppRemoteUrl") ?? "",
+    anthropic_base_url: str("anthropic_base_url", "anthropicBaseUrl") ?? "https://api.anthropic.com",
+    anthropic_model: str("anthropic_model", "anthropicModel") ?? "claude-sonnet-4-5",
+    gemini_base_url: str("gemini_base_url", "geminiBaseUrl") ?? "https://generativelanguage.googleapis.com",
+    gemini_model: str("gemini_model", "geminiModel") ?? "gemini-2.5-flash",
+    azure_base_url: str("azure_base_url", "azureBaseUrl") ?? "",
+    azure_deployment: str("azure_deployment", "azureDeployment") ?? "",
+    azure_api_version: str("azure_api_version", "azureApiVersion") ?? "2024-10-21",
     default_backend: coerceChatBackend(str("default_backend", "defaultBackend")),
     scrollback_lines: num("scrollback_lines", "scrollbackLines") ?? 32_000,
     turn_timeout_secs: num("turn_timeout_secs", "turnTimeoutSecs") ?? 90,
@@ -206,6 +317,7 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     log_dir: str("log_dir", "logDir"),
     api_insecure_tls: flag("api_insecure_tls", "apiInsecureTls") ?? false,
     cloud_chat_enabled: flag("cloud_chat_enabled", "cloudChatEnabled") ?? false,
+    private_inference_hosts: str("private_inference_hosts", "privateInferenceHosts") ?? "",
   };
 }
 

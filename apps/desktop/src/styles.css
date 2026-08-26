@@ -197,6 +197,56 @@ button { cursor: pointer; }
 }
 .chat { border-right: none; min-width: 0; }
 .chat-toolbar { flex: 0 0 auto; padding: 8px; }
+.chat-toolbar select { min-width: 0; }
+.chat-toolbar.row .server-pick {
+  position: relative;
+  flex: 1 1 7rem;
+  min-width: 6.5rem;
+}
+.server-pick-btn {
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.server-pick-btn:hover { border-color: var(--line-strong); }
+.server-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.45);
+}
+.server-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--text);
+}
+.server-menu button:hover { background: var(--accent-dim); }
+.server-menu button.on { background: var(--accent-dim); }
+.server-menu .server-add {
+  margin-top: 2px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 6px 6px;
+}
 .chat-models-dock { flex: 0 0 auto; display: flex; flex-direction: column; min-height: 0; }
 .chat-models-bar {
   display: flex;
@@ -811,6 +861,14 @@ pre.fp {
   overflow-x: auto;
 }
 .check { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; text-transform: none; letter-spacing: 0; color: var(--text); font-size: 13px; }
+.url-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin: 0 0 8px;
+}
+.url-check label { flex: 1; min-width: 0; margin: 0; }
+.url-check button { flex: 0 0 auto; margin-bottom: 1px; }
 .setting-switch {
   display: grid;
   gap: 8px;

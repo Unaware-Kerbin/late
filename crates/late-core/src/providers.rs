@@ -15,6 +15,8 @@ pub const PROVIDER_NAMES: &[&str] = &[
     "cursor",
     "openai",
     "anthropic",
+    "gemini",
+    "azure",
     "groq",
     "openrouter",
     "custom",

@@ -8,7 +8,7 @@
 
 **Authorization.** Agent tools are six functions. Dual-gate is sidecar-only: network OS CLI is vendor permit list then Approve; Linux CLI has no permit list (Approve every command); `propose_api_get` is operator click only (no vendor permit list). Always-allow (non-Linux) still re-runs the permit check. Daemon `session.input` is ungated for a client that already has the token.
 
-**Cloud.** Cursor and non-loopback OpenAI-compatible chat require `cloud_chat_enabled` (**Cloud AI** in Settings). Provider keys are write-only from the UI; the sidecar materializes them over a Origin-rejected route.
+**Cloud.** Cursor and public-internet OpenAI-compatible chat require `cloud_chat_enabled` (**Cloud AI** in Settings). Private-network OpenAI-compatible URLs (RFC1918, `.internal`, `private_inference_hosts`) do not. Provider keys are write-only from the UI; the sidecar materializes them over a Origin-rejected route.
 
 **Joiner / leaver.** Organizational: OS account lifecycle. Delete the platform config and data directories named `late` (Linux `~/.config/late` and `~/.local/share/late`; macOS/Windows `~/Library/Application Support/late` or `%APPDATA%\late`) on the operator’s computer.
 

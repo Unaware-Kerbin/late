@@ -5,7 +5,7 @@ Likelihood and impact are qualitative (low / medium / high) for the Late **proje
 | ID | Risk | L | I | Treatment |
 |---|---|---|---|---|
 | R1 | Same-OS-user process reads `sidecar.token` and calls RPC | H | H | Accept for single-user desktop. Org: lock screen, no shared logins. Mitigate: Unix 0600 token (Windows: default NTFS ACLs on the config/data dirs), loopback Host check. |
-| R2 | Cloud AI sends scrollback off-box without operator intent | M | H | Mitigate: `cloud_chat_enabled` default false; sidecar refuses Cursor and non-loopback bases until opt-in; audit toggle (`settings.cloud_chat`) and sidecar `event=chat` with `backend`/`egress`/`ok` (no bodies). |
+| R2 | Cloud AI sends scrollback off-box without operator intent | M | H | Mitigate: `cloud_chat_enabled` default false; sidecar refuses Cursor and public-internet bases until opt-in; RFC1918 / `.internal` OpenAI-compatible URLs audit as `egress: private` without the toggle; audit toggle (`settings.cloud_chat`) and sidecar `event=chat` with `backend`/`egress`/`ok` (no bodies). |
 | R3 | Vaults are plaintext JSON (Unix chmod 0600 only; Windows default NTFS ACLs) | H | H | Accept this pass (no AES/age yet). Org: FDE. Later product: AEAD. |
 | R4 | XOR “encrypted” export is obfuscation | M | M | Accept this pass; docs already disclose. Later: age. |
 | R5 | Unsigned GGUF / Hub supply chain | M | H | Mitigate: GGUF magic `GGUF` after download; existing HF host allowlist. Residual: no SHA-256 yet. |

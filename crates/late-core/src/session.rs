@@ -171,6 +171,7 @@ impl App {
         if !settings.cloud_chat_enabled && settings.default_backend.eq_ignore_ascii_case("cursor") {
             settings.default_backend = "local".into();
         }
+        crate::config::remember_remote_inference_urls(&mut settings);
         let prev_cloud = self.settings.lock().cloud_chat_enabled;
         save_settings(&self.paths.settings(), &settings)?;
         *self.settings.lock() = settings.clone();

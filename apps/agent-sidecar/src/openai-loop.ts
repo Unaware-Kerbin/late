@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import {
+  classifyChatBase,
+  classifyChatBaseSync,
+  fetchStayOnBox,
+  parseExtraHosts,
+  type ChatEgress,
+} from "./chat-target.js";
 import { daemon } from "./daemon.js";
 import { auditEvent } from "./local-auth.js";
 import { loadProviderKeys } from "./provider-keys.js";
@@ -15,7 +22,7 @@ import {
   type ToolCall,
 } from "./types.js";
 
-type CompatKind = "vllm" | "ollama" | "llamacpp";
+export type CompatKind = "vllm" | "ollama" | "llamacpp";
 
 export type OllamaProbe = {
   models: string[];
@@ -25,7 +32,7 @@ export type OllamaProbe = {
 
 let settingsCache: { at: number; value: Record<string, unknown> } | null = null;
 
-async function loadAppSettings(): Promise<Record<string, unknown>> {
+export async function loadAppSettings(): Promise<Record<string, unknown>> {
   if (settingsCache && Date.now() - settingsCache.at < 3000) return settingsCache.value;
   try {
     const value = await daemon.call<Record<string, unknown>>("settings.get");
@@ -39,7 +46,7 @@ async function loadAppSettings(): Promise<Record<string, unknown>> {
   return settingsCache?.value ?? {};
 }
 
-function settingStr(s: Record<string, unknown>, ...keys: string[]): string | undefined {
+export function settingStr(s: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) {
     const v = s[k];
     if (typeof v === "string" && v.trim()) return v.trim();
@@ -78,8 +85,15 @@ async function resolveBase(kind: CompatKind): Promise<string> {
 
 function ollamaHelp(base: string, kind: "offline" | "empty"): string {
   const root = openaiRoot(base);
+  const remote = classifyChatBaseSync(base) !== "loopback";
   if (kind === "empty") {
+    if (remote) {
+      return `Ollama at ${root} has no models. Pull on that machine (ollama pull …). Late Pull only works when the URL is this computer.`;
+    }
     return `Ollama is running at ${root} but has no models. Pull one from the Agent pane (for example qwen2.5:7b or Qwen/Qwen3-8B-GGUF).`;
+  }
+  if (remote) {
+    return `Nothing answered at ${root}. On that machine bind Ollama to the LAN (OLLAMA_HOST=0.0.0.0) and allow the port. Chat needs OpenAI /v1.`;
   }
   return `Ollama is not running at ${root}. Install from https://ollama.com and start it, then Pull a model from the Agent pane. Late does not install Ollama.`;
 }
@@ -93,14 +107,20 @@ function llamaCppHelp(base: string, kind: "offline" | "empty" | "loading" | "aut
     return `llama.cpp is starting at ${root} (model still loading). Wait until llama-server /health is ready, then retry.`;
   }
   if (kind === "auth") {
-    return `llama.cpp at ${root} requires an API key (HTTP 401/403). Late does not send cloud provider keys to llama.cpp. Run llama-server without --api-key on loopback, or use a server that does not require a key.`;
+    return `llama.cpp at ${root} requires an API key (HTTP 401/403). For a server on your network, save the Custom OpenAI-compatible key. On this computer, run llama-server without --api-key.`;
+  }
+  if (classifyChatBaseSync(base) !== "loopback") {
+    return `llama.cpp is not reachable at ${root}. Start llama-server on that machine with --host 0.0.0.0 (or your LAN IP). Late Start only binds loopback on this computer.`;
   }
   return `llama.cpp (llama-server) is not running at ${root}. Download a GGUF from the Agent pane and Start, or run \`llama-server -m /path/to/model.gguf --port 8080 --host 127.0.0.1\`. Late does not install llama.cpp.`;
 }
 
-function compatLabel(kind: CompatKind): string {
+function compatLabel(kind: string): string {
   if (kind === "ollama") return "Ollama";
   if (kind === "llamacpp") return "llama.cpp";
+  if (kind === "anthropic") return "Anthropic";
+  if (kind === "gemini") return "Gemini";
+  if (kind === "azure") return "Azure";
   return "vLLM";
 }
 
@@ -309,38 +329,12 @@ async function chatCompletions(
   return json;
 }
 
+function extraHostsFrom(s: Record<string, unknown>): string[] {
+  return parseExtraHosts(s.private_inference_hosts ?? s.privateInferenceHosts);
+}
+
 function isLoopbackBase(base: string): boolean {
-  try {
-    return isLoopbackUrl(new URL(base));
-  } catch {
-    return false;
-  }
-}
-
-function isLoopbackUrl(u: URL): boolean {
-  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  return host === "127.0.0.1" || host === "localhost" || host === "::1";
-}
-
-/** Follow one same-host loopback redirect (trailing slash). Refuse off-box 302s. */
-async function fetchStayOnBox(url: string, init: RequestInit): Promise<Response> {
-  const first = await fetch(url, { ...init, redirect: "manual" });
-  if (first.status < 300 || first.status >= 400) return first;
-  const loc = first.headers.get("location");
-  if (!loc) {
-    throw new Error("redirect without Location");
-  }
-  const orig = new URL(url);
-  const next = new URL(loc, url);
-  const sameHost =
-    orig.protocol === next.protocol &&
-    orig.hostname === next.hostname &&
-    orig.port === next.port;
-  if (!sameHost || (isLoopbackUrl(orig) && !isLoopbackUrl(next))) {
-    throw new Error("refusing off-box or cross-host chat redirect");
-  }
-  return fetch(next.toString(), { ...init, redirect: "error" });
+  return classifyChatBaseSync(base) === "loopback";
 }
 
 function settingFlag(s: Record<string, unknown>, ...keys: string[]): boolean {
@@ -360,21 +354,24 @@ const CLOUD_OFF =
   "Cloud AI is off. Turn it on in Settings. Session text may then leave your computer.";
 
 export async function assertChatAllowed(
-  kind: "vllm" | "ollama" | "llamacpp" | "cursor",
+  kind: "vllm" | "ollama" | "llamacpp" | "cursor" | "anthropic" | "gemini" | "azure",
   base?: string,
 ): Promise<void> {
-  const cloud = await cloudChatEnabled();
+  settingsCache = null;
+  const s = await loadAppSettings();
+  const cloud = settingFlag(s, "cloud_chat_enabled", "cloudChatEnabled");
+  const extra = extraHostsFrom(s);
   if (kind === "cursor") {
     auditEvent("chat", { backend: "cursor", egress: "cloud", ok: cloud });
     if (!cloud) throw new Error(CLOUD_OFF);
     return;
   }
-  const loop = Boolean(base && isLoopbackBase(base));
-  const ok = loop || cloud;
-  auditEvent("chat", { backend: kind, egress: loop ? "loopback" : "cloud", ok });
+  const egress: ChatEgress = base ? await classifyChatBase(base, extra) : "cloud";
+  const ok = egress === "loopback" || egress === "private" || cloud;
+  auditEvent("chat", { backend: kind, egress, ok });
   if (!ok) {
     throw new Error(
-      `${compatLabel(kind)} at ${base} is not loopback. Turn on Cloud AI in Settings to send session text off your computer.`,
+      `${compatLabel(kind)} at ${base} is not on this computer or your private network. Point the URL at loopback, an RFC1918 / .internal address, or a host listed under Private inference hosts — or turn on Cloud AI for a public API.`,
     );
   }
 }
@@ -400,10 +397,18 @@ function describeFetchError(err: unknown, label: string, base: string): Error {
 }
 
 async function bearerFor(kind: CompatKind, base: string): Promise<Record<string, string>> {
-  if (kind === "ollama" || kind === "llamacpp") return {};
   if (isLoopbackBase(base)) return {};
-  if (!(await cloudChatEnabled())) return {};
+  settingsCache = null;
+  const s = await loadAppSettings();
+  const extra = extraHostsFrom(s);
+  const egress = await classifyChatBase(base, extra);
   const keys = await loadProviderKeys();
+  if (egress === "private") {
+    const key = keys.custom ?? "";
+    return key ? { Authorization: `Bearer ${key}` } : {};
+  }
+  if (kind === "ollama" || kind === "llamacpp") return {};
+  if (!(await cloudChatEnabled())) return {};
   let host = "";
   try {
     host = new URL(base).hostname.replace(/^\[|\]$/g, "").toLowerCase();
@@ -525,4 +530,65 @@ async function probeLlamaCpp(base: string): Promise<OllamaProbe> {
 
 export async function listLlamaCppModels(): Promise<OllamaProbe> {
   return probeLlamaCpp(await resolveBase("llamacpp"));
+}
+
+export type ChatTargetMeta = { base: string; egress: ChatEgress };
+
+export async function chatTargetMeta(kind: CompatKind): Promise<ChatTargetMeta> {
+  const s = await loadAppSettings();
+  const extra = extraHostsFrom(s);
+  const base = await resolveBase(kind);
+  return { base, egress: await classifyChatBase(base, extra) };
+}
+
+export type ChatProbe = {
+  ok: boolean;
+  kind: string;
+  base: string;
+  egress: ChatEgress;
+  models: string[];
+  message: string;
+};
+
+export async function probeChatTarget(kind: CompatKind, baseOverride?: string): Promise<ChatProbe> {
+  const base = openaiV1((baseOverride ?? "").trim() || (await resolveBase(kind)));
+  const s = await loadAppSettings();
+  const extra = extraHostsFrom(s);
+  const egress = await classifyChatBase(base, extra);
+  try {
+    await assertChatAllowed(kind, base);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    auditEvent("chat.probe", { kind, egress, ok: false });
+    return { ok: false, kind, base, egress, models: [], message };
+  }
+  if (kind === "ollama") {
+    const probe = await probeOllama(base);
+    auditEvent("chat.probe", { kind, egress, ok: probe.ok });
+    return { ok: probe.ok, kind, base, egress, models: probe.models, message: probe.message };
+  }
+  if (kind === "llamacpp") {
+    const probe = await probeLlamaCpp(base);
+    auditEvent("chat.probe", { kind, egress, ok: probe.ok });
+    return { ok: probe.ok, kind, base, egress, models: probe.models, message: probe.message };
+  }
+  const listed = await listModelsAt("vllm", base);
+  if (listed.authFailed) {
+    const message = `vLLM at ${base} returned HTTP ${listed.status}. If it is on your network and expects a token, save the Custom OpenAI-compatible key.`;
+    auditEvent("chat.probe", { kind, egress, ok: false });
+    return { ok: false, kind, base, egress, models: [], message };
+  }
+  if (listed.models.length) {
+    const where =
+      egress === "loopback" ? "this computer" : egress === "private" ? "your network" : "public internet";
+    const message = `OpenAI /v1 online · ${listed.models.length} model${listed.models.length === 1 ? "" : "s"} · ${where}`;
+    auditEvent("chat.probe", { kind, egress, ok: true });
+    return { ok: true, kind, base, egress, models: listed.models, message };
+  }
+  const hint =
+    egress === "loopback"
+      ? `Nothing listed models at ${base}. Start vLLM on this computer, or point the URL at a LAN server that speaks GET /v1/models.`
+      : `Nothing listed models at ${base}. On that machine bind the server to the LAN (not 127.0.0.1), allow the port, and expose OpenAI /v1 (vLLM, llama.cpp, Ollama, LiteLLM, LocalAI).`;
+  auditEvent("chat.probe", { kind, egress, ok: false });
+  return { ok: false, kind, base, egress, models: [], message: hint };
 }

@@ -1039,13 +1039,15 @@ export async function downloadInference(model: string, engine?: string): Promise
   return rpc.call<InferenceStatus>("inference.download", { model, engine: kind });
 }
 
-export async function saveSettings(settings: AppSettings) {
+export async function saveSettings(settings: AppSettings, opts?: { quiet?: boolean }): Promise<boolean> {
   try {
     await rpc.call("settings.set", { settings, ...settings });
-    toast("ok", "settings saved");
+    if (!opts?.quiet) toast("ok", "settings saved");
     await refreshAll();
+    return true;
   } catch (err) {
     toast("error", errText(err));
+    return false;
   }
 }
 

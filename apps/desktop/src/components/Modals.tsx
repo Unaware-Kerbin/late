@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { dismissProposal } from "../lib/approvals-ui";
-import { approve } from "../lib/sidecar";
+import { approve, sidecarProbe } from "../lib/sidecar";
 import { TermHighlightEditor } from "./TermHighlightEditor";
 import {
   DENSITIES,
@@ -46,7 +46,7 @@ import {
   useApp,
 } from "../store";
 import { rpc } from "../lib/rpc";
-import { VENDORS, coerceChatBackend, emptyDevice, newId, normalizeFolderPath, type AuthProfile, type Device, type DeviceKind } from "../types";
+import { VENDORS, coerceChatBackend, emptyDevice, isLoopbackInferenceUrl, newId, normalizeFolderPath, type AuthProfile, type Device, type DeviceKind } from "../types";
 
 function trap(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -433,6 +433,8 @@ function KeysModal() {
         <ProviderKeyRow name="cursor" label="Cursor API key" />
         <ProviderKeyRow name="openai" label="OpenAI API key" />
         <ProviderKeyRow name="anthropic" label="Anthropic API key" />
+        <ProviderKeyRow name="gemini" label="Gemini API key" />
+        <ProviderKeyRow name="azure" label="Azure OpenAI key" />
         <ProviderKeyRow name="groq" label="Groq API key" />
         <ProviderKeyRow name="openrouter" label="OpenRouter API key" />
         <ProviderKeyRow name="custom" label="Custom OpenAI-compatible key" />
@@ -443,6 +445,40 @@ function KeysModal() {
         </div>
       </div>
     </div>
+  );
+}
+
+type ProbeKind = "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure";
+type ProbeState = { busy: boolean; ok?: boolean; message: string };
+
+function InferenceUrlRow(props: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  kind: ProbeKind;
+  check?: ProbeState;
+  onCheck: () => void;
+}) {
+  return (
+    <>
+      <div className="url-check">
+        <label>
+          {props.label}
+          <input value={props.value} onChange={(e) => props.onChange(e.target.value)} />
+        </label>
+        <button
+          type="button"
+          className="ghost"
+          disabled={props.check?.busy || !props.value.trim()}
+          onClick={props.onCheck}
+        >
+          {props.check?.busy ? "Checking…" : "Check"}
+        </button>
+      </div>
+      {props.check?.message ? (
+        <p className={props.check.ok ? "hint" : "hint warn"}>{props.check.message}</p>
+      ) : null}
+    </>
   );
 }
 
@@ -465,9 +501,31 @@ function SettingsModal() {
   const [ollamaModel, setOllamaModel] = useState(settings?.ollama_model ?? "");
   const [llamaCpp, setLlamaCpp] = useState(settings?.llama_cpp_base_url ?? "http://127.0.0.1:8080/v1");
   const [llamaCppModel, setLlamaCppModel] = useState(settings?.llama_cpp_model ?? "");
+  const [anthropicUrl, setAnthropicUrl] = useState(settings?.anthropic_base_url ?? "https://api.anthropic.com");
+  const [anthropicModel, setAnthropicModel] = useState(settings?.anthropic_model ?? "claude-sonnet-4-5");
+  const [geminiUrl, setGeminiUrl] = useState(settings?.gemini_base_url ?? "https://generativelanguage.googleapis.com");
+  const [geminiModel, setGeminiModel] = useState(settings?.gemini_model ?? "gemini-2.5-flash");
+  const [azureUrl, setAzureUrl] = useState(settings?.azure_base_url ?? "");
+  const [azureDeployment, setAzureDeployment] = useState(settings?.azure_deployment ?? "");
+  const [azureApiVersion, setAzureApiVersion] = useState(settings?.azure_api_version ?? "2024-10-21");
   const [defaultBackend, setDefaultBackend] = useState(() => coerceChatBackend(settings?.default_backend));
   const [insecureTls, setInsecureTls] = useState(Boolean(settings?.api_insecure_tls));
   const [cloudChat, setCloudChat] = useState(Boolean(settings?.cloud_chat_enabled));
+  const [privateHosts, setPrivateHosts] = useState(settings?.private_inference_hosts ?? "");
+  const [checks, setChecks] = useState<Partial<Record<ProbeKind, ProbeState>>>({});
+
+  async function checkUrl(kind: ProbeKind, base: string) {
+    setChecks((c) => ({ ...c, [kind]: { busy: true, message: "Checking…" } }));
+    try {
+      const r = await sidecarProbe(kind, base);
+      setChecks((c) => ({ ...c, [kind]: { busy: false, ok: r.ok, message: r.message } }));
+    } catch (err) {
+      setChecks((c) => ({
+        ...c,
+        [kind]: { busy: false, ok: false, message: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  }
   return (
     <div className="modal-root" onMouseDown={() => setState({ settingsOpen: false })}>
       <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
@@ -483,9 +541,12 @@ function SettingsModal() {
               setDefaultBackend(next);
             }}
           >
-            <option value="local">local vLLM</option>
+            <option value="local">vLLM</option>
             <option value="llamacpp">llama.cpp</option>
             <option value="ollama">Ollama</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="gemini">Gemini</option>
+            <option value="azure">Azure</option>
             <option value="cursor" disabled={!cloudChat}>
               Cursor SDK{cloudChat ? "" : " — Cloud AI is off"}
             </option>
@@ -496,7 +557,8 @@ function SettingsModal() {
             <span className="setting-switch-copy">
               <strong>Cloud AI</strong>
               <span>
-                Cursor and remote OpenAI-compatible URLs. Off by default. Hugging Face downloads and Ollama Pull stay available either way.
+                Cursor and public internet APIs (api.anthropic.com, Gemini, Azure public, OpenAI, Groq, OpenRouter, Cursor). Off by default.
+                A private URL on your network is not Cloud AI — set it below.
               </span>
             </span>
             <input
@@ -515,25 +577,105 @@ function SettingsModal() {
           <p className="setting-switch-note">
             {cloudChat
               ? "On. Session text may leave your computer. Save to apply."
-              : "Off. Agent chat stays on loopback until this is turned on and saved."}
+              : "Off. Cursor and public APIs are blocked. Loopback and private-network URLs still work."}
           </p>
         </div>
-        <label>vLLM base URL<input value={vllm} onChange={(e) => setVllm(e.target.value)} /></label>
-        <label>Local vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
+        <h3 className="hint" style={{ marginTop: 4 }}>Helper server</h3>
         <p className="hint">
-          Default <code>http://127.0.0.1:8000/v1</code>. NVIDIA, AMD, and Intel GPUs all work if the vLLM you run uses them. Late does not bundle a GPU runtime.
+          This computer (<code>127.0.0.1</code>) or another machine on your homelab / airgapped LAN.
+          That is not Cloud AI. The server must speak OpenAI-compatible HTTP:
+          <code> GET /v1/models</code> and <code>POST /v1/chat/completions</code>
+          (vLLM, llama.cpp, Ollama, LiteLLM, LocalAI). Custom RPC is not supported — put LiteLLM in
+          front if the box only speaks something else. Check talks to the sidecar; Save still required
+          for chat. Pull / Start only manage a server on this computer.
+          In the Agent pane, <strong>Local</strong> is this computer; <strong>Add server</strong> keeps one extra URL per engine.
         </p>
-        <label>llama.cpp base URL<input value={llamaCpp} onChange={(e) => setLlamaCpp(e.target.value)} /></label>
+        <InferenceUrlRow
+          label="vLLM base URL"
+          value={vllm}
+          onChange={setVllm}
+          kind="vllm"
+          check={checks.vllm}
+          onCheck={() => void checkUrl("vllm", vllm)}
+        />
+        <label>vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
+        <p className="hint">
+          Default <code>http://127.0.0.1:8000/v1</code>. Example on the LAN: <code>http://10.0.0.12:8000/v1</code>.
+          NVIDIA, AMD, and Intel GPUs all work if the vLLM you run uses them. Late does not bundle a GPU runtime.
+        </p>
+        <InferenceUrlRow
+          label="llama.cpp base URL"
+          value={llamaCpp}
+          onChange={setLlamaCpp}
+          kind="llamacpp"
+          check={checks.llamacpp}
+          onCheck={() => void checkUrl("llamacpp", llamaCpp)}
+        />
         <label>llama.cpp model (optional)<input value={llamaCppModel} onChange={(e) => setLlamaCppModel(e.target.value)} placeholder="first listed model" /></label>
         <p className="hint">
           llama.cpp is not bundled. Download GGUF from Hugging Face in the Agent pane, then Start if <code>llama-server</code> is on PATH, or run it yourself on <code>127.0.0.1:8080</code>.
-          Gated Hub repos need <code>HF_TOKEN</code> (or <code>HUGGING_FACE_HUB_TOKEN</code>) in the environment.
+          On another machine use <code>--host 0.0.0.0</code>. Gated Hub repos need <code>HF_TOKEN</code> (or <code>HUGGING_FACE_HUB_TOKEN</code>) in the environment.
         </p>
-        <label>Ollama base URL<input value={ollama} onChange={(e) => setOllama(e.target.value)} /></label>
+        <InferenceUrlRow
+          label="Ollama base URL"
+          value={ollama}
+          onChange={setOllama}
+          kind="ollama"
+          check={checks.ollama}
+          onCheck={() => void checkUrl("ollama", ollama)}
+        />
         <label>Ollama model (optional)<input value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} placeholder="first pulled model" /></label>
         <p className="hint">
           Ollama is not bundled. Install from <a href="https://ollama.com" target="_blank" rel="noreferrer">ollama.com</a>
-          and start it. Pull library names or Hugging Face ids from the Agent pane.
+          and start it.           On another machine set <code>OLLAMA_HOST=0.0.0.0</code>. Pull library names or Hugging Face ids from the Agent pane only when the URL is this computer.
+        </p>
+        <h3 className="hint" style={{ marginTop: 12 }}>Anthropic, Gemini, Azure</h3>
+        <p className="hint">
+          Same private-network gate. Public hosts need Cloud AI. A proxy or private endpoint on RFC1918 / <code>.internal</code> does not.
+          Anthropic speaks <code>POST /v1/messages</code>. Gemini speaks <code>:generateContent</code>. Azure uses deployment chat completions and an <code>api-key</code> header.
+        </p>
+        <InferenceUrlRow
+          label="Anthropic base URL"
+          value={anthropicUrl}
+          onChange={setAnthropicUrl}
+          kind="anthropic"
+          check={checks.anthropic}
+          onCheck={() => void checkUrl("anthropic", anthropicUrl)}
+        />
+        <label>Anthropic model<input value={anthropicModel} onChange={(e) => setAnthropicModel(e.target.value)} /></label>
+        <InferenceUrlRow
+          label="Gemini base URL"
+          value={geminiUrl}
+          onChange={setGeminiUrl}
+          kind="gemini"
+          check={checks.gemini}
+          onCheck={() => void checkUrl("gemini", geminiUrl)}
+        />
+        <label>Gemini model<input value={geminiModel} onChange={(e) => setGeminiModel(e.target.value)} /></label>
+        <InferenceUrlRow
+          label="Azure resource URL"
+          value={azureUrl}
+          onChange={setAzureUrl}
+          kind="azure"
+          check={checks.azure}
+          onCheck={() => void checkUrl("azure", azureUrl)}
+        />
+        <label>Azure deployment<input value={azureDeployment} onChange={(e) => setAzureDeployment(e.target.value)} placeholder="deployment name" /></label>
+        <label>Azure API version<input value={azureApiVersion} onChange={(e) => setAzureApiVersion(e.target.value)} /></label>
+        <p className="hint">
+          Azure example: <code>https://YOUR_RESOURCE.openai.azure.com</code> or a private endpoint IP/hostname. Save the Azure key under API keys.
+        </p>
+        <label>
+          Private inference hosts
+          <input
+            value={privateHosts}
+            onChange={(e) => setPrivateHosts(e.target.value)}
+            placeholder="llm.airgap.mil, gpu-01.lab"
+          />
+        </label>
+        <p className="hint">
+          Extra hostnames if the name is not a private IP or <code>.internal</code> / <code>.local</code> / <code>.lan</code> / <code>.home.arpa</code>.
+          Use the Custom OpenAI-compatible key if the remote server expects a Bearer token.
         </p>
         {defaultBackend === "cursor" && (
           <p className="hint">
@@ -704,6 +846,8 @@ function SettingsModal() {
         <ProviderKeyRow name="cursor" label="Cursor API key" />
         <ProviderKeyRow name="openai" label="OpenAI API key" />
         <ProviderKeyRow name="anthropic" label="Anthropic API key" />
+        <ProviderKeyRow name="gemini" label="Gemini API key" />
+        <ProviderKeyRow name="azure" label="Azure OpenAI key" />
         <ProviderKeyRow name="groq" label="Groq API key" />
         <ProviderKeyRow name="openrouter" label="OpenRouter API key" />
         <ProviderKeyRow name="custom" label="Custom OpenAI-compatible key" />
@@ -716,11 +860,27 @@ function SettingsModal() {
                 bind,
                 vllm_base_url: vllm,
                 vllm_model: model,
+                vllm_remote_url: isLoopbackInferenceUrl(vllm)
+                  ? (settings?.vllm_remote_url ?? "")
+                  : vllm.trim(),
                 cursor_model: settings?.cursor_model ?? "composer-2.5",
                 ollama_base_url: ollama,
                 ollama_model: ollamaModel,
+                ollama_remote_url: isLoopbackInferenceUrl(ollama)
+                  ? (settings?.ollama_remote_url ?? "")
+                  : ollama.trim(),
                 llama_cpp_base_url: llamaCpp,
                 llama_cpp_model: llamaCppModel,
+                llama_cpp_remote_url: isLoopbackInferenceUrl(llamaCpp)
+                  ? (settings?.llama_cpp_remote_url ?? "")
+                  : llamaCpp.trim(),
+                anthropic_base_url: anthropicUrl,
+                anthropic_model: anthropicModel,
+                gemini_base_url: geminiUrl,
+                gemini_model: geminiModel,
+                azure_base_url: azureUrl,
+                azure_deployment: azureDeployment,
+                azure_api_version: azureApiVersion,
                 default_backend: defaultBackend,
                 scrollback_lines: settings?.scrollback_lines ?? 32000,
                 turn_timeout_secs: settings?.turn_timeout_secs ?? 90,
@@ -729,6 +889,7 @@ function SettingsModal() {
                 log_dir: settings?.log_dir,
                 api_insecure_tls: insecureTls,
                 cloud_chat_enabled: cloudChat,
+                private_inference_hosts: privateHosts,
               })
             }
           >

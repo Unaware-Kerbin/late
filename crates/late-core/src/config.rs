@@ -9,11 +9,23 @@ pub struct AppSettings {
     pub bind: String,
     pub vllm_base_url: String,
     pub vllm_model: String,
+    /// Extra OpenAI-compatible URL for vLLM (LAN / another machine). Empty = none.
+    /// `vllm_base_url` is whichever URL chat uses right now (this computer or this field).
+    pub vllm_remote_url: String,
     pub cursor_model: String,
     pub ollama_base_url: String,
     pub ollama_model: String,
+    pub ollama_remote_url: String,
     pub llama_cpp_base_url: String,
     pub llama_cpp_model: String,
+    pub llama_cpp_remote_url: String,
+    pub anthropic_base_url: String,
+    pub anthropic_model: String,
+    pub gemini_base_url: String,
+    pub gemini_model: String,
+    pub azure_base_url: String,
+    pub azure_deployment: String,
+    pub azure_api_version: String,
     pub default_backend: String,
     pub scrollback_lines: usize,
     pub turn_timeout_secs: u64,
@@ -25,8 +37,11 @@ pub struct AppSettings {
     pub log_dir: PathBuf,
     /// Lab gear with private PKI. Default false — verify TLS.
     pub api_insecure_tls: bool,
-    /// Cursor and non-loopback OpenAI-compatible chat. Default false (local only).
+    /// Cursor and public-internet OpenAI-compatible chat. Default false.
+    /// Private-network (RFC1918 / .internal) OpenAI-compatible URLs do not need this.
     pub cloud_chat_enabled: bool,
+    /// Extra hostnames treated as private inference (air-gapped names that are not RFC1918 literals).
+    pub private_inference_hosts: String,
 }
 
 impl Default for AppSettings {
@@ -36,11 +51,21 @@ impl Default for AppSettings {
             bind: "127.0.0.1:7420".into(),
             vllm_base_url: "http://127.0.0.1:8000/v1".into(),
             vllm_model: "local".into(),
+            vllm_remote_url: String::new(),
             cursor_model: "composer-2.5".into(),
             ollama_base_url: "http://127.0.0.1:11434/v1".into(),
             ollama_model: String::new(),
+            ollama_remote_url: String::new(),
             llama_cpp_base_url: "http://127.0.0.1:8080/v1".into(),
             llama_cpp_model: String::new(),
+            llama_cpp_remote_url: String::new(),
+            anthropic_base_url: "https://api.anthropic.com".into(),
+            anthropic_model: "claude-sonnet-4-5".into(),
+            gemini_base_url: "https://generativelanguage.googleapis.com".into(),
+            gemini_model: "gemini-2.5-flash".into(),
+            azure_base_url: String::new(),
+            azure_deployment: String::new(),
+            azure_api_version: "2024-10-21".into(),
             default_backend: "local".into(),
             scrollback_lines: 32_000,
             turn_timeout_secs: 90,
@@ -49,6 +74,7 @@ impl Default for AppSettings {
             log_dir: dirs.data.join("logs"),
             api_insecure_tls: false,
             cloud_chat_enabled: false,
+            private_inference_hosts: String::new(),
         }
     }
 }
@@ -121,7 +147,44 @@ pub fn load_settings(path: &Path) -> Result<AppSettings> {
         return Ok(s);
     }
     let raw = fs::read_to_string(path)?;
-    toml::from_str(&raw).map_err(|e| LateError::Config(e.to_string()))
+    let mut s: AppSettings = toml::from_str(&raw).map_err(|e| LateError::Config(e.to_string()))?;
+    remember_remote_inference_urls(&mut s);
+    Ok(s)
+}
+
+/// If the active helper URL is not loopback and no LAN URL is stored yet, keep it as the extra server.
+/// In-memory only on load; the next Settings save writes it.
+pub(crate) fn remember_remote_inference_urls(s: &mut AppSettings) -> bool {
+    let mut changed = false;
+    changed |= fill_remote_if_active_is_lan(&s.vllm_base_url, &mut s.vllm_remote_url);
+    changed |= fill_remote_if_active_is_lan(&s.ollama_base_url, &mut s.ollama_remote_url);
+    changed |= fill_remote_if_active_is_lan(&s.llama_cpp_base_url, &mut s.llama_cpp_remote_url);
+    changed
+}
+
+fn fill_remote_if_active_is_lan(active: &str, remote: &mut String) -> bool {
+    if !remote.trim().is_empty() {
+        return false;
+    }
+    let a = active.trim();
+    if a.is_empty() || url_host_is_loopback(a) {
+        return false;
+    }
+    *remote = a.to_string();
+    true
+}
+
+fn url_host_is_loopback(raw: &str) -> bool {
+    let Ok(u) = reqwest::Url::parse(raw.trim()) else {
+        return false;
+    };
+    let host = u.host_str().unwrap_or("").trim_matches(|c| c == '[' || c == ']');
+    let h = host.to_ascii_lowercase();
+    h == "localhost"
+        || h == "localhost.localdomain"
+        || h == "::1"
+        || h == "0.0.0.0"
+        || h.starts_with("127.")
 }
 
 pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<()> {
@@ -155,10 +218,40 @@ log_dir = "/tmp/logs"
         assert_eq!(s.ollama_model, "");
         assert_eq!(s.llama_cpp_base_url, "http://127.0.0.1:8080/v1");
         assert_eq!(s.llama_cpp_model, "");
+        assert_eq!(s.anthropic_base_url, "https://api.anthropic.com");
+        assert_eq!(s.gemini_model, "gemini-2.5-flash");
+        assert_eq!(s.azure_api_version, "2024-10-21");
         assert_eq!(s.default_backend, "local");
         assert_eq!(s.vllm_base_url, "http://127.0.0.1:8000/v1");
+        assert_eq!(s.vllm_remote_url, "");
+        assert_eq!(s.ollama_remote_url, "");
+        assert_eq!(s.llama_cpp_remote_url, "");
         assert!(!s.cloud_chat_enabled);
+        assert_eq!(s.private_inference_hosts, "");
         assert!(!s.api_insecure_tls);
+    }
+
+    #[test]
+    fn remember_remote_copies_lan_url() {
+        let mut s = AppSettings::default();
+        s.vllm_base_url = "http://10.0.0.12:8000/v1".into();
+        s.ollama_base_url = "http://gpu.lab.internal:11434/v1".into();
+        s.llama_cpp_base_url = "http://127.0.0.1:8080/v1".into();
+        assert!(remember_remote_inference_urls(&mut s));
+        assert_eq!(s.vllm_remote_url, "http://10.0.0.12:8000/v1");
+        assert_eq!(s.ollama_remote_url, "http://gpu.lab.internal:11434/v1");
+        assert_eq!(s.llama_cpp_remote_url, "");
+        assert!(!remember_remote_inference_urls(&mut s));
+    }
+
+    #[test]
+    fn remember_remote_skips_loopback() {
+        let mut s = AppSettings::default();
+        assert!(!remember_remote_inference_urls(&mut s));
+        assert_eq!(s.vllm_remote_url, "");
+        s.vllm_base_url = "http://localhost:8000/v1".into();
+        assert!(!remember_remote_inference_urls(&mut s));
+        assert_eq!(s.vllm_remote_url, "");
     }
 
     #[test]
@@ -168,6 +261,15 @@ log_dir = "/tmp/logs"
         let raw = toml::to_string_pretty(&s).unwrap();
         let back: AppSettings = toml::from_str(&raw).unwrap();
         assert!(back.cloud_chat_enabled);
+    }
+
+    #[test]
+    fn private_inference_hosts_round_trips() {
+        let mut s = AppSettings::default();
+        s.private_inference_hosts = "llm.airgap.mil, gpu.lab".into();
+        let raw = toml::to_string_pretty(&s).unwrap();
+        let back: AppSettings = toml::from_str(&raw).unwrap();
+        assert_eq!(back.private_inference_hosts, "llm.airgap.mil, gpu.lab");
     }
 
     #[test]

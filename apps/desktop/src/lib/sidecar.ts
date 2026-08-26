@@ -27,6 +27,10 @@ export async function sidecarHealth(): Promise<boolean> {
   }
 }
 
+export type ChatEgress = "loopback" | "private" | "cloud";
+
+export type ChatTargetMeta = { base: string; egress: ChatEgress };
+
 export type SidecarModels = {
   local: string[];
   cursor: string[];
@@ -36,7 +40,18 @@ export type SidecarModels = {
   llamacpp: string[];
   llamacppOk?: boolean;
   llamacppMessage?: string;
+  anthropic?: string[];
+  gemini?: string[];
+  azure?: string[];
   backends: string[];
+  targets?: {
+    local?: ChatTargetMeta;
+    ollama?: ChatTargetMeta;
+    llamacpp?: ChatTargetMeta;
+    anthropic?: ChatTargetMeta;
+    gemini?: ChatTargetMeta;
+    azure?: ChatTargetMeta;
+  };
 };
 
 export async function sidecarModels(): Promise<SidecarModels> {
@@ -52,7 +67,37 @@ export async function sidecarModels(): Promise<SidecarModels> {
     llamacpp: body.llamacpp ?? [],
     llamacppOk: body.llamacppOk,
     llamacppMessage: body.llamacppMessage,
-    backends: body.backends ?? ["local", "llamacpp", "ollama", "cursor"],
+    anthropic: body.anthropic ?? [],
+    gemini: body.gemini ?? [],
+    azure: body.azure ?? [],
+    backends: body.backends ?? ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor"],
+    targets: body.targets,
+  };
+}
+
+export async function sidecarProbe(
+  kind: "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure",
+  base: string,
+): Promise<{
+  ok: boolean;
+  base: string;
+  egress: ChatEgress;
+  models: string[];
+  message: string;
+}> {
+  const r = await fetch(`${SIDECAR_HTTP}/probe`, {
+    method: "POST",
+    headers: await sidecarHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ kind, base }),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`sidecar probe ${r.status}`);
+  return (await r.json()) as {
+    ok: boolean;
+    base: string;
+    egress: ChatEgress;
+    models: string[];
+    message: string;
   };
 }
 

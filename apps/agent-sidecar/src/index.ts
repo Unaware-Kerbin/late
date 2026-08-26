@@ -4,13 +4,24 @@ import { runCursorChat } from "./cursor-loop.js";
 import { auditEvent, authorizeLocal, corsAllowOrigin, isLoopbackHostHeader } from "./local-auth.js";
 import {
   assertChatAllowed,
+  chatTargetMeta,
   listLlamaCppModels,
   listLocalModels,
   listOllamaModels,
+  probeChatTarget,
   runLlamaCppChat,
   runLocalChat,
   runOllamaChat,
 } from "./openai-loop.js";
+import {
+  listNativeModels,
+  nativeTargetMeta,
+  probeNativeTarget,
+  runAnthropicChat,
+  runAzureChat,
+  runGeminiChat,
+  type NativeKind,
+} from "./native-loop.js";
 import { SIDECAR_PORT, type ApprovalDecision, type ChatMessage, type SseEvent } from "./types.js";
 
 const runs = new Map<string, AbortController>();
@@ -78,6 +89,15 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/models") {
       const ollama = await listOllamaModels();
       const llamacpp = await listLlamaCppModels();
+      const [localTarget, ollamaTarget, llamacppTarget, anthropicTarget, geminiTarget, azureTarget] =
+        await Promise.all([
+          chatTargetMeta("vllm"),
+          chatTargetMeta("ollama"),
+          chatTargetMeta("llamacpp"),
+          nativeTargetMeta("anthropic"),
+          nativeTargetMeta("gemini"),
+          nativeTargetMeta("azure"),
+        ]);
       sendJson(res, req, 200, {
         local: await listLocalModels(),
         cursor: ["composer-2.5", "auto"],
@@ -87,8 +107,42 @@ const server = createServer(async (req, res) => {
         llamacpp: llamacpp.models,
         llamacppOk: llamacpp.ok,
         llamacppMessage: llamacpp.message,
-        backends: ["local", "llamacpp", "ollama", "cursor"],
+        anthropic: await listNativeModels("anthropic"),
+        gemini: await listNativeModels("gemini"),
+        azure: await listNativeModels("azure"),
+        backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor"],
+        targets: {
+          local: localTarget,
+          ollama: ollamaTarget,
+          llamacpp: llamacppTarget,
+          anthropic: anthropicTarget,
+          gemini: geminiTarget,
+          azure: azureTarget,
+        },
       });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/probe") {
+      const body = (await readJson(req)) as { kind?: string; base?: string };
+      const raw = body.kind ?? "vllm";
+      const native: NativeKind | null =
+        raw === "anthropic" || raw === "gemini" || raw === "azure" ? raw : null;
+      const kind =
+        raw === "ollama" ? "ollama" : raw === "llamacpp" ? "llamacpp" : "vllm";
+      if (
+        raw !== "ollama" &&
+        raw !== "llamacpp" &&
+        raw !== "vllm" &&
+        raw !== "local" &&
+        !native
+      ) {
+        sendJson(res, req, 400, { error: "kind must be vllm, ollama, llamacpp, anthropic, gemini, or azure" });
+        return;
+      }
+      const result = native
+        ? await probeNativeTarget(native, typeof body.base === "string" ? body.base : undefined)
+        : await probeChatTarget(kind, typeof body.base === "string" ? body.base : undefined);
+      sendJson(res, req, 200, result);
       return;
     }
     if (req.method === "GET" && url.pathname === "/pending") {
@@ -127,7 +181,17 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/chat") {
       const body = (await readJson(req)) as {
         messages?: ChatMessage[];
-        backend?: "local" | "cursor" | "ollama" | "llamacpp" | "llama.cpp" | "llama-cpp" | "llama_cpp";
+        backend?:
+          | "local"
+          | "cursor"
+          | "ollama"
+          | "llamacpp"
+          | "llama.cpp"
+          | "llama-cpp"
+          | "llama_cpp"
+          | "anthropic"
+          | "gemini"
+          | "azure";
         model?: string;
         conversationId?: string;
       };
@@ -168,7 +232,13 @@ const server = createServer(async (req, res) => {
                   body.backend === "llama-cpp" ||
                   body.backend === "llama_cpp"
                 ? "llamacpp"
-                : "local";
+                : body.backend === "anthropic"
+                  ? "anthropic"
+                  : body.backend === "gemini"
+                    ? "gemini"
+                    : body.backend === "azure"
+                      ? "azure"
+                      : "local";
         if (backend === "cursor") {
           await assertChatAllowed("cursor");
         }
@@ -179,7 +249,13 @@ const server = createServer(async (req, res) => {
               ? await runOllamaChat(chatOpts)
               : backend === "llamacpp"
                 ? await runLlamaCppChat(chatOpts)
-                : await runLocalChat(chatOpts);
+                : backend === "anthropic"
+                  ? await runAnthropicChat(chatOpts)
+                  : backend === "gemini"
+                    ? await runGeminiChat(chatOpts)
+                    : backend === "azure"
+                      ? await runAzureChat(chatOpts)
+                      : await runLocalChat(chatOpts);
         emit({ type: "done", message: text });
       } catch (err) {
         emit({ type: "error", message: err instanceof Error ? err.message : String(err) });

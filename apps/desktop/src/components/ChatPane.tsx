@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { isProposalDismissed } from "../lib/approvals-ui";
-import { sidecarHealth, sidecarModels, sidecarPending, stopChat, streamChat, type SidecarModels } from "../lib/sidecar";
+import {
+  sidecarHealth,
+  sidecarModels,
+  sidecarPending,
+  sidecarProbe,
+  stopChat,
+  streamChat,
+  type ChatTargetMeta,
+  type SidecarModels,
+} from "../lib/sidecar";
 import {
   downloadInference,
   inferenceStatus,
   dockAgent,
   openStagePane,
+  saveSettings,
   setChatModelsH,
   setState,
   startInference,
@@ -17,7 +27,39 @@ import {
 } from "../store";
 import { onShellDragEnd, onShellDragStart } from "../shellDnD";
 import { isAgentStacked, MODELS_H } from "../shell";
-import { backendLabel, coerceChatBackend, newId, type ChatBackend, type ChatMsg } from "../types";
+import {
+  backendLabel,
+  coerceChatBackend,
+  inferenceHostLabel,
+  isInferenceEngine,
+  isLoopbackInferenceUrl,
+  LOCAL_INFERENCE_URL,
+  newId,
+  remoteInferenceUrl,
+  usingRemoteInference,
+  withInferenceServer,
+  type AppSettings,
+  type ChatBackend,
+  type ChatMsg,
+  type InferenceEngineBackend,
+} from "../types";
+
+function targetOf(models: SidecarModels, backend: ChatBackend): ChatTargetMeta | undefined {
+  if (backend === "ollama") return models.targets?.ollama;
+  if (backend === "llamacpp") return models.targets?.llamacpp;
+  if (backend === "local") return models.targets?.local;
+  if (backend === "anthropic") return models.targets?.anthropic;
+  if (backend === "gemini") return models.targets?.gemini;
+  if (backend === "azure") return models.targets?.azure;
+  return undefined;
+}
+
+function whereServer(t?: ChatTargetMeta): string {
+  if (!t?.base) return "";
+  if (t.egress === "private") return `your network · ${t.base}`;
+  if (t.egress === "cloud") return `public internet · ${t.base}`;
+  return `this computer · ${t.base}`;
+}
 
 function fmtSize(n: number) {
   if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)} GB`;
@@ -73,6 +115,202 @@ function inferenceEngine(backend: ChatBackend): "vllm" | "llamacpp" | "ollama" |
   return null;
 }
 
+function probeKind(backend: InferenceEngineBackend): "vllm" | "llamacpp" | "ollama" {
+  if (backend === "llamacpp") return "llamacpp";
+  if (backend === "ollama") return "ollama";
+  return "vllm";
+}
+
+function InferenceServerPick(props: {
+  backend: InferenceEngineBackend;
+  settings: AppSettings | null;
+  onApplied: () => void;
+  resetChat: (label: string) => void;
+}) {
+  const { backend, settings } = props;
+  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState(false);
+  const [url, setUrl] = useState("");
+  const [check, setCheck] = useState<{ busy: boolean; ok?: boolean; message: string } | null>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const remote = remoteInferenceUrl(settings, backend);
+  const usingRemote = usingRemoteInference(settings, backend);
+  const trigger = usingRemote && remote ? inferenceHostLabel(remote) : "Local";
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: globalThis.MouseEvent) {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  async function apply(next: { base: string; remote: string }, quiet: boolean, chatLabel: string) {
+    if (!settings) return;
+    const ok = await saveSettings(withInferenceServer(settings, backend, next), { quiet });
+    if (!ok) return;
+    props.resetChat(chatLabel);
+    props.onApplied();
+  }
+
+  function openAdd() {
+    setOpen(false);
+    setUrl(remote || "");
+    setCheck(null);
+    setDialog(true);
+  }
+
+  async function pickLocal() {
+    setOpen(false);
+    if (!usingRemote) return;
+    await apply({ base: LOCAL_INFERENCE_URL[backend], remote }, true, `${backendLabel(backend)} · Local`);
+  }
+
+  async function pickRemote() {
+    setOpen(false);
+    if (!remote || usingRemote) return;
+    await apply({ base: remote, remote }, true, `${backendLabel(backend)} · ${inferenceHostLabel(remote)}`);
+  }
+
+  async function saveRemote() {
+    const next = url.trim();
+    if (!next) {
+      setCheck({ busy: false, ok: false, message: "Enter a URL." });
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(next);
+    } catch {
+      setCheck({ busy: false, ok: false, message: "Need an http(s) URL, for example http://10.0.0.12:8000/v1." });
+      return;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      setCheck({ busy: false, ok: false, message: "URL must be http or https." });
+      return;
+    }
+    if (isLoopbackInferenceUrl(next)) {
+      setCheck({ busy: false, ok: false, message: "That is this computer. Pick Local in the menu instead." });
+      return;
+    }
+    await apply(
+      { base: next, remote: next },
+      false,
+      `${backendLabel(backend)} · ${inferenceHostLabel(next)}`,
+    );
+    setDialog(false);
+  }
+
+  async function removeRemote() {
+    await apply(
+      { base: LOCAL_INFERENCE_URL[backend], remote: "" },
+      false,
+      `${backendLabel(backend)} · Local`,
+    );
+    setDialog(false);
+  }
+
+  async function checkUrl() {
+    setCheck({ busy: true, message: "Checking…" });
+    try {
+      const r = await sidecarProbe(probeKind(backend), url.trim());
+      setCheck({ busy: false, ok: r.ok, message: r.message });
+    } catch (err) {
+      setCheck({ busy: false, ok: false, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return (
+    <div className="server-pick" ref={wrap}>
+      <button
+        type="button"
+        className="server-pick-btn"
+        title="This computer or a saved helper on your network"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {trigger}
+      </button>
+      {open ? (
+        <div className="server-menu" role="listbox">
+          <button type="button" className={!usingRemote ? "on" : undefined} onClick={() => void pickLocal()}>
+            Local
+          </button>
+          {remote ? (
+            <button type="button" className={usingRemote ? "on" : undefined} onClick={() => void pickRemote()}>
+              {inferenceHostLabel(remote)}
+            </button>
+          ) : null}
+          <button type="button" className="server-add" onClick={openAdd}>
+            Add server
+          </button>
+        </div>
+      ) : null}
+      {dialog ? (
+        <div
+          className="modal-root"
+          onMouseDown={() => setDialog(false)}
+        >
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="late-add-server-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2 id="late-add-server-title">{remote ? `Edit ${backendLabel(backend)} server` : `Add ${backendLabel(backend)} server`}</h2>
+            <p className="hint">
+              A server you already run on your network. Late will not start it. OpenAI-compatible
+              <code> /v1</code> — same as Settings. Cloud AI stays off for a private IP.
+            </p>
+            <div className="url-check">
+              <label>
+                Base URL
+                <input
+                  value={url}
+                  autoFocus
+                  placeholder={LOCAL_INFERENCE_URL[backend].replace("127.0.0.1", "10.0.0.12")}
+                  onChange={(e) => setUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveRemote();
+                    if (e.key === "Escape") setDialog(false);
+                  }}
+                />
+              </label>
+              <button type="button" className="ghost" disabled={check?.busy || !url.trim()} onClick={() => void checkUrl()}>
+                {check?.busy ? "Checking…" : "Check"}
+              </button>
+            </div>
+            {check?.message ? <p className={check.ok ? "hint" : "hint warn"}>{check.message}</p> : null}
+            <div className="actions">
+              {remote ? (
+                <button type="button" className="ghost" onClick={() => void removeRemote()}>
+                  Remove
+                </button>
+              ) : null}
+              <button type="button" className="ghost" onClick={() => setDialog(false)}>
+                Cancel
+              </button>
+              <button type="button" className="primary" onClick={() => void saveRemote()}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ChatPane() {
   const approval = useApp((s) => s.approval);
   const agentSeed = useApp((s) => s.agentSeed);
@@ -90,7 +328,10 @@ export function ChatPane() {
     cursor: [],
     ollama: [],
     llamacpp: [],
-    backends: ["local", "llamacpp", "ollama", "cursor"],
+    anthropic: [],
+    gemini: [],
+    azure: [],
+    backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor"],
   });
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState("");
@@ -130,6 +371,9 @@ export function ChatPane() {
       const b = backendRef.current;
       if (b === "ollama") return m.ollama[0] || "";
       if (b === "llamacpp") return m.llamacpp[0] || "";
+      if (b === "anthropic") return m.anthropic?.[0] || "claude-sonnet-4-5";
+      if (b === "gemini") return m.gemini?.[0] || "gemini-2.5-flash";
+      if (b === "azure") return m.azure?.[0] || "";
       if (b === "cursor") return m.cursor[0] || "composer-2.5";
       return m.local[0] || "local";
     });
@@ -142,6 +386,11 @@ export function ChatPane() {
     });
     void refreshModels().catch((e: unknown) => setStatus(e instanceof Error ? e.message : String(e)));
   }, []);
+
+  useEffect(() => {
+    if (!settings) return;
+    void refreshModels().catch((e: unknown) => setStatus(e instanceof Error ? e.message : String(e)));
+  }, [settings?.vllm_base_url, settings?.llama_cpp_base_url, settings?.ollama_base_url]);
 
   useEffect(() => {
     const engine = inferenceEngine(backend);
@@ -212,6 +461,9 @@ export function ChatPane() {
       if (b === "ollama") setModel(opts.model || models.ollama[0] || "");
       else if (b === "llamacpp") setModel(opts.model || models.llamacpp[0] || "");
       else if (b === "local") setModel(opts.model || models.local[0] || "local");
+      else if (b === "anthropic") setModel(opts.model || models.anthropic?.[0] || "claude-sonnet-4-5");
+      else if (b === "gemini") setModel(opts.model || models.gemini?.[0] || "gemini-2.5-flash");
+      else if (b === "azure") setModel(opts.model || models.azure?.[0] || "");
       else setModel(opts.model || models.cursor[0] || "composer-2.5");
     } else if (opts?.model) {
       setModel(opts.model);
@@ -229,9 +481,12 @@ export function ChatPane() {
     setBackend(backendNext);
     if (backendNext === "ollama") setModel(settings.ollama_model || models.ollama[0] || "");
     else if (backendNext === "llamacpp") setModel(settings.llama_cpp_model || models.llamacpp[0] || "");
+    else if (backendNext === "anthropic") setModel(settings.anthropic_model || models.anthropic?.[0] || "claude-sonnet-4-5");
+    else if (backendNext === "gemini") setModel(settings.gemini_model || models.gemini?.[0] || "gemini-2.5-flash");
+    else if (backendNext === "azure") setModel(settings.azure_deployment || models.azure?.[0] || "");
     else if (backendNext === "cursor") setModel(settings.cursor_model || models.cursor[0] || "composer-2.5");
     else setModel(settings.vllm_model || models.local[0] || "local");
-  }, [settings, models.cursor, models.local, models.ollama, models.llamacpp]);
+  }, [settings, models.cursor, models.local, models.ollama, models.llamacpp, models.anthropic, models.gemini, models.azure]);
 
   useEffect(() => {
     let stop = false;
@@ -460,13 +715,28 @@ export function ChatPane() {
             resetChat({ backend: next, label: backendLabel(next) });
           }}
         >
-          <option value="local">local vLLM</option>
+          <option value="local">vLLM</option>
           <option value="llamacpp">llama.cpp</option>
           <option value="ollama">Ollama</option>
+          <option value="anthropic">Anthropic Claude</option>
+          <option value="gemini">Gemini</option>
+          <option value="azure">Azure</option>
           <option value="cursor" disabled={!settings?.cloud_chat_enabled}>
             Cursor SDK{settings?.cloud_chat_enabled ? "" : " — Cloud AI is off"}
           </option>
         </select>
+        {isInferenceEngine(backend) ? (
+          <InferenceServerPick
+            backend={backend}
+            settings={settings}
+            onApplied={() => {
+              void refreshModels().catch((e: unknown) =>
+                setStatus(e instanceof Error ? e.message : String(e)),
+              );
+            }}
+            resetChat={(label) => resetChat({ label })}
+          />
+        ) : null}
         <select
           title="Chat API model id after the server is up"
           value={model}
@@ -479,14 +749,25 @@ export function ChatPane() {
             ? (models.ollama.length ? models.ollama : ["(no Ollama models)"])
             : backend === "llamacpp"
               ? (models.llamacpp.length ? models.llamacpp : ["(no llama.cpp models)"])
-              : backend === "local"
-                ? (models.local.length ? models.local : ["local"])
-                : (models.cursor.length ? models.cursor : ["composer-2.5", "auto"])
+              : backend === "anthropic"
+                ? (models.anthropic?.length ? models.anthropic : ["claude-sonnet-4-5"])
+                : backend === "gemini"
+                  ? (models.gemini?.length ? models.gemini : ["gemini-2.5-flash"])
+                  : backend === "azure"
+                    ? (models.azure?.length ? models.azure : ["(set Azure deployment in Settings)"])
+                    : backend === "local"
+                      ? (models.local.length ? models.local : ["local"])
+                      : (models.cursor.length ? models.cursor : ["composer-2.5", "auto"])
           ).map((m) => (
             <option key={m} value={m} disabled={m.startsWith("(")}>{m}</option>
           ))}
         </select>
       </div>
+      {backend !== "cursor" && whereServer(targetOf(models, backend)) ? (
+        <p className="meta" style={{ padding: "0 8px 6px", margin: 0 }}>
+          Helper: {whereServer(targetOf(models, backend))}
+        </p>
+      ) : null}
       {backend === "local" && (
       <ModelsDock
         label="vLLM"
@@ -494,9 +775,11 @@ export function ChatPane() {
       >
       <div className="chat-models-body">
         <p className="hint" style={{ margin: "0 0 8px" }}>
-          {intelCompose
+          {targetOf(models, "local")?.egress && targetOf(models, "local")?.egress !== "loopback"
+            ? "Chat uses the saved vLLM server (another machine). Start/Download on this pane only manage a server on this computer — they stay hidden while the URL is not loopback. Pick Local to use this computer."
+            : intelCompose
             ? "Optional Intel XPU Docker helpers. NVIDIA and AMD should use Ollama, llama.cpp, or a CUDA/ROCm server on loopback instead of Start."
-            : "Start/Download stay hidden unless your computer has a discrete Intel GPU (or LATE_VLLM_FORCE=1). NVIDIA, AMD, and CPU users: pick llama.cpp or Ollama, or point Local at a server you started."}
+            : "Start/Download stay hidden unless your computer has a discrete Intel GPU (or LATE_VLLM_FORCE=1). NVIDIA, AMD, and CPU users: pick llama.cpp or Ollama, or point vLLM at a server you started."}
         </p>
         <div className="row" style={{ marginBottom: 8 }}>
           <span className="meta" style={{ flex: 1 }}>Models</span>
@@ -509,7 +792,7 @@ export function ChatPane() {
         {gpu.gpu?.summary && (
           <p className="meta" style={{ margin: "0 0 8px" }}>{gpu.gpu.summary}</p>
         )}
-        {intelCompose && (
+        {intelCompose && targetOf(models, "local")?.egress !== "private" && targetOf(models, "local")?.egress !== "cloud" && (
         <>
         {(gpu.localModels ?? []).some((m) => m.recommended) && (
           <div className="model-list">
@@ -656,6 +939,16 @@ export function ChatPane() {
           {" "}(paste or import a file). Env <code>CURSOR_API_KEY</code> still overrides if set.
         </p>
       )}
+      {(backend === "anthropic" || backend === "gemini" || backend === "azure") && (
+        <p className="hint" style={{ padding: "0 8px" }}>
+          {backend === "anthropic"
+            ? "Anthropic key and base URL are in Settings. Public api.anthropic.com needs Cloud AI; a LAN proxy does not."
+            : backend === "gemini"
+              ? "Gemini key and base URL are in Settings. Public generativelanguage.googleapis.com needs Cloud AI; Vertex/private generateContent does not."
+              : "Azure key, resource URL, and deployment are in Settings. Public *.openai.azure.com needs Cloud AI unless DNS is only private."}{" "}
+          <button className="linkish" type="button" onClick={() => setState({ keysOpen: true })}>API keys</button>
+        </p>
+      )}
       {(backend === "llamacpp" || backend === "ollama") && (
         <ModelsDock
           label={backend === "llamacpp" ? "llama.cpp" : "Ollama"}
@@ -668,6 +961,7 @@ export function ChatPane() {
           downloadId={downloadId}
           gpuBusy={gpuBusy}
           sidecarHint={backend === "ollama" ? models.ollamaMessage : models.llamacppMessage}
+          networkServer={targetOf(models, backend)?.egress !== "loopback"}
           onPick={pickModel}
           onDownloadId={setDownloadId}
           onFetch={(id) => void fetchModel(id, backend)}
@@ -781,6 +1075,7 @@ function WeightsPanel(props: {
   downloadId: string;
   gpuBusy: boolean;
   sidecarHint?: string;
+  networkServer?: boolean;
   onPick: (id: string) => void;
   onDownloadId: (id: string) => void;
   onFetch: (id: string) => void;
@@ -801,10 +1096,12 @@ function WeightsPanel(props: {
   return (
     <div className="chat-models-body">
       <p className="hint" style={{ margin: "0 0 8px" }}>
-        {props.sidecarHint ||
-          (llama
-            ? "Download a GGUF from Hugging Face into ~/.local/share/late/models/gguf/. Late does not install llama.cpp. Start needs llama-server on PATH, or run it yourself on 127.0.0.1:8080."
-            : "Pull talks to Ollama on loopback (library names like gemma3:4b or qwen2.5:7b, or Hugging Face ids like google/gemma-3-4b-it-qat-q4_0-gguf). Late does not install Ollama.")}
+        {props.networkServer
+          ? `${props.sidecarHint ? `${props.sidecarHint} ` : ""}Pull / Start / Download only manage a process on this computer, so they are disabled while the URL is not loopback.`
+          : props.sidecarHint ||
+            (llama
+              ? "Download a GGUF from Hugging Face into ~/.local/share/late/models/gguf/. Late does not install llama.cpp. Start needs llama-server on PATH, or run it yourself on 127.0.0.1:8080."
+              : "Pull talks to Ollama on loopback (library names like gemma3:4b or qwen2.5:7b, or Hugging Face ids like google/gemma-3-4b-it-qat-q4_0-gguf). Late does not install Ollama.")}
       </p>
       <div className="row" style={{ marginBottom: 8 }}>
         <span className="meta" style={{ flex: 1 }}>{llama ? "GGUF" : "Ollama models"}</span>
@@ -831,7 +1128,7 @@ function WeightsPanel(props: {
                 <button
                   type="button"
                   className="ghost dl"
-                  disabled={props.gpuBusy || props.gpu.downloading}
+                  disabled={props.gpuBusy || props.gpu.downloading || props.networkServer}
                   onClick={() => props.onFetch(m.id)}
                 >
                   {llama ? "Download" : "Pull"}
@@ -888,7 +1185,7 @@ function WeightsPanel(props: {
         />
         <button
           className="ghost"
-          disabled={props.gpuBusy || props.gpu.downloading || !props.downloadId.trim()}
+          disabled={props.gpuBusy || props.gpu.downloading || !props.downloadId.trim() || props.networkServer}
           onClick={props.onPull}
         >
           {llama ? "Download" : "Pull"}
@@ -898,7 +1195,7 @@ function WeightsPanel(props: {
         <div className="row">
           <button
             className="primary"
-            disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || !props.serveModel.trim()}
+            disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || !props.serveModel.trim() || props.networkServer}
             onClick={props.onStart}
           >
             Start {props.serveModel ? props.serveModel.split("/").pop() : "llama-server"}

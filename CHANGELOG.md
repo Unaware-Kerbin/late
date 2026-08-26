@@ -4,6 +4,16 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-26
 
+**A helper on this computer or on your network, without Cloud AI.**
+
+- **Cloud AI** is only Cursor and the public internet. A GPU at home or in the lab is not Cloud AI.
+- Agent pane: pick vLLM / llama.cpp / Ollama, then **Local** (this computer) or **Add server** (one extra address you already started). The saved host shows up in that menu. Late does not SSH-start vLLM on the other machine. Start / Pull / Download stay on this computer and hide when you are not on Local.
+- Settings **Check** and the Add server dialog probe `GET /v1/models`. Optional **Private inference hosts** is for names that do not look like a home IP. Chat still needs OpenAI-style `/v1` (or LiteLLM in front).
+
+**Anthropic, Gemini, and Azure helpers.**
+
+- Native adapters: Anthropic Messages, Gemini generateContent, Azure OpenAI deployments (`api-key`). Same private-network gate as vLLM. Public SaaS hosts still need Cloud AI. Tool calls still drive Approve. Keys: Anthropic, Gemini, Azure.
+
 **v0.1.5 installers.**
 
 - GitHub Release [v0.1.5](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.5) rebuilds Linux, macOS, and Windows apps from this `main` (Electron 44, session tabs/splits, Staging editor, SCP, `undici` pin). File names are `Late-0.1.5-…`. Still unsigned. macOS pack looks for `Electron.app` (Electron 42+ no longer unzips `dist/electron` on Darwin).
