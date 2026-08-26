@@ -30,6 +30,9 @@ npx --yes esbuild "$ROOT/apps/agent-sidecar/src/index.ts" \
 echo "late: vite UI"
 npm run build -w late-desktop
 
+echo "late: ensure Electron binary"
+"$ROOT/scripts/ensure-electron.sh"
+
 echo "late: electron-builder ${TARGET:-current OS}"
 if [[ -n "$TARGET" ]]; then
   npm exec -w late-desktop -- electron-builder --publish never "$TARGET"

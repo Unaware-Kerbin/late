@@ -12,7 +12,8 @@ app.commandLine.appendSwitch("disable-gpu-compositing");
 app.commandLine.appendSwitch("disable-gpu-vsync");
 app.commandLine.appendSwitch("log-level", "3");
 if (process.platform === "linux") {
-  app.commandLine.appendSwitch("ozone-platform-hint", "x11");
+  // Electron 38 removed ELECTRON_OZONE_PLATFORM_HINT; pin X11 for Intel Arc + Wayland.
+  app.commandLine.appendSwitch("ozone-platform", "x11");
 }
 
 const DEV_URL = process.env.LATE_DEV_URL || "http://127.0.0.1:5173";
