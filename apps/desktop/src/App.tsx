@@ -3,6 +3,7 @@ import { Modals } from "./components/Modals";
 import { ShellLayout } from "./components/ShellLayout";
 import { StatusBar } from "./components/StatusBar";
 import {
+  activateTab,
   boot,
   bumpTermFont,
   bumpUiScale,
@@ -16,10 +17,40 @@ import {
   openStagePane,
   useApp,
 } from "./store";
+import type { PaneState, SplitNode, SplitPlacement, TabState } from "./types";
+
+const SPLIT_CHOICES: { place: SplitPlacement; label: string; hint: string }[] = [
+  { place: "left", label: "Split left", hint: "Ctrl+Shift+←" },
+  { place: "right", label: "Split right", hint: "Ctrl+Shift+→" },
+  { place: "up", label: "Split up", hint: "Ctrl+Shift+↑" },
+  { place: "down", label: "Split down", hint: "Ctrl+Shift+↓" },
+];
+
+function paneIdsIn(node: SplitNode): string[] {
+  if (node.type === "leaf") return [node.paneId];
+  return [...paneIdsIn(node.a), ...paneIdsIn(node.b)];
+}
+
+function tabSessionChrome(
+  tab: TabState,
+  panes: Record<string, PaneState>,
+  devices: { id: string; accent?: string | null }[],
+): { live: boolean; accent?: string } {
+  for (const id of paneIdsIn(tab.tree)) {
+    const pane = panes[id];
+    if (!pane?.session) continue;
+    const accent =
+      pane.session.accent || devices.find((d) => d.id === pane.deviceId)?.accent || undefined;
+    return { live: true, accent: accent || undefined };
+  }
+  return { live: false };
+}
 
 export function App() {
   const tabs = useApp((s) => s.tabs);
   const activeTabId = useApp((s) => s.activeTabId);
+  const panes = useApp((s) => s.panes);
+  const devices = useApp((s) => s.inventory.devices);
   const toasts = useApp((s) => s.toasts);
   const uiScale = useApp((s) => s.uiScale);
   const termFontSize = useApp((s) => s.termFontSize);
@@ -50,13 +81,21 @@ export function App() {
         e.preventDefault();
         if (getState().activeTabId) closeTab(getState().activeTabId!);
       }
-      if (meta && e.shiftKey && e.key.toLowerCase() === "d") {
+      if (meta && e.shiftKey && (e.key === "ArrowRight" || e.key.toLowerCase() === "r")) {
+        e.preventDefault();
+        splitFocused("right");
+      }
+      if (meta && e.shiftKey && (e.key === "ArrowLeft" || e.key.toLowerCase() === "l")) {
+        e.preventDefault();
+        splitFocused("left");
+      }
+      if (meta && e.shiftKey && (e.key === "ArrowDown" || e.key.toLowerCase() === "d")) {
         e.preventDefault();
         splitFocused("down");
       }
-      if (meta && e.shiftKey && e.key.toLowerCase() === "r") {
+      if (meta && e.shiftKey && (e.key === "ArrowUp" || e.key.toLowerCase() === "u")) {
         e.preventDefault();
-        splitFocused("right");
+        splitFocused("up");
       }
       if (meta && (e.key === "=" || e.key === "+")) {
         e.preventDefault();
@@ -94,19 +133,37 @@ export function App() {
         <div className="brand">
           LATE <span>Local AI Terminal Emulator</span>
         </div>
-        <div className="tabs" onClick={() => setTabMenu(null)}>
-          {(tabs ?? []).map((t) => (
+        <div className="tabs" onClick={(e) => {
+          if (e.button !== 0) return;
+          setTabMenu(null);
+        }}>
+          {(tabs ?? []).map((t) => {
+            const chrome = tabSessionChrome(t, panes, devices);
+            return (
             <div
               key={t.id}
-              className={`tab ${t.id === activeTabId ? "active" : ""}`}
-              onClick={() => setState({ activeTabId: t.id })}
+              className={`tab ${t.id === activeTabId ? "active" : ""} ${chrome.live ? "live" : ""}`}
+              style={
+                chrome.live
+                  ? { ["--tab-accent" as string]: chrome.accent || "var(--accent)" }
+                  : undefined
+              }
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 setRenaming(t.id);
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 setTabMenu({ id: t.id, x: e.clientX, y: e.clientY });
+              }}
+              onClick={(e) => {
+                if (e.button !== 0) {
+                  e.stopPropagation();
+                  return;
+                }
+                activateTab(t.id);
+                setTabMenu(null);
               }}
               onMouseDown={(e) => {
                 if (e.button === 1) {
@@ -148,16 +205,39 @@ export function App() {
                 ×
               </button>
             </div>
-          ))}
+            );
+          })}
           <button className="icon-btn" onClick={() => newTab()} title="New tab">
             +
           </button>
         </div>
-        <button className="icon-btn" onClick={() => splitFocused("right")} title="Split right">
-          ▥
+        <button
+          className="icon-btn"
+          title="Split left (Ctrl+Shift+←)"
+          onClick={() => splitFocused("left")}
+        >
+          ◂
         </button>
-        <button className="icon-btn" onClick={() => splitFocused("down")} title="Split down">
-          ▤
+        <button
+          className="icon-btn"
+          title="Split right (Ctrl+Shift+→)"
+          onClick={() => splitFocused("right")}
+        >
+          ▸
+        </button>
+        <button
+          className="icon-btn"
+          title="Split up (Ctrl+Shift+↑)"
+          onClick={() => splitFocused("up")}
+        >
+          ▴
+        </button>
+        <button
+          className="icon-btn"
+          title="Split down (Ctrl+Shift+↓)"
+          onClick={() => splitFocused("down")}
+        >
+          ▾
         </button>
         <button className="icon-btn" onClick={() => setState((s) => ({ ...s, paletteOpen: true }))} title="Command palette">
           ⌘K
@@ -200,26 +280,19 @@ export function App() {
           >
             Rename tab
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setState({ activeTabId: tabMenu.id });
-              splitFocused("right");
-              setTabMenu(null);
-            }}
-          >
-            Split right
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setState({ activeTabId: tabMenu.id });
-              splitFocused("down");
-              setTabMenu(null);
-            }}
-          >
-            Split down
-          </button>
+          {SPLIT_CHOICES.map((c) => (
+            <button
+              key={c.place}
+              type="button"
+              onClick={() => {
+                activateTab(tabMenu.id);
+                splitFocused(c.place);
+                setTabMenu(null);
+              }}
+            >
+              {c.label}
+            </button>
+          ))}
           <button
             type="button"
             onClick={() => {

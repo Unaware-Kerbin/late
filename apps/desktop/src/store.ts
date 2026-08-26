@@ -57,8 +57,11 @@ import {
   type SessionInfo,
   type SessionKind,
   type SplitNode,
+  type SplitPlacement,
   type TabState,
 } from "./types";
+
+export type { SplitPlacement } from "./types";
 
 export type Toast = { id: string; kind: "error" | "info" | "ok"; text: string };
 
@@ -469,8 +472,12 @@ function unwrapList<T>(raw: unknown): T[] {
 export async function refreshAll() {
   try {
     await rpc.connect();
+    let inventoryError: string | null = null;
     const [inv, auth, sessions, settings, collections, captures, providerStatus] = await Promise.all([
-      rpc.call<Inventory>("inventory.list").catch(() => ({ devices: [] as Device[], folders: [] as string[] })),
+      rpc.call<Inventory>("inventory.list").catch((err) => {
+        inventoryError = errText(err);
+        return null;
+      }),
       rpc.call<AuthProfile[]>("auth.list").catch(() => [] as AuthProfile[]),
       rpc.call<SessionInfo[]>("session.list").catch(() => [] as SessionInfo[]),
       rpc.call<AppSettings>("settings.get").catch(() => null),
@@ -481,7 +488,7 @@ export async function refreshAll() {
     setState({
       daemonOk: true,
       daemonError: null,
-      inventory: coerceInventory(inv),
+      inventory: inv != null ? coerceInventory(inv) : getState().inventory,
       auth: Array.isArray(auth) ? auth.map(coerceAuth) : [],
       sessions: Array.isArray(sessions) ? sessions.map(coerceSession) : [],
       settings: coerceSettings(settings),
@@ -489,6 +496,7 @@ export async function refreshAll() {
       captures: unwrapList<CaptureRecord>(captures),
       providerStatus: providerStatus ?? {},
     });
+    if (inventoryError) toast("error", `Could not load sessions: ${inventoryError}`);
   } catch (err) {
     setState({ daemonOk: false, daemonError: errText(err) });
   }
@@ -651,9 +659,23 @@ function kindForDevice(d: Device, override?: SessionKind): SessionKind {
   return "ssh";
 }
 
-function attachSession(info: SessionInfo, deviceId: string | undefined, kind: SessionKind) {
+function attachSession(
+  info: SessionInfo,
+  deviceId: string | undefined,
+  kind: SessionKind,
+  split?: SplitPlacement,
+) {
   const pane = focusedPane();
-  const paneId = pane && (pane.kind === "empty" || pane.disconnected) ? pane.id : splitNewPane(info.name);
+  let paneId: string;
+  if (split && pane && pane.kind !== "empty") {
+    paneId = splitFocused(split, pane.id, { dock: false }) ?? newTabPane(info.name);
+  } else if (pane && (pane.kind === "empty" || pane.disconnected)) {
+    paneId = pane.id;
+  } else {
+    paneId = newTabPane(info.name);
+  }
+  const tab = activeTab();
+  const renameTabToSession = !split && tab?.tree.type === "leaf";
   setState((s) => ({
     ...s,
     hostKey: null,
@@ -668,7 +690,9 @@ function attachSession(info: SessionInfo, deviceId: string | undefined, kind: Se
         disconnectReason: undefined,
       },
     },
-    tabs: s.tabs.map((t) => (t.id === s.activeTabId ? { ...t, title: info.name } : t)),
+    tabs: s.tabs.map((t) =>
+      renameTabToSession && t.id === s.activeTabId ? { ...t, title: info.name } : t,
+    ),
     focusedPaneId: paneId,
   }));
 }
@@ -676,7 +700,7 @@ function attachSession(info: SessionInfo, deviceId: string | undefined, kind: Se
 export async function openSession(
   device: Device,
   kind?: SessionKind,
-  hostKeyFlags?: { acceptUnknownHost?: boolean; replaceHostKey?: boolean },
+  hostKeyFlags?: { acceptUnknownHost?: boolean; replaceHostKey?: boolean; split?: SplitPlacement },
 ) {
   const sessionKind = kindForDevice(device, kind);
   try {
@@ -691,7 +715,7 @@ export async function openSession(
       accept_unknown_host: hostKeyFlags?.acceptUnknownHost,
       replace_host_key: hostKeyFlags?.replaceHostKey,
     });
-    attachSession(info, device.id, sessionKind);
+    attachSession(info, device.id, sessionKind, hostKeyFlags?.split);
     await refreshAll();
   } catch (err) {
     const hk = isHostKeyError(err);
@@ -719,6 +743,7 @@ export async function openSession(
             await openSession(device, sessionKind, {
               acceptUnknownHost: true,
               replaceHostKey: hk.mismatch,
+              split: hostKeyFlags?.split,
             });
           },
         },
@@ -1040,7 +1065,11 @@ export async function importFile(path: string, kind?: string) {
   }
 }
 
-export function newTab(title = "New") {
+export function newTab(title = "New"): string {
+  return newTabPane(title);
+}
+
+function newTabPane(title: string): string {
   const pane = freshPane();
   const tab: TabState = { id: newId(), title, tree: { type: "leaf", paneId: pane.id } };
   setState((s) => ({
@@ -1049,6 +1078,16 @@ export function newTab(title = "New") {
     panes: { ...s.panes, [pane.id]: pane },
     activeTabId: tab.id,
     focusedPaneId: pane.id,
+  }));
+  return pane.id;
+}
+
+export function activateTab(id: string) {
+  const tab = state.tabs.find((t) => t.id === id);
+  if (!tab) return;
+  setState((s) => ({
+    activeTabId: id,
+    focusedPaneId: treeHasPane(tab.tree, s.focusedPaneId) ? s.focusedPaneId : firstPaneId(tab.tree),
   }));
 }
 
@@ -1150,9 +1189,20 @@ export async function closePane(paneId: string) {
 }
 
 function mapTree(node: SplitNode, fn: (n: SplitNode) => SplitNode): SplitNode {
-  const mapped = fn(node);
-  if (mapped.type === "split") return { ...mapped, a: mapTree(mapped.a, fn), b: mapTree(mapped.b, fn) };
-  return mapped;
+  if (node.type === "split") {
+    const a = mapTree(node.a, fn);
+    const b = mapTree(node.b, fn);
+    return fn(a === node.a && b === node.b ? node : { ...node, a, b });
+  }
+  return fn(node);
+}
+
+function replaceLeaf(node: SplitNode, paneId: string, next: SplitNode): SplitNode {
+  if (node.type === "leaf") return node.paneId === paneId ? next : node;
+  const a = replaceLeaf(node.a, paneId, next);
+  const b = replaceLeaf(node.b, paneId, next);
+  if (a === node.a && b === node.b) return node;
+  return { ...node, a, b };
 }
 
 export function splitKey(node: SplitNode): string {
@@ -1183,47 +1233,75 @@ export function renameTab(id: string, title: string) {
   }));
 }
 
-export function splitFocused(dir: "right" | "down") {
-  const tab = activeTab();
-  const focus = state.focusedPaneId;
-  if (!tab || !focus) return;
-  const pane = freshPane();
-  const tree = mapTree(tab.tree, (n) => {
-    if (n.type === "leaf" && n.paneId === focus) {
-      return { type: "split", dir, ratio: 0.5, a: n, b: { type: "leaf", paneId: pane.id } };
-    }
-    return n;
-  });
-  setState((s) => ({
-    ...s,
-    panes: { ...s.panes, [pane.id]: pane },
-    tabs: s.tabs.map((t) => (t.id === tab.id ? { ...t, tree } : t)),
-    focusedPaneId: pane.id,
-  }));
+function splitAxis(place: SplitPlacement): "right" | "down" {
+  return place === "left" || place === "right" ? "right" : "down";
 }
 
-function splitNewPane(title: string): string {
-  const pane = freshPane();
+function splitNewFirst(place: SplitPlacement): boolean {
+  return place === "left" || place === "up";
+}
+
+function tabHasSession(tab: TabState): boolean {
+  return paneIdsIn(tab.tree).some((id) => Boolean(state.panes[id]?.session));
+}
+
+/** Prefer the session tab next to the active one (the other device you just opened). */
+function dockableSessionTab(activeId: string): TabState | undefined {
+  const idx = state.tabs.findIndex((t) => t.id === activeId);
+  if (idx < 0) return undefined;
+  const prev = [...state.tabs.slice(0, idx)].reverse().find(tabHasSession);
+  if (prev) return prev;
+  return state.tabs.slice(idx + 1).find(tabHasSession);
+}
+
+function placeSplit(focusLeaf: SplitNode, neighbor: SplitNode, place: SplitPlacement): SplitNode {
+  const dir = splitAxis(place);
+  return splitNewFirst(place)
+    ? { type: "split", dir, ratio: 0.5, a: neighbor, b: focusLeaf }
+    : { type: "split", dir, ratio: 0.5, a: focusLeaf, b: neighbor };
+}
+
+/**
+ * Split the focused pane in the active tab.
+ * If another tab already has a session, that tab is docked into the split
+ * (so two connected devices tile). Otherwise an empty pane is added.
+ * Pass `{ dock: false }` when connecting a new session into a fresh split.
+ */
+export function splitFocused(
+  place: SplitPlacement,
+  paneId?: string | null,
+  opts?: { dock?: boolean },
+): string | null {
   const tab = activeTab();
-  if (!tab) {
-    newTab(title);
-    return getState().focusedPaneId ?? pane.id;
+  if (!tab) return null;
+  let focus = paneId ?? state.focusedPaneId;
+  if (!focus || !treeHasPane(tab.tree, focus)) focus = firstPaneId(tab.tree);
+  if (!focus) return null;
+  const dock = opts?.dock !== false;
+  const other = dock ? dockableSessionTab(tab.id) : undefined;
+  let newPane: PaneState | null = null;
+  let neighbor: SplitNode;
+  if (other) {
+    neighbor = other.tree;
+  } else {
+    newPane = freshPane();
+    neighbor = { type: "leaf", paneId: newPane.id };
   }
-  setState((s) => ({
-    ...s,
-    panes: { ...s.panes, [pane.id]: pane },
-    tabs: s.tabs.map((t) =>
-      t.id === tab.id
-        ? {
-            ...t,
-            title,
-            tree: { type: "split", dir: "right", ratio: 0.5, a: t.tree, b: { type: "leaf", paneId: pane.id } },
-          }
-        : t,
-    ),
-    focusedPaneId: pane.id,
-  }));
-  return pane.id;
+  const tree = replaceLeaf(tab.tree, focus, placeSplit({ type: "leaf", paneId: focus }, neighbor, place));
+  const title = other ? `${tab.title} · ${other.title}` : tab.title;
+  setState((s) => {
+    const panes = newPane ? { ...s.panes, [newPane.id]: newPane } : s.panes;
+    return {
+      ...s,
+      panes,
+      tabs: s.tabs
+        .filter((t) => t.id !== other?.id)
+        .map((t) => (t.id === tab.id ? { ...t, tree, title } : t)),
+      focusedPaneId: newPane?.id ?? focus,
+      activeTabId: tab.id,
+    };
+  });
+  return newPane?.id ?? focus;
 }
 
 export function openPcapPane() {

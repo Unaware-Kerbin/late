@@ -35,7 +35,9 @@ function lateDevOrigin(origin: string | undefined): boolean {
 
 function sameOriginFetch(req: { headers: Record<string, string | string[] | undefined> }): boolean {
   const site = req.headers["sec-fetch-site"];
-  return site === "same-origin";
+  if (site === "same-origin") return true;
+  // Electron 44 may omit Sec-Fetch-Site or send "none" for renderer → Vite fetches.
+  return !site || site === "none";
 }
 
 function httpOk(url: string, timeoutMs = 800): Promise<boolean> {

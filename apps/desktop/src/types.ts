@@ -209,7 +209,10 @@ export function coerceSettings(raw: unknown): AppSettings | null {
   };
 }
 
+/** Flex axis stored on the tree: row (`right`) or column (`down`). */
 export type SplitDir = "right" | "down";
+/** Where a new pane is placed relative to the focused one. */
+export type SplitPlacement = "left" | "right" | "up" | "down";
 
 export type SplitNode =
   | { type: "leaf"; paneId: string }

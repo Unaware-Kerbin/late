@@ -83,6 +83,16 @@ button { cursor: pointer; }
   cursor: pointer;
 }
 .tab.active { background: var(--panel-2); color: var(--text); border-color: var(--line); }
+.tab.live {
+  border-color: var(--tab-accent, var(--line-strong));
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: inset 3px 0 0 var(--tab-accent, var(--accent));
+}
+.tab.live.active {
+  border-color: var(--tab-accent, var(--accent));
+  background: var(--panel-2);
+}
 .tab-title { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-close {
   border: 0;
@@ -511,10 +521,17 @@ button.tree-row { color: inherit; }
 .tag { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; font-size: 10px; color: var(--muted); }
 
 .workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
-.workspace-layer { flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
-.split { display: flex; flex: 1; min-height: 0; }
+.workspace-layer {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.split { display: flex; flex: 1; min-width: 0; min-height: 0; width: 100%; height: 100%; }
 .split.right { flex-direction: row; }
 .split.down { flex-direction: column; }
+.split > :not(.gutter) { min-width: 0; min-height: 0; overflow: hidden; display: flex; }
 .gutter { background: var(--line); flex: 0 0 6px; cursor: col-resize; }
 .split.down > .gutter { cursor: row-resize; }
 .gutter:hover, .gutter:active { background: var(--accent); }
@@ -550,10 +567,12 @@ button.tree-row { color: inherit; }
   padding: 4px;
   box-shadow: 0 12px 40px rgba(0,0,0,.45);
 }
-.ctx-menu button,
 .ctx-menu button {
-  display: block;
+  display: flex;
   width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   text-align: left;
   background: transparent;
   border: 0;
@@ -561,9 +580,10 @@ button.tree-row { color: inherit; }
   border-radius: 6px;
   color: var(--text);
 }
+.ctx-hint { color: var(--faint); font-size: 10px; }
 .ctx-menu button:hover,
 .ctx-menu button:hover { background: var(--accent-dim); }
-.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; border: 1px solid transparent; }
+.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; flex: 1; overflow: hidden; border: 1px solid transparent; }
 .pane.focused { border-color: var(--accent-dim); }
 .pane-bar {
   height: 28px; display: flex; align-items: center; gap: 8px;

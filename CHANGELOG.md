@@ -2,6 +2,16 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-26
+
+**Electron 44, session tabs, and splits.**
+
+- Desktop runtime is Electron **44.0.0** (was 37.10.3; Chromium 152, Node 24 inside Electron). Packaged Mac apps need **macOS 13+**. Host Node for Vite/sidecar stays 22.
+- `scripts/ensure-electron.sh` unpacks the Electron binary after Electron 42+ dropped postinstall unzip, so `./late` and GitHub packers get `node_modules/electron/dist`. Source `./late` still uses `--no-sandbox` and software GL / X11 on Linux; packaged AppImage and `.deb` do not. It no longer falls back to a browser if Electron is missing.
+- Chromium 152 asks for **local-network-access** before the UI WebSocket to the loopback daemon. That permission is allowed so saved sessions load; other webview permissions stay denied. Folder-pane right-click **Add folder** / **Add device** stays open (the right-click’s follow-up pointer event no longer closes it).
+- Connecting another device opens a **new tab** (an empty pane in the current tab is still reused). Live session tabs have a **border** and the device accent stripe so they are easy to find.
+- **Split** left / right / up / down tiles another connected tab into this one (or adds an empty pane if you only have one session). Titlebar **◂ ▸ ▴ ▾**, tab right-click, device **Connect split …**, pane arrows, palette, or **Ctrl+Shift+arrows**.
+
 ## 2026-08-25
 
 **SCP copies, keyword colors, and adjustable terminal fonts.**

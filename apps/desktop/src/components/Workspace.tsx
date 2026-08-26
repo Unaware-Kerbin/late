@@ -11,6 +11,7 @@ import {
   setLogging,
   setSplitRatio,
   setState,
+  splitFocused,
   splitKey,
   useApp,
 } from "../store";
@@ -73,14 +74,14 @@ function SplitView({
   const dir = node.dir === "right" ? "row" : "column";
   return (
     <div className={`split ${node.dir}`}>
-      <div style={{ flex: node.ratio, minWidth: 0, minHeight: 0, display: "flex" }}>
+      <div style={{ flex: `${node.ratio} 1 0`, minWidth: 0, minHeight: 0, display: "flex" }}>
         <SplitView tabId={tabId} node={node.a} panes={panes} visible={visible} />
       </div>
       <SplitGutter
         dir={dir}
         onRatio={(r) => setSplitRatio(tabId, splitKey(node), r)}
       />
-      <div style={{ flex: 1 - node.ratio, minWidth: 0, minHeight: 0, display: "flex" }}>
+      <div style={{ flex: `${1 - node.ratio} 1 0`, minWidth: 0, minHeight: 0, display: "flex" }}>
         <SplitView tabId={tabId} node={node.b} panes={panes} visible={visible} />
       </div>
     </div>
@@ -181,6 +182,54 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
           >
             Send Break
           </button>
+        )}
+        {pane.kind !== "empty" && (
+          <>
+            <button
+              type="button"
+              className="ghost"
+              title="Split this pane left"
+              onClick={(e) => {
+                e.stopPropagation();
+                splitFocused("left", pane.id);
+              }}
+            >
+              ◂
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              title="Split this pane right"
+              onClick={(e) => {
+                e.stopPropagation();
+                splitFocused("right", pane.id);
+              }}
+            >
+              ▸
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              title="Split this pane up"
+              onClick={(e) => {
+                e.stopPropagation();
+                splitFocused("up", pane.id);
+              }}
+            >
+              ▴
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              title="Split this pane down"
+              onClick={(e) => {
+                e.stopPropagation();
+                splitFocused("down", pane.id);
+              }}
+            >
+              ▾
+            </button>
+          </>
         )}
         <button
           className="ghost"

@@ -16,7 +16,7 @@ import {
   useApp,
 } from "../store";
 import { onShellDragEnd, onShellDragStart } from "../shellDnD";
-import { folderPathIsUnder, normalizeFolderPath, type Device, type SessionKind } from "../types";
+import { folderPathIsUnder, normalizeFolderPath, type Device, type SessionKind, type SplitPlacement } from "../types";
 
 type FolderNode = {
   name: string;
@@ -261,16 +261,22 @@ export function Sidebar() {
 
   useEffect(() => {
     if (!menu && !newPop) return;
-    const close = (e: Event) => {
+    const opened = Date.now();
+    const close = (e: PointerEvent | MouseEvent) => {
+      // Chromium 152 can deliver the right-click's pointerdown/click *after* contextmenu.
+      if (Date.now() - opened < 400) return;
+      if ("button" in e && e.button === 2) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest(".folder-menu, .folder-dlg, .new-menu, .new-pop")) return;
       setMenu(null);
       setNewPop(null);
     };
-    const id = window.setTimeout(() => document.addEventListener("mousedown", close), 0);
+    const id = window.setTimeout(() => {
+      document.addEventListener("pointerdown", close, true);
+    }, 0);
     return () => {
       window.clearTimeout(id);
-      document.removeEventListener("mousedown", close);
+      document.removeEventListener("pointerdown", close, true);
     };
   }, [menu, newPop]);
 
@@ -440,8 +446,8 @@ export function Sidebar() {
     setActiveFolder(normalizeFolder(d.folder));
   }
 
-  function connect(d: Device, kind?: SessionKind) {
-    void openSession(d, kind);
+  function connect(d: Device, kind?: SessionKind, split?: SplitPlacement) {
+    void openSession(d, kind, split ? { split } : undefined);
   }
 
   function askNewFolder(parent: string) {
@@ -531,8 +537,17 @@ export function Sidebar() {
   function openMenu(next: CtxMenu, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
+    let x = e.clientX;
+    let y = e.clientY;
+    if (!x && !y) {
+      const r = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect?.();
+      if (r) {
+        x = r.left + 8;
+        y = r.top + 8;
+      }
+    }
     const h = next.kind === "device" ? 200 : next.path ? 176 : 96;
-    const pos = clampToViewport(e.clientX, e.clientY, 188, h);
+    const pos = clampToViewport(x, y, 188, h);
     setNewPop(null);
     setMenu({ ...next, x: pos.x, y: pos.y });
   }
@@ -753,10 +768,6 @@ export function Sidebar() {
         const t = e.target as HTMLElement;
         if (t.closest("input, textarea, select, .folder-dlg, .new-pop, .folder-menu")) return;
         onTreeKey(e);
-      }}
-      onClick={(e) => {
-        if ((e.target as HTMLElement).closest(".folder-dlg, .folder-menu, .new-pop")) return;
-        setMenu(null);
       }}
       onContextMenu={(e) => {
         if ((e.target as HTMLElement).closest(".tree-row, .folder-dlg, .folder-menu, .new-pop, .sess-toolbar, .search, .side-actions, .sess-connect")) return;
@@ -1085,6 +1096,46 @@ export function Sidebar() {
               }}
             >
               Connect
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
+                setMenu(null);
+                if (d) connect(d, undefined, "right");
+              }}
+            >
+              Connect split right
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
+                setMenu(null);
+                if (d) connect(d, undefined, "down");
+              }}
+            >
+              Connect split down
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
+                setMenu(null);
+                if (d) connect(d, undefined, "left");
+              }}
+            >
+              Connect split left
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
+                setMenu(null);
+                if (d) connect(d, undefined, "up");
+              }}
+            >
+              Connect split up
             </button>
             {inventory.devices.find((x) => x.id === menu.id)?.kind === "ssh" && (
               <button

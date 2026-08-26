@@ -12,7 +12,7 @@ app.commandLine.appendSwitch("disable-gpu-compositing");
 app.commandLine.appendSwitch("disable-gpu-vsync");
 app.commandLine.appendSwitch("log-level", "3");
 if (process.platform === "linux") {
-  app.commandLine.appendSwitch("ozone-platform-hint", "x11");
+  app.commandLine.appendSwitch("ozone-platform", "x11");
 }
 
 const DEV_URL = process.env.LATE_DEV_URL || "http://127.0.0.1:5173";
@@ -250,9 +250,24 @@ function isAllowedExternal(url) {
 }
 
 function ipcFrameUrl(event) {
-  const frame = event.senderFrame;
-  if (!frame) return "";
-  return typeof frame.url === "string" ? frame.url : "";
+  try {
+    const frame = event.senderFrame;
+    if (frame && typeof frame.url === "string" && frame.url) return frame.url;
+  } catch {
+    /* senderFrame throws if the frame is already gone */
+  }
+  try {
+    const url = event.sender && typeof event.sender.getURL === "function" ? event.sender.getURL() : "";
+    if (typeof url === "string" && url) return url;
+  } catch {
+    /* webContents may already be destroyed */
+  }
+  return "";
+}
+
+/** Chromium 152 asks for this before renderer WebSocket/fetch to the loopback daemon. */
+function isAllowedWebPermission(permission) {
+  return permission === "local-network-access";
 }
 
 function ipcAllowed(event) {
@@ -312,6 +327,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      spellcheck: false,
       webviewTag: false,
       devTools: !app.isPackaged,
       webgl: false,
@@ -334,10 +350,10 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => {
-    callback(false);
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(isAllowedWebPermission(permission));
   });
-  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => isAllowedWebPermission(permission));
   ipcMain.handle("late:token", (event) => {
     if (!ipcAllowed(event)) return "";
     return readLocalToken();
