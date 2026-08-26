@@ -1,13 +1,46 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { rpc } from "../lib/rpc";
+import { coerceStageFormat, STAGE_FORMATS, type StageFormat } from "../lib/stageEditorLang";
 import { openStagePane, toast, useApp } from "../store";
 import type { Device, PaneState } from "../types";
 
-const FORMATS = ["cli", "ansible", "netmiko", "salt", "chef"] as const;
+const FORMATS = STAGE_FORMATS;
+const StageEditor = lazy(() => import("./StageEditor").then((m) => ({ default: m.StageEditor })));
+const DRAFT_PLACEHOLDER = "CLI, playbook, Python, Salt, or Chef draft — Ctrl+Space for the right shape";
 
-function coerceFormat(v: unknown, fallback: (typeof FORMATS)[number] = "cli"): (typeof FORMATS)[number] {
-  const s = String(v ?? "").trim().toLowerCase();
-  return (FORMATS as readonly string[]).includes(s) ? (s as (typeof FORMATS)[number]) : fallback;
+class StageEditorBoundary extends Component<{ children: ReactNode; fallback: ReactNode }, { bad: boolean }> {
+  state = { bad: false };
+  static getDerivedStateFromError() {
+    return { bad: true };
+  }
+  render() {
+    return this.state.bad ? this.props.fallback : this.props.children;
+  }
+}
+
+function DraftFallback({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <textarea
+      className="stage-body"
+      spellCheck={false}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      aria-label="Staging draft"
+    />
+  );
+}
+
+function coerceFormat(v: unknown, fallback: StageFormat = "cli"): StageFormat {
+  return coerceStageFormat(v, fallback);
 }
 
 /** PATH Push talks SSH. A hostname/IP is enough even if the row was also used for serial. */
@@ -16,7 +49,7 @@ function isSshInventoryDevice(d: Device): boolean {
   return !!host && !host.includes("://");
 }
 
-function pushLabel(format: (typeof FORMATS)[number]): string {
+function pushLabel(format: StageFormat): string {
   switch (format) {
     case "cli":
       return "Push CLI…";
@@ -31,7 +64,7 @@ function pushLabel(format: (typeof FORMATS)[number]): string {
   }
 }
 
-function confirmLabel(format: (typeof FORMATS)[number]): string {
+function confirmLabel(format: StageFormat): string {
   switch (format) {
     case "cli":
       return "Push";
@@ -78,7 +111,7 @@ type StagePushResult = {
 export function StagePane({ pane }: { pane: PaneState }) {
   const sessions = useApp((s) => s.sessions);
   const devices = useApp((s) => s.inventory.devices);
-  const [format, setFormat] = useState<(typeof FORMATS)[number]>(() => coerceFormat(pane.stageFormat));
+  const [format, setFormat] = useState<StageFormat>(() => coerceFormat(pane.stageFormat));
   const [intent, setIntent] = useState("");
   const [body, setBody] = useState("");
   const [ask, setAsk] = useState("");
@@ -280,8 +313,9 @@ export function StagePane({ pane }: { pane: PaneState }) {
   return (
     <div className="stage-pane">
       <p className="hint">
-        Drafts stay on your computer. Ask the helper for an Ansible playbook, Netmiko script, Salt state, or Chef
-        recipe and it will fill this pane. The helper cannot Push. Push CLI types into the <strong>Push session</strong>{" "}
+        Drafts stay on your computer. The editor follows Format (YAML, Python, Ruby, or CLI) and suggests the
+        right shape — Ctrl+Space. Ask the helper for a playbook, script, state, or recipe and it will fill this
+        pane. The helper cannot Push. Push CLI types into the <strong>Push session</strong>{" "}
         (open SSH/serial PTY). Ansible / Netmiko / Salt / Chef run on your computer with the <strong>Device</strong>{" "}
         inventory SSH host and that device's auth profile (key, agent, or the login Late already saved on your
         computer) — not the serial session. Late does not bundle those PATH tools.
@@ -289,7 +323,7 @@ export function StagePane({ pane }: { pane: PaneState }) {
       <div className="stage-toolbar">
         <label>
           Format
-          <select value={format} onChange={(e) => setFormat(e.target.value as (typeof FORMATS)[number])}>
+          <select value={format} onChange={(e) => setFormat(e.target.value as StageFormat)}>
             {FORMATS.map((f) => (
               <option key={f} value={f}>
                 {f}
@@ -327,13 +361,13 @@ export function StagePane({ pane }: { pane: PaneState }) {
         <input value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="e.g. VLAN 10 on access ports" />
       </label>
       {ask && <p className="hint warn">{ask}</p>}
-      <textarea
-        className="stage-body"
-        spellCheck={false}
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        placeholder="CLI, playbook, Python, Salt, or Chef draft"
-      />
+      <StageEditorBoundary
+        fallback={<DraftFallback value={body} onChange={setBody} placeholder={DRAFT_PLACEHOLDER} />}
+      >
+        <Suspense fallback={<DraftFallback value={body} onChange={setBody} placeholder={DRAFT_PLACEHOLDER} />}>
+          <StageEditor format={format} value={body} onChange={setBody} placeholder={DRAFT_PLACEHOLDER} />
+        </Suspense>
+      </StageEditorBoundary>
       <div className="stage-toolbar">
         <button type="button" className="ghost" disabled={busy} onClick={() => void renderDraft()}>
           Render

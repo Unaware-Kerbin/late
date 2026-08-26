@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-26
 
+**Staging editor (syntax, suggestions, secret-line marks).**
+
+- Staging drafts use a VS Code-style editor instead of a plain box. Format picks the language (YAML for Ansible/Salt, Python for Netmiko, Ruby for Chef, plain for CLI). Ctrl+Space inserts the right skeleton — no password fields. Lines that look like credentials get a red mark before Save. Theme and terminal font follow Settings. Monaco workers stay same-origin / blob only.
+
 **Patch `undici` 5.x from optional Cloud AI.**
 
 - `@cursor/sdk` pulled `undici` 5.29.0 through `@connectrpc/connect-node` (5.x is EOL and has the 12 Dependabot GHSAs). The sidecar pins `undici` 6.28.0 and the workspace overrides the same version so Cloud AI does not keep 5.x. SSH, serial, and SCP do not use this package.

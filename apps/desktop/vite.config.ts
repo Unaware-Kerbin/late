@@ -144,6 +144,12 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
+  optimizeDeps: {
+    include: ["monaco-editor", "monaco-editor/esm/vs/editor/editor.worker?worker"],
+  },
+  worker: {
+    format: "es",
+  },
   clearScreen: false,
   envPrefix: ["VITE_", "TAURI_"],
 });

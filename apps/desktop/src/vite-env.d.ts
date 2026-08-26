@@ -9,3 +9,9 @@ interface LateRuntime {
 interface Window {
   lateRuntime?: LateRuntime;
 }
+
+declare module "monaco-editor/esm/vs/editor/editor.all";
+declare module "monaco-editor/esm/vs/basic-languages/python/python.contribution";
+declare module "monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution";
+declare module "monaco-editor/esm/vs/basic-languages/ruby/ruby.contribution";
+

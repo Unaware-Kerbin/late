@@ -1580,6 +1580,38 @@ html[data-font="mono"] {
   resize: none;
   padding: 8px;
 }
+.stage-editor-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 12rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel);
+}
+.stage-editor {
+  flex: 1;
+  min-height: 0;
+}
+.stage-editor .monaco-editor,
+.stage-editor .monaco-editor-background,
+.stage-editor .monaco-editor .margin {
+  background: var(--panel);
+}
+.stage-editor-chrome {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 8px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-raise);
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
+}
 .stage-list {
   display: flex;
   flex-wrap: wrap;
