@@ -1876,6 +1876,7 @@ mod stage_push_tests {
                 std::fs::set_permissions(&p, perms).unwrap();
             }
         }
+        let _path = crate::stage::TEST_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("PATH").ok();
         std::env::set_var("PATH", &bindir);
         let plan = app.stage_plan(

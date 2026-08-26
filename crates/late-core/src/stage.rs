@@ -853,6 +853,10 @@ pub fn jail_ok(root: &Path, candidate: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// PATH is process-global. Tests that install fake bins must not overlap.
+#[cfg(test)]
+pub(crate) static TEST_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,6 +1020,7 @@ mod tests {
     }
 
     fn with_fake_bins<T>(names: &[&str], f: impl FnOnce() -> T) -> T {
+        let _path = TEST_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         for name in names {
             let p = dir.path().join(name);
@@ -1181,6 +1186,7 @@ mod tests {
         let (_t, paths) = tmp();
         let mut a = render(StageFormat::Chef, Vendor::Linux, "ntp", None).unwrap();
         a = save(&paths, a).unwrap();
+        let _path = TEST_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("PATH").ok();
         std::env::set_var("PATH", "/var/empty/late-no-such-bins");
         let start = Instant::now();
