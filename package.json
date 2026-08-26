@@ -26,6 +26,9 @@
   "devDependencies": {
     "concurrently": "^9.1.2"
   },
+  "overrides": {
+    "undici": "6.28.0"
+  },
   "engines": {
     "node": ">=22"
   }

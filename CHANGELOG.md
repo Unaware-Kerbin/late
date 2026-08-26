@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-26
 
+**Patch `undici` 5.x from optional Cloud AI.**
+
+- `@cursor/sdk` pulled `undici` 5.29.0 through `@connectrpc/connect-node` (5.x is EOL and has the 12 Dependabot GHSAs). The sidecar pins `undici` 6.28.0 and the workspace overrides the same version so Cloud AI does not keep 5.x. SSH, serial, and SCP do not use this package.
+
 **Electron 44, session tabs, and splits.**
 
 - Desktop runtime is Electron **44.0.0** (was 37.10.3; Chromium 152, Node 24 inside Electron). Packaged Mac apps need **macOS 13+**. Host Node for Vite/sidecar stays 22.
