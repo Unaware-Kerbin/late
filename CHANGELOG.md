@@ -4,9 +4,9 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-26
 
-**v0.1.4 installers.**
+**v0.1.5 installers.**
 
-- GitHub Release [v0.1.4](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.4) rebuilds Linux, macOS, and Windows apps from this `main` (Electron 44, session tabs/splits, Staging editor, SCP, `undici` pin). File names are `Late-0.1.4-…`. Still unsigned.
+- GitHub Release [v0.1.5](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.5) rebuilds Linux, macOS, and Windows apps from this `main` (Electron 44, session tabs/splits, Staging editor, SCP, `undici` pin). File names are `Late-0.1.5-…`. Still unsigned. macOS pack looks for `Electron.app` (Electron 42+ no longer unzips `dist/electron` on Darwin).
 
 **Staging editor (syntax, suggestions, secret-line marks).**
 

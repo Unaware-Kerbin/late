@@ -6,6 +6,7 @@ cd "$ROOT"
 
 name=electron
 case "$(uname -s)" in
+  Darwin*) name="Electron.app/Contents/MacOS/Electron" ;;
   MINGW*|MSYS*|CYGWIN*) name=electron.exe ;;
 esac
 if [[ "${OS:-}" == Windows_NT && "$name" == electron ]]; then
