@@ -2,7 +2,7 @@ appId: dev.late.desktop
 productName: Late
 copyright: Late contributors
 artifactName: Late-${version}-${os}-${arch}.${ext}
-electronVersion: 37.10.3
+electronVersion: 44.0.0
 directories:
   output: release
   buildResources: src-tauri/icons
