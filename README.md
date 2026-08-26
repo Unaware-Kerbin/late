@@ -25,7 +25,7 @@ The easy way: download a ready-made app from **[Releases](https://github.com/Una
 | Your computer | File | What you do |
 |---|---|---|
 | Windows | `Late-…-win-x64.exe` | Double-click. If Windows warns you, choose **More info** → **Run anyway**. |
-| Mac (Apple chip) | `Late-…-mac-arm64.dmg` | Open it. Drag Late into Applications. First time: **right-click** Late → **Open**. |
+| Mac (Apple chip) | `Late-…-mac-arm64.dmg` | **macOS 13+.** Open it. Drag Late into Applications. First time: **right-click** Late → **Open**. |
 | Linux | `Late-…AppImage` or `Late-….deb` | AppImage: make it executable, then double-click. Ubuntu/Debian: install the `.deb`. |
 
 The number in the file name is the app version. It can be older than the GitHub tag. These files are unsigned. SSH still uses the `ssh` program already on your computer.
