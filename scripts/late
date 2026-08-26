@@ -170,24 +170,18 @@ if ! up "$UI_URL"; then
   wait_up "$UI_URL" "UI"
 fi
 
-ELECTRON_BIN="$ROOT/node_modules/electron/dist/electron"
-if [[ ! -x "$ELECTRON_BIN" ]]; then
-  ELECTRON_BIN="$ROOT/apps/desktop/node_modules/electron/dist/electron"
-fi
-if [[ ! -x "$ELECTRON_BIN" ]]; then
-  echo "late: opening $UI_URL in the browser (Electron not installed)"
-  xdg-open "$UI_URL" >/dev/null 2>&1 || true
-  echo "late: services running. Ctrl+C to stop processes this launcher started."
-  wait
-  exit 0
+# Electron 42+ does not unzip dist on npm postinstall. Do not fall back to the browser.
+ELECTRON_BIN="$("$ROOT/scripts/ensure-electron.sh")"
+if [[ ! -f "$ELECTRON_BIN" ]]; then
+  echo "late: Electron is a declared dependency but the binary is missing" >&2
+  exit 1
 fi
 
 export DISPLAY="${DISPLAY:-:0}"
 export LATE_DEV_URL="$UI_URL"
-# Intel Arc + Wayland GPU compositing blanks Electron. Force software + X11.
-export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-x11}"
+# Intel Arc + Wayland GPU compositing blanks Electron. Force software GL + X11.
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 echo "late: opening window"
-"$ELECTRON_BIN" --no-sandbox --disable-gpu --disable-gpu-compositing --disable-gpu-vsync --log-level=3 \
+"$ELECTRON_BIN" --no-sandbox --disable-gpu --disable-gpu-compositing --disable-gpu-vsync --ozone-platform=x11 --log-level=3 \
   "$ROOT/apps/desktop/electron/main.cjs" >>/tmp/late-electron.log 2>&1
 # Window closed — cleanup only what we started.

@@ -2,6 +2,16 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-26
+
+**Electron 44 (Chromium 152).**
+
+- Desktop shell is Electron **44.0.0** (was 37.10.3). Chromium 152; Node inside Electron is 24.18.1. Host Node for sidecar/Vite stays 22.
+- macOS **13+** (Electron 44 drops 12).
+- `./late` still passes `--no-sandbox` (and software GL / X11 on Linux). Packaged AppImage/deb from electron-builder do not.
+- Linux: `--ozone-platform=x11` instead of `ELECTRON_OZONE_PLATFORM_HINT` (removed in Electron 38). Intel Arc + Wayland still uses software GL so the window is not blank.
+- `scripts/ensure-electron.sh` fetches the Electron 42+ dist binary so `./late` does not fall back to the browser when Electron is a declared dependency.
+
 ## 2026-08-25
 
 **SCP copies, keyword colors, and adjustable terminal fonts.**
