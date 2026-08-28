@@ -438,6 +438,7 @@ function KeysModal() {
         <ProviderKeyRow name="groq" label="Groq API key" />
         <ProviderKeyRow name="openrouter" label="OpenRouter API key" />
         <ProviderKeyRow name="custom" label="Custom OpenAI-compatible key" />
+        <ProviderKeyRow name="mcp" label="MCP Bearer (Authorization header)" />
         <div className="actions">
           <button className="ghost" onClick={() => setState({ keysOpen: false })}>
             Close
@@ -448,7 +449,7 @@ function KeysModal() {
   );
 }
 
-type ProbeKind = "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure";
+type ProbeKind = "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure" | "mcp";
 type ProbeState = { busy: boolean; ok?: boolean; message: string };
 
 function InferenceUrlRow(props: {
@@ -512,6 +513,11 @@ function SettingsModal() {
   const [insecureTls, setInsecureTls] = useState(Boolean(settings?.api_insecure_tls));
   const [cloudChat, setCloudChat] = useState(Boolean(settings?.cloud_chat_enabled));
   const [privateHosts, setPrivateHosts] = useState(settings?.private_inference_hosts ?? "");
+  const [mcpEnabled, setMcpEnabled] = useState(Boolean(settings?.mcp_enabled));
+  const [mcpCwd, setMcpCwd] = useState(settings?.mcp_cwd ?? "");
+  const [mcpCommand, setMcpCommand] = useState(settings?.mcp_command ?? "");
+  const [mcpArgs, setMcpArgs] = useState(settings?.mcp_args ?? "");
+  const [mcpUrl, setMcpUrl] = useState(settings?.mcp_url ?? "");
   const [checks, setChecks] = useState<Partial<Record<ProbeKind, ProbeState>>>({});
 
   async function checkUrl(kind: ProbeKind, base: string) {
@@ -544,6 +550,7 @@ function SettingsModal() {
             <option value="local">vLLM</option>
             <option value="llamacpp">llama.cpp</option>
             <option value="ollama">Ollama</option>
+            <option value="mcp">MCP</option>
             <option value="anthropic">Anthropic Claude</option>
             <option value="gemini">Gemini</option>
             <option value="azure">Azure</option>
@@ -676,6 +683,88 @@ function SettingsModal() {
         <p className="hint">
           Extra hostnames if the name is not a private IP or <code>.internal</code> / <code>.local</code> / <code>.lan</code> / <code>.home.arpa</code>.
           Use the Custom OpenAI-compatible key if the remote server expects a Bearer token.
+        </p>
+        <div className={mcpEnabled ? "setting-switch on" : "setting-switch"}>
+          <label className="setting-switch-row">
+            <span className="setting-switch-copy">
+              <strong>MCP</strong>
+              <span>
+                Extra tools, or pick <strong>MCP</strong> in the Agent menu like vLLM. Second control is
+                This computer (folder below) or an HTTP address — same idea as Local vs Add server.
+                Off by default for extra tools on other backends. List/status tools run right away.
+                Starts and writes still wait for Approve. Send on the MCP backend is the chat round.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              role="switch"
+              aria-checked={mcpEnabled}
+              aria-label="MCP"
+              checked={mcpEnabled}
+              onChange={(e) => setMcpEnabled(e.target.checked)}
+            />
+          </label>
+          <p className="setting-switch-note">
+            {mcpEnabled
+              ? "On. Folder on this computer, or an address on another box. Save, then Check. Late does not start that program for you, and does not send API keys from Settings into it."
+              : "Off. The helper still works with its usual tools."}
+          </p>
+        </div>
+        <div className="url-check">
+          <label>
+            MCP address (Streamable HTTP)
+            <input
+              value={mcpUrl}
+              onChange={(e) => setMcpUrl(e.target.value)}
+              placeholder="http://127.0.0.1:8790/mcp"
+            />
+          </label>
+          <button
+            type="button"
+            className="ghost"
+            disabled={checks.mcp?.busy}
+            onClick={() => void checkUrl("mcp", mcpUrl)}
+          >
+            {checks.mcp?.busy ? "Checking…" : "Check"}
+          </button>
+        </div>
+        <p className="hint">
+          Leave blank to use the folder below. If both are set, Late uses the address. That program
+          must already be listening — Late will not start it. On this computer:{" "}
+          <code>http://127.0.0.1:8790/mcp</code> after <code>npm run mcp:http</code>. Port 8787 is
+          the GUI, not MCP. Same dual-gate as chat: your network does not need Cloud AI; a public
+          internet host does.
+        </p>
+        <label>
+          MCP folder (this computer)
+          <input
+            value={mcpCwd}
+            onChange={(e) => setMcpCwd(e.target.value)}
+            placeholder="folder on this computer"
+          />
+        </label>
+        {checks.mcp?.message ? (
+          <p className={checks.mcp.ok ? "hint" : "hint warn"}>{checks.mcp.message}</p>
+        ) : null}
+        <label>
+          MCP command (optional)
+          <input
+            value={mcpCommand}
+            onChange={(e) => setMcpCommand(e.target.value)}
+            placeholder="leave blank for tsx src/index.ts"
+          />
+        </label>
+        <label>
+          MCP args (optional)
+          <input
+            value={mcpArgs}
+            onChange={(e) => setMcpArgs(e.target.value)}
+            placeholder="only if you set a command"
+          />
+        </label>
+        <p className="hint">
+          The folder must stay under your home directory. Blank command uses that folder&apos;s{" "}
+          <code>tsx</code> plus <code>src/index.ts</code> (or <code>dist/index.js</code>).
         </p>
         {defaultBackend === "cursor" && (
           <p className="hint">
@@ -851,6 +940,7 @@ function SettingsModal() {
         <ProviderKeyRow name="groq" label="Groq API key" />
         <ProviderKeyRow name="openrouter" label="OpenRouter API key" />
         <ProviderKeyRow name="custom" label="Custom OpenAI-compatible key" />
+        <ProviderKeyRow name="mcp" label="MCP Bearer (Authorization header)" />
         <div className="actions">
           <button className="ghost" onClick={() => setState({ settingsOpen: false })}>Close</button>
           <button
@@ -890,6 +980,12 @@ function SettingsModal() {
                 api_insecure_tls: insecureTls,
                 cloud_chat_enabled: cloudChat,
                 private_inference_hosts: privateHosts,
+                mcp_enabled: mcpEnabled,
+                mcp_cwd: mcpCwd,
+                mcp_command: mcpCommand,
+                mcp_args: mcpArgs,
+                mcp_url: mcpUrl,
+                use_all_gpus: settings?.use_all_gpus !== false,
               })
             }
           >

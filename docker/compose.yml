@@ -4,8 +4,8 @@
 # Pin: intel/llm-scaler-vllm:0.21.0-b3 (Aug 2026, current Hub tag).
 # Fallback if that tag 404s: intel/llm-scaler-vllm:0.14.0-b8.2.1
 #
-# Tensor parallel: default TP=1. For two discrete XPUs, TP=2 (container
-# indices are 0,1 — never pass a host ZE_AFFINITY_MASK such as 0,2):
+# Tensor parallel: Late Start defaults TP to the number of discrete GPUs
+# on this computer. Uncheck “Use all GPUs” for TP=1. Manual:
 #   TP=2 docker compose -f docker/compose.yml up
 #
 # This image's ENTRYPOINT is already:

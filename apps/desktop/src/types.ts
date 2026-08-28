@@ -130,7 +130,7 @@ export interface DiffLine {
   text: string;
 }
 
-export type ChatBackend = "local" | "cursor" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure";
+export type ChatBackend = "local" | "cursor" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure" | "mcp";
 
 export type InferenceEngineBackend = "local" | "llamacpp" | "ollama";
 
@@ -170,11 +170,20 @@ export interface AppSettings {
   cloud_chat_enabled?: boolean;
   /** Extra hostnames for air-gapped OpenAI-compatible servers (not RFC1918 / .internal). */
   private_inference_hosts?: string;
+  /** Optional MCP program. Folder on this computer and/or HTTP address. Off by default. */
+  mcp_enabled?: boolean;
+  mcp_cwd?: string;
+  mcp_command?: string;
+  mcp_args?: string;
+  /** Streamable HTTP MCP URL. Empty = spawn the folder on this computer. */
+  mcp_url?: string;
+  /** When more than one GPU is on this computer, Local Start uses all of them. Default true. */
+  use_all_gpus?: boolean;
 }
 
 export function coerceChatBackend(v: unknown): ChatBackend {
   const s = String(v ?? "").toLowerCase().replace(/[\s_]+/g, "-");
-  if (s === "cursor" || s === "ollama" || s === "llamacpp" || s === "anthropic" || s === "gemini" || s === "azure") {
+  if (s === "cursor" || s === "ollama" || s === "llamacpp" || s === "anthropic" || s === "gemini" || s === "azure" || s === "mcp") {
     return s;
   }
   if (s === "llama.cpp" || s === "llama-cpp") return "llamacpp";
@@ -191,6 +200,7 @@ export function backendLabel(backend: ChatBackend): string {
   if (backend === "anthropic") return "Anthropic Claude";
   if (backend === "gemini") return "Gemini";
   if (backend === "azure") return "Azure";
+  if (backend === "mcp") return "MCP";
   return "vLLM";
 }
 
@@ -266,6 +276,61 @@ export function withInferenceServer(
   return { ...settings, vllm_base_url: next.base, vllm_remote_url: next.remote };
 }
 
+/** Streamable HTTP after `npm run mcp:http`. Port 8787 is the GUI, not MCP. */
+export const DEFAULT_MCP_HTTP_URL = "http://127.0.0.1:8790/mcp";
+
+export type McpPickMode = "off" | "stdio" | "http";
+
+/** Agent-pane MCP menu: Off, this computer (stdio folder), or HTTP address. */
+export function mcpPickMode(settings: AppSettings | null): McpPickMode {
+  if (!settings?.mcp_enabled) return "off";
+  if (settings.mcp_url?.trim()) return "http";
+  return "stdio";
+}
+
+export function mcpPickLabel(settings: AppSettings | null): string {
+  const mode = mcpPickMode(settings);
+  if (mode === "off") return "MCP off";
+  if (mode === "http") {
+    const url = settings?.mcp_url?.trim() ?? "";
+    return url ? `MCP · ${inferenceHostLabel(url)}` : "MCP · HTTP";
+  }
+  return "MCP · this computer";
+}
+
+/** Second Agent control when the backend is MCP (same idea as Local / Add server). */
+export function mcpLocationLabel(settings: AppSettings | null): string {
+  const mode = mcpPickMode(settings);
+  if (mode === "http") {
+    const url = settings?.mcp_url?.trim() ?? "";
+    return url ? inferenceHostLabel(url) : "HTTP";
+  }
+  return "This computer";
+}
+
+export function withMcpPick(settings: AppSettings, next: { enabled: boolean; url: string }): AppSettings {
+  return { ...settings, mcp_enabled: next.enabled, mcp_url: next.url.trim() };
+}
+
+/** Agent status line: MCP HTTP initialize/tools/list, not GUI :8787. */
+export function mcpStatusLine(mcp?: {
+  ok?: boolean;
+  enabled?: boolean;
+  tools?: string[];
+  message?: string;
+}): string {
+  if (!mcp?.enabled) return "MCP off";
+  if (mcp.ok) {
+    const n = mcp.tools?.length ?? 0;
+    return `MCP on · ${n} tool${n === 1 ? "" : "s"}`;
+  }
+  const msg = mcp.message?.trim() ?? "";
+  if (/logo|8787|GUI/i.test(msg) && !/not MCP|not reachable/i.test(msg)) {
+    return "GUI logos unavailable";
+  }
+  return "MCP error";
+}
+
 export function coerceSettings(raw: unknown): AppSettings | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -318,6 +383,12 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     api_insecure_tls: flag("api_insecure_tls", "apiInsecureTls") ?? false,
     cloud_chat_enabled: flag("cloud_chat_enabled", "cloudChatEnabled") ?? false,
     private_inference_hosts: str("private_inference_hosts", "privateInferenceHosts") ?? "",
+    mcp_enabled: flag("mcp_enabled", "mcpEnabled") ?? false,
+    mcp_cwd: str("mcp_cwd", "mcpCwd") ?? "",
+    mcp_command: str("mcp_command", "mcpCommand") ?? "",
+    mcp_args: str("mcp_args", "mcpArgs") ?? "",
+    mcp_url: str("mcp_url", "mcpUrl", "mcp_base_url", "mcpBaseUrl") ?? "",
+    use_all_gpus: flag("use_all_gpus", "useAllGpus") ?? true,
   };
 }
 
@@ -373,6 +444,11 @@ export interface ChatMsg {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  speaker?: string;
+  label?: string;
+  nickname?: string;
+  logoDataUrl?: string;
+  skipped?: boolean;
 }
 
 export function newId(): string {

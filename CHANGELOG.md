@@ -2,6 +2,28 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-28
+
+**MCP is an Agent backend, like vLLM.**
+
+- Pick **MCP** in the first Agent menu (vLLM / llama.cpp / Ollama / MCP / …). Chat goes through that program (`chat_send`), not local vLLM. Second control is This computer (folder) or an HTTP address (`http://127.0.0.1:8790/mcp`). Port 8787 is the GUI, not MCP. Late still Approve for device CLI. Extra `chat_send` / `dispatch` / `start_vllm` still wait for Approve; Send is the one chat round. Cursor `mcpServers` stays empty. Late does not copy API keys into that program.
+
+**Agent pane catalogs list every snapshot, with fit labeled.**
+
+- vLLM, llama.cpp (GGUF), and Ollama each show the full catalog for that engine (not a 1–2 model slice). Newest instruct ids are marked (Qwen3 / Qwen3.8 over Qwen2.5, Gemma 4 over Gemma 3/2, Llama 4 Scout / 3.3 over 3.1). Too-big and previous-generation rows stay listed. vLLM ids are Hugging Face weights; llama.cpp ids are GGUF; Ollama ids are library tags.
+
+**Use all GPUs on this computer.**
+
+- Local Start (Intel vLLM Docker and llama.cpp) uses every GPU it can see on this computer by default: vLLM `--tensor-parallel-size`, llama.cpp `-ngl 99 -sm layer`. Uncheck **Use all GPUs on this computer** to stay on one card. Ollama already uses every GPU; Late does not pin it. MCP `start_vllm` does the same when Settings MCP is on. This is several cards in one box, not a cluster.
+
+**Agent pane MCP picker (this computer / HTTP) when the backend is MCP.**
+
+- With **MCP** selected: second control is **This computer** (stdio folder from Settings) or **HTTP address** (`http://127.0.0.1:8790/mcp` after `npm run mcp:http`). Port 8787 is the GUI, not MCP. Status shows MCP on · N tools or MCP error. The third menu is **orchestrator** only (auto-route via `chat_send`). Specialists and vLLM / Ollama / Cloud stay in the first Agent menu. Cursor `mcpServers` stays empty.
+
+**Optional MCP tools — folder on this computer, or Streamable HTTP on :8790.**
+
+- Settings **MCP** (off by default) can point at a project folder on this computer (stdio) **or** a Streamable HTTP URL such as `http://127.0.0.1:8790/mcp` (`npm run mcp:http` on that computer). Port 8787 is the GUI, not MCP. If both folder and address are set, Late uses the address. The sidecar is the client and adds those tools as `mcp_*`. List/status tools run immediately. Starts, downloads, dispatch, and writes still wait for Approve. A homelab MCP URL does not need Cloud AI; a public internet host does. Cursor Cloud AI still uses empty `mcpServers` so Approve is not bypassed. Late does not copy API keys into that program, and does not start MCP on another machine.
+
 ## 2026-08-26
 
 **A helper on this computer or on your network, without Cloud AI.**

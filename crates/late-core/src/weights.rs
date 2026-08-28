@@ -7,7 +7,7 @@ use crate::config::{load_settings, AppSettings, LatePaths};
 use crate::confine::confine_under_roots;
 use crate::error::{LateError, Result};
 use crate::fsutil::{mkdir_private, write_private};
-use crate::hardware::{GpuProfile, ModelReco};
+use crate::hardware::GpuProfile;
 use crate::inference::{validate_model, InferenceStatus, LocalModel};
 use reqwest::redirect::{Attempt, Policy};
 use serde::Deserialize;
@@ -21,30 +21,80 @@ use std::time::Duration;
 /// Approximate Q4_K_M (or official Q4_0 QAT) GGUF size (GB).
 /// SFW instruct only. Gated Hub ids need HF_TOKEN.
 const GGUF_LIBRARY: &[(&str, u32, &str)] = &[
+    ("Qwen/Qwen3-0.6B-GGUF", 1, "Tiny Qwen3 GGUF"),
     ("Qwen/Qwen3-1.7B-GGUF", 2, "Tiny GGUF"),
     ("Qwen/Qwen3-4B-GGUF", 3, "Small GGUF"),
     ("Qwen/Qwen3-8B-GGUF", 6, "Default 8B GGUF"),
     ("Qwen/Qwen3-14B-GGUF", 10, "14B GGUF"),
-    ("Qwen/Qwen2.5-7B-Instruct-GGUF", 5, "Instruct GGUF"),
+    ("Qwen/Qwen3-32B-GGUF", 20, "Qwen3 32B GGUF"),
+    ("unsloth/Qwen3.5-4B-GGUF", 3, "Qwen3.5 4B instruct GGUF"),
+    ("unsloth/Qwen3.5-9B-GGUF", 6, "Qwen3.5 9B instruct GGUF"),
+    ("unsloth/Qwen3.8-27B-GGUF", 16, "Newest Qwen dense 27B GGUF"),
+    ("Qwen/Qwen2.5-7B-Instruct-GGUF", 5, "Qwen2.5 instruct GGUF (previous)"),
+    (
+        "google/gemma-4-E2B-it-qat-q4_0-gguf",
+        3,
+        "Official Gemma 4 E2B IT QAT GGUF",
+    ),
+    (
+        "google/gemma-4-E4B-it-qat-q4_0-gguf",
+        5,
+        "Official Gemma 4 E4B IT QAT GGUF",
+    ),
+    (
+        "google/gemma-4-12B-it-qat-q4_0-gguf",
+        8,
+        "Official Gemma 4 12B IT QAT GGUF",
+    ),
+    (
+        "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+        16,
+        "Official Gemma 4 26B-A4B IT QAT GGUF",
+    ),
+    (
+        "google/gemma-4-31B-it-qat-q4_0-gguf",
+        18,
+        "Official Gemma 4 31B IT QAT GGUF",
+    ),
     (
         "google/gemma-3-1b-it-qat-q4_0-gguf",
         1,
-        "Official Gemma 3 1B IT QAT GGUF (gated)",
+        "Official Gemma 3 1B IT QAT GGUF (gated, previous)",
     ),
     (
         "google/gemma-3-4b-it-qat-q4_0-gguf",
         3,
-        "Official Gemma 3 4B IT QAT GGUF (gated)",
+        "Official Gemma 3 4B IT QAT GGUF (gated, previous)",
     ),
     (
         "google/gemma-3-12b-it-qat-q4_0-gguf",
         8,
-        "Official Gemma 3 12B IT QAT GGUF (gated)",
+        "Official Gemma 3 12B IT QAT GGUF (gated, previous)",
+    ),
+    (
+        "google/gemma-3-27b-it-qat-q4_0-gguf",
+        16,
+        "Official Gemma 3 27B IT QAT GGUF (gated, previous)",
     ),
     (
         "unsloth/gemma-3-4b-it-GGUF",
         3,
-        "Gemma 3 4B IT GGUF, more quants (gated base)",
+        "Gemma 3 4B IT GGUF, more quants (gated base, previous)",
+    ),
+    (
+        "unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF",
+        60,
+        "Llama 4 Scout instruct GGUF (gated base)",
+    ),
+    (
+        "unsloth/Llama-3.3-70B-Instruct-GGUF",
+        40,
+        "Llama 3.3 70B instruct GGUF (gated base)",
+    ),
+    (
+        "unsloth/Llama-3.2-1B-Instruct-GGUF",
+        1,
+        "Llama 3.2 1B instruct GGUF (gated base)",
     ),
     (
         "unsloth/Llama-3.2-3B-Instruct-GGUF",
@@ -54,7 +104,7 @@ const GGUF_LIBRARY: &[(&str, u32, &str)] = &[
     (
         "unsloth/Llama-3.1-8B-Instruct-GGUF",
         5,
-        "Llama 3.1 8B instruct GGUF (gated base)",
+        "Llama 3.1 8B instruct GGUF (gated base, previous)",
     ),
     (
         "unsloth/Phi-4-mini-instruct-GGUF",
@@ -70,22 +120,52 @@ const GGUF_LIBRARY: &[(&str, u32, &str)] = &[
 ];
 
 const OLLAMA_LIBRARY: &[(&str, u32, &str)] = &[
-    ("llama3.2", 2, "Ollama library, small"),
-    ("llama3.1:8b", 5, "Ollama library, Llama 8B"),
-    ("gemma3:1b", 1, "Ollama library, Gemma 3 tiny"),
-    ("gemma3:4b", 4, "Ollama library, Gemma 3"),
-    ("gemma3:12b", 8, "Ollama library, Gemma 3 12B"),
-    ("gemma2:9b", 6, "Ollama library, Gemma 2"),
-    ("qwen2.5:7b", 5, "Ollama library, Qwen"),
-    ("qwen2.5:14b", 9, "Ollama library, Qwen larger"),
-    ("mistral", 5, "Ollama library, Mistral"),
+    ("llama4:scout", 67, "Ollama library, Llama 4 Scout"),
+    ("llama3.3", 40, "Ollama library, Llama 3.3 70B"),
+    ("llama3.2", 2, "Ollama library, Llama 3.2 3B"),
+    ("llama3.2:1b", 1, "Ollama library, Llama 3.2 1B"),
+    ("llama3.1:8b", 5, "Ollama library, Llama 8B (previous)"),
+    ("gemma4:e2b", 4, "Ollama library, Gemma 4 E2B"),
+    ("gemma4:e4b", 6, "Ollama library, Gemma 4 E4B"),
+    ("gemma4:12b", 8, "Ollama library, Gemma 4 12B"),
+    ("gemma4:26b", 18, "Ollama library, Gemma 4 26B"),
+    ("gemma4:31b", 20, "Ollama library, Gemma 4 31B"),
+    ("gemma3:1b", 1, "Ollama library, Gemma 3 tiny (previous)"),
+    ("gemma3:4b", 4, "Ollama library, Gemma 3 (previous)"),
+    ("gemma3:12b", 8, "Ollama library, Gemma 3 12B (previous)"),
+    ("gemma3:27b", 16, "Ollama library, Gemma 3 27B (previous)"),
+    ("gemma2:9b", 6, "Ollama library, Gemma 2 (previous)"),
+    ("qwen3.8:27b", 18, "Ollama library, Qwen3.8 27B"),
+    ("qwen3.5:0.8b", 1, "Ollama library, Qwen3.5 tiny"),
+    ("qwen3.5:2b", 2, "Ollama library, Qwen3.5 2B"),
+    ("qwen3.5:4b", 3, "Ollama library, Qwen3.5 4B"),
+    ("qwen3.5:9b", 6, "Ollama library, Qwen3.5 9B"),
+    ("qwen3.5:27b", 17, "Ollama library, Qwen3.5 27B"),
+    ("qwen3:0.6b", 1, "Ollama library, Qwen3 tiny (previous)"),
+    ("qwen3:1.7b", 2, "Ollama library, Qwen3 1.7B (previous)"),
+    ("qwen3:4b", 3, "Ollama library, Qwen3 4B (previous)"),
+    ("qwen3:8b", 5, "Ollama library, Qwen3 8B"),
+    ("qwen3:14b", 9, "Ollama library, Qwen3 14B"),
+    ("qwen3:32b", 20, "Ollama library, Qwen3 32B (previous vs 3.8)"),
+    ("qwen2.5:7b", 5, "Ollama library, Qwen 2.5 (previous)"),
+    ("qwen2.5:14b", 9, "Ollama library, Qwen 2.5 larger (previous)"),
+    ("mistral-small3.2", 15, "Ollama library, Mistral Small 3.2"),
+    ("mistral", 5, "Ollama library, Mistral (previous)"),
     ("phi4", 9, "Ollama library, Phi-4"),
     ("phi4-mini", 3, "Ollama library, Phi-4 mini"),
-    ("granite3.3:8b", 5, "Ollama library, Granite"),
+    ("granite4.2:8b", 6, "Ollama library, Granite 4.2"),
+    ("granite4.2:3b", 3, "Ollama library, Granite 4.2 3B"),
+    ("granite4.2:30b", 18, "Ollama library, Granite 4.2 30B"),
+    ("granite3.3:8b", 5, "Ollama library, Granite 3.3 (previous)"),
+    (
+        "hf.co/google/gemma-4-E4B-it-qat-q4_0-gguf",
+        5,
+        "Hugging Face Gemma 4 E4B via Ollama",
+    ),
     (
         "hf.co/google/gemma-3-4b-it-qat-q4_0-gguf",
         3,
-        "Hugging Face Gemma 3 4B via Ollama (gated)",
+        "Hugging Face Gemma 3 4B via Ollama (gated, previous)",
     ),
     (
         "hf.co/Qwen/Qwen3-8B-GGUF",
@@ -171,7 +251,7 @@ fn llama_server_log() -> PathBuf {
 
 pub fn status_for(engine: Engine, settings: &AppSettings) -> InferenceStatus {
     match engine {
-        Engine::Vllm => crate::inference::status(),
+        Engine::Vllm => crate::inference::status_with(settings.use_all_gpus),
         Engine::LlamaCpp => llama_status(settings),
         Engine::Ollama => ollama_status(settings),
     }
@@ -187,7 +267,7 @@ pub fn download(engine: Engine, model: &str, settings: &AppSettings) -> Result<I
 
 pub fn start(engine: Engine, model: &str, settings: &AppSettings) -> Result<InferenceStatus> {
     match engine {
-        Engine::Vllm => crate::inference::start(model),
+        Engine::Vllm => crate::inference::start_with(model, settings.use_all_gpus),
         Engine::LlamaCpp => start_llama_server(model, settings),
         Engine::Ollama => Err(LateError::Message(
             "Ollama is already the server. Use Pull to fetch a model, then pick it in the model list."
@@ -234,6 +314,7 @@ fn llama_status(settings: &AppSettings) -> InferenceStatus {
         )
     };
     let gpu = crate::hardware::probe();
+    let gpu_launch = crate::hardware::launch_plan(&gpu, settings.use_all_gpus);
     let local_models = list_gguf_models(&gpu);
     let bind = loopback_bind(&settings.llama_cpp_base_url).ok();
     let models = bind
@@ -292,6 +373,7 @@ fn llama_status(settings: &AppSettings) -> InferenceStatus {
         detail,
         allow_intel_compose: false,
         late_owned: owned || starting || child_live,
+        gpu_launch: Some(gpu_launch),
     }
 }
 
@@ -306,6 +388,7 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
         )
     };
     let gpu = crate::hardware::probe();
+    let gpu_launch = crate::hardware::launch_plan(&gpu, settings.use_all_gpus);
     let native = match ollama_native_root(&settings.ollama_base_url) {
         Ok(u) => u,
         Err(e) => {
@@ -322,6 +405,7 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
                 detail: e.to_string(),
                 allow_intel_compose: false,
                 late_owned: false,
+                gpu_launch: Some(gpu_launch),
             };
         }
     };
@@ -344,7 +428,7 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
             "Ollama is not running at {native}. Install from https://ollama.com and start it, then Pull. Late does not install Ollama."
         )
     } else if models.is_empty() {
-        format!("Ollama is running at {native} with no models. Pull a library name (gemma3:4b, qwen2.5:7b) or a Hugging Face id (google/gemma-3-4b-it-qat-q4_0-gguf).")
+        format!("Ollama is running at {native} with no models. Pull a library name (gemma4:e4b, qwen3:8b) or a Hugging Face id (google/gemma-4-E4B-it-qat-q4_0-gguf).")
     } else {
         format!("Ollama at {native} · {}", models.join(", "))
     };
@@ -361,6 +445,7 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
         detail,
         allow_intel_compose: false,
         late_owned: false,
+        gpu_launch: Some(gpu_launch),
     }
 }
 
@@ -478,14 +563,21 @@ fn start_llama_server(model: &str, settings: &AppSettings) -> Result<InferenceSt
         let _ = mkdir_private(parent);
     }
     let log = OpenOptions::new().create(true).append(true).open(&log_path);
+    let gpu = crate::hardware::probe();
     let mut cmd = Command::new(&bin);
     cmd.arg("-m")
         .arg(&weights)
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
-        .arg(bind.port().to_string())
-        .stdin(Stdio::null());
+        .arg(bind.port().to_string());
+    for a in crate::hardware::llama_gpu_args(&gpu, settings.use_all_gpus) {
+        cmd.arg(a);
+    }
+    for (k, v) in crate::hardware::llama_gpu_env(&gpu, settings.use_all_gpus) {
+        cmd.env(k, v);
+    }
+    cmd.stdin(Stdio::null());
     match log {
         Ok(f) => {
             let err = f.try_clone().ok();
@@ -1042,15 +1134,14 @@ async fn ollama_pull(root: &str, name: &str) -> Result<()> {
 }
 
 fn list_gguf_models(gpu: &GpuProfile) -> Vec<LocalModel> {
-    let recs = gguf_recommend(gpu);
+    let recs = crate::hardware::rank_quant_catalog(GGUF_LIBRARY, gpu);
     let mut out = scan_gguf_dir();
     out.extend(scan_hf_gguf_cache());
     for m in &mut out {
-        if recs
-            .iter()
-            .any(|r| r.id == m.id || m.id.starts_with(&format!("{}:", r.id)))
+        if let Some(r) = recs.iter().find(|r| r.id == m.id || m.id.starts_with(&format!("{}:", r.id)))
         {
-            m.recommended = true;
+            m.recommended = r.recommended;
+            m.newest = r.newest;
         }
     }
     for r in &recs {
@@ -1064,6 +1155,7 @@ fn list_gguf_models(gpu: &GpuProfile) -> Vec<LocalModel> {
                 size_bytes: 0,
                 note: r.reason.clone(),
                 recommended: r.recommended,
+                newest: r.newest,
                 tp: 1,
             });
         }
@@ -1071,6 +1163,7 @@ fn list_gguf_models(gpu: &GpuProfile) -> Vec<LocalModel> {
     out.sort_by(|a, b| {
         b.recommended
             .cmp(&a.recommended)
+            .then(b.newest.cmp(&a.newest))
             .then(b.complete.cmp(&a.complete))
             .then(a.id.cmp(&b.id))
     });
@@ -1078,15 +1171,17 @@ fn list_gguf_models(gpu: &GpuProfile) -> Vec<LocalModel> {
 }
 
 fn list_ollama_models(gpu: &GpuProfile, pulled: &[String]) -> Vec<LocalModel> {
-    let recs = ollama_recommend(gpu);
+    let recs = crate::hardware::rank_quant_catalog(OLLAMA_LIBRARY, gpu);
     let mut out = Vec::new();
     for name in pulled {
+        let rec = recs.iter().find(|r| ollama_name_matches(&r.id, name));
         out.push(LocalModel {
             id: name.clone(),
             complete: true,
             size_bytes: 0,
             note: "pulled into Ollama".into(),
-            recommended: recs.iter().any(|r| ollama_name_matches(&r.id, name)),
+            recommended: rec.map(|r| r.recommended).unwrap_or(false),
+            newest: rec.map(|r| r.newest).unwrap_or(false),
             tp: 1,
         });
     }
@@ -1098,6 +1193,7 @@ fn list_ollama_models(gpu: &GpuProfile, pulled: &[String]) -> Vec<LocalModel> {
                 size_bytes: 0,
                 note: r.reason.clone(),
                 recommended: r.recommended,
+                newest: r.newest,
                 tp: 1,
             });
         }
@@ -1105,6 +1201,7 @@ fn list_ollama_models(gpu: &GpuProfile, pulled: &[String]) -> Vec<LocalModel> {
     out.sort_by(|a, b| {
         b.recommended
             .cmp(&a.recommended)
+            .then(b.newest.cmp(&a.newest))
             .then(b.complete.cmp(&a.complete))
             .then(a.id.cmp(&b.id))
     });
@@ -1118,56 +1215,6 @@ fn ollama_name_matches(want: &str, have: &str) -> bool {
         || have.starts_with(&format!("{want}:"))
         || have.starts_with(&format!("{want}/"))
         || want.starts_with(have)
-}
-
-fn gguf_recommend(profile: &GpuProfile) -> Vec<ModelReco> {
-    let budget = if profile.vram_gb == 0 {
-        8
-    } else {
-        profile.vram_gb
-    };
-    let mut out = Vec::new();
-    for (id, gb, blurb) in GGUF_LIBRARY {
-        let w = u64::from(*gb);
-        if w > budget.saturating_add(2) {
-            continue;
-        }
-        let reason = if profile.vram_gb == 0 {
-            format!("{blurb}. Fine on CPU or a small GPU (~{gb}GB Q4).")
-        } else {
-            format!("{blurb}. Fits ~{}GB VRAM as GGUF.", profile.vram_gb)
-        };
-        out.push(ModelReco {
-            id: (*id).into(),
-            weight_gb: *gb,
-            tp: 1,
-            recommended: true,
-            reason,
-        });
-    }
-    out
-}
-
-fn ollama_recommend(profile: &GpuProfile) -> Vec<ModelReco> {
-    let budget = if profile.vram_gb == 0 {
-        8
-    } else {
-        profile.vram_gb
-    };
-    let mut out = Vec::new();
-    for (id, gb, blurb) in OLLAMA_LIBRARY {
-        if u64::from(*gb) > budget.saturating_add(2) {
-            continue;
-        }
-        out.push(ModelReco {
-            id: (*id).into(),
-            weight_gb: *gb,
-            tp: 1,
-            recommended: true,
-            reason: format!("{blurb} (~{gb}GB)."),
-        });
-    }
-    out
 }
 
 fn scan_gguf_dir() -> Vec<LocalModel> {
@@ -1202,6 +1249,7 @@ fn scan_gguf_dir() -> Vec<LocalModel> {
                 size_bytes: ggufs[0].1,
                 note: format!("GGUF on disk ({})", ggufs[0].0),
                 recommended: false,
+                newest: false,
                 tp: 1,
             });
         } else {
@@ -1212,6 +1260,7 @@ fn scan_gguf_dir() -> Vec<LocalModel> {
                     size_bytes: size,
                     note: "GGUF on disk".into(),
                     recommended: false,
+                    newest: false,
                     tp: 1,
                 });
             }
@@ -1257,6 +1306,7 @@ fn scan_hf_gguf_cache() -> Vec<LocalModel> {
                     size_bytes: size,
                     note: "GGUF in Hugging Face cache".into(),
                     recommended: false,
+                    newest: false,
                     tp: 1,
                 });
             }
@@ -1726,13 +1776,66 @@ mod tests {
             .map(|(id, _, _)| *id)
             .collect::<Vec<_>>()
             .join(" ");
+        assert!(gguf.contains("google/gemma-4-E4B-it-qat-q4_0-gguf"));
         assert!(gguf.contains("google/gemma-3-4b-it-qat-q4_0-gguf"));
+        assert!(gguf.contains("Qwen/Qwen3-8B-GGUF"));
+        assert!(gguf.contains("unsloth/Qwen3.8-27B-GGUF"));
+        assert!(gguf.contains("Qwen/Qwen2.5-7B-Instruct-GGUF"));
+        assert!(ollama.contains("gemma4:e4b"));
         assert!(ollama.contains("gemma3:4b"));
+        assert!(ollama.contains("qwen3.8:27b"));
+        assert!(ollama.contains("qwen3:8b"));
+        assert!(ollama.contains("qwen2.5:7b"));
+        assert!(ollama.contains("llama4:scout"));
         for blob in [gguf.as_str(), ollama.as_str()] {
             let lower = blob.to_ascii_lowercase();
             assert!(!lower.contains("uncensored"));
             assert!(!lower.contains("abliterat"));
             assert!(!lower.contains("dolphin"));
         }
+    }
+
+    fn gpu8() -> crate::hardware::GpuProfile {
+        crate::hardware::GpuProfile {
+            vendor: "nvidia".into(),
+            discrete_count: 1,
+            vram_gb: 8,
+            vram_bytes_each: 8 << 30,
+            tp_ok: false,
+            summary: "test".into(),
+            cards: vec![],
+        }
+    }
+
+    #[test]
+    fn gguf_and_ollama_list_full_catalog_newest_wins() {
+        let gguf = crate::hardware::rank_quant_catalog(GGUF_LIBRARY, &gpu8());
+        assert_eq!(gguf.len(), GGUF_LIBRARY.len());
+        assert!(GGUF_LIBRARY.len() > 15, "GGUF catalog is not a 2-row slice");
+        assert!(gguf.iter().any(|r| r.id == "Qwen/Qwen3-8B-GGUF" && r.newest && r.recommended));
+        assert!(gguf
+            .iter()
+            .any(|r| r.id == "Qwen/Qwen2.5-7B-Instruct-GGUF" && !r.newest));
+        assert!(gguf
+            .iter()
+            .any(|r| r.id == "google/gemma-4-E4B-it-qat-q4_0-gguf" && r.newest));
+        assert!(gguf
+            .iter()
+            .any(|r| r.id == "google/gemma-3-4b-it-qat-q4_0-gguf" && !r.newest));
+        let too_big = gguf
+            .iter()
+            .find(|r| r.id.contains("70B") || r.id.contains("32B-GGUF") || r.id.contains("Scout"));
+        assert!(too_big.is_some());
+        assert!(!too_big.unwrap().recommended);
+
+        let ollama = crate::hardware::rank_quant_catalog(OLLAMA_LIBRARY, &gpu8());
+        assert_eq!(ollama.len(), OLLAMA_LIBRARY.len());
+        assert!(OLLAMA_LIBRARY.len() > 20, "Ollama catalog is not a 2-row slice");
+        assert!(ollama.iter().any(|r| r.id == "qwen3:8b" && r.newest && r.recommended));
+        assert!(ollama.iter().any(|r| r.id == "qwen2.5:7b" && !r.newest));
+        assert!(ollama.iter().any(|r| r.id == "gemma4:e4b" && r.newest));
+        assert!(ollama.iter().any(|r| r.id == "gemma3:4b" && !r.newest));
+        assert!(ollama.iter().any(|r| r.id == "llama3.3" && !r.recommended));
+        assert!(ollama.iter().any(|r| r.id == "qwen3.8:27b" && r.newest && !r.recommended));
     }
 }

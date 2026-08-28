@@ -30,19 +30,27 @@ import { isAgentStacked, MODELS_H } from "../shell";
 import {
   backendLabel,
   coerceChatBackend,
+  DEFAULT_MCP_HTTP_URL,
   inferenceHostLabel,
   isInferenceEngine,
   isLoopbackInferenceUrl,
   LOCAL_INFERENCE_URL,
+  mcpPickMode,
+  mcpLocationLabel,
+  mcpStatusLine,
   newId,
   remoteInferenceUrl,
   usingRemoteInference,
   withInferenceServer,
+  withMcpPick,
   type AppSettings,
   type ChatBackend,
   type ChatMsg,
   type InferenceEngineBackend,
 } from "../types";
+
+/** MCP Agent dropdown: orchestrator auto-route only. Other backends stay in the first menu. */
+const MCP_MODEL = "orchestrator";
 
 function targetOf(models: SidecarModels, backend: ChatBackend): ChatTargetMeta | undefined {
   if (backend === "ollama") return models.targets?.ollama;
@@ -51,6 +59,7 @@ function targetOf(models: SidecarModels, backend: ChatBackend): ChatTargetMeta |
   if (backend === "anthropic") return models.targets?.anthropic;
   if (backend === "gemini") return models.targets?.gemini;
   if (backend === "azure") return models.targets?.azure;
+  if (backend === "mcp") return models.targets?.mcp;
   return undefined;
 }
 
@@ -59,6 +68,20 @@ function whereServer(t?: ChatTargetMeta): string {
   if (t.egress === "private") return `your network · ${t.base}`;
   if (t.egress === "cloud") return `public internet · ${t.base}`;
   return `this computer · ${t.base}`;
+}
+
+/** Never show orchestrator thread JSON or Late SYSTEM wrap after “Agent stopped:”. */
+function agentStopLine(message: string): string {
+  const t = message.trim();
+  if (!t) return "MCP chat ended.";
+  if (/^SYSTEM:/m.test(t) && /UNTRUSTED DEVICE OUTPUT/i.test(t)) {
+    return "MCP debate finished with skipped speakers. Successful replies are above.";
+  }
+  if ((t.startsWith("{") || t.startsWith("[")) && /"messages"\s*:/.test(t)) {
+    return "MCP debate finished with skipped speakers. Successful replies are above.";
+  }
+  const first = t.split(/\n/)[0]?.trim() ?? t;
+  return first.length > 200 ? `${first.slice(0, 180)}…` : first;
 }
 
 function fmtSize(n: number) {
@@ -79,6 +102,7 @@ function idleGpu(): ReturnType<typeof fromStatus> {
     detail: "checking…",
     allowIntelCompose: false,
     lateOwned: false,
+    gpuLaunch: undefined,
   };
 }
 
@@ -93,6 +117,7 @@ function fromStatus(s: InferenceStatus) {
     detail: s.detail,
     allowIntelCompose: Boolean(s.allowIntelCompose),
     lateOwned: Boolean(s.lateOwned),
+    gpuLaunch: s.gpuLaunch,
   };
 }
 
@@ -104,8 +129,22 @@ function serveStorageKey(backend: ChatBackend) {
 
 function defaultHubId(backend: ChatBackend) {
   if (backend === "llamacpp") return "Qwen/Qwen3-8B-GGUF";
-  if (backend === "ollama") return "qwen2.5:7b";
+  if (backend === "ollama") return "qwen3:8b";
   return "Qwen/Qwen3-8B";
+}
+
+function catalogFitLabel(m: { recommended?: boolean; newest?: boolean; tp?: number; note?: string; complete?: boolean }) {
+  const fit = m.recommended
+    ? m.tp && m.tp > 1
+      ? "needs TP"
+      : "fits"
+    : (m.note || "").toLowerCase().includes("needs all")
+      ? "needs TP"
+      : m.complete
+        ? "cached"
+        : "too big";
+  const gen = m.newest ? "newest" : "previous";
+  return `${fit} · ${gen}`;
 }
 
 function inferenceEngine(backend: ChatBackend): "vllm" | "llamacpp" | "ollama" | null {
@@ -311,6 +350,236 @@ function InferenceServerPick(props: {
   );
 }
 
+const MCP_HTTP_STASH = "late.mcpHttpUrl";
+
+function stashMcpHttpUrl(url: string) {
+  const t = url.trim();
+  if (!t) return;
+  try {
+    localStorage.setItem(MCP_HTTP_STASH, t);
+  } catch {
+    /* ignore */
+  }
+}
+
+function stashedMcpHttpUrl(): string {
+  try {
+    return localStorage.getItem(MCP_HTTP_STASH)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function savedMcpHttpUrl(settings: AppSettings | null): string {
+  return settings?.mcp_url?.trim() || stashedMcpHttpUrl();
+}
+
+function McpServerPick(props: {
+  settings: AppSettings | null;
+  onApplied: () => void;
+  resetChat: (label: string) => void;
+  onHint: (text: string) => void;
+}) {
+  const { settings } = props;
+  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState(false);
+  const [url, setUrl] = useState("");
+  const [check, setCheck] = useState<{ busy: boolean; ok?: boolean; message: string } | null>(null);
+  const wrap = useRef<HTMLDivElement>(null);
+  const mode = mcpPickMode(settings);
+  const saved = savedMcpHttpUrl(settings);
+  const trigger = mcpLocationLabel(settings);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: globalThis.MouseEvent) {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  async function apply(next: { enabled: boolean; url: string }, quiet: boolean, chatLabel: string) {
+    if (!settings) return;
+    if (next.url.trim()) stashMcpHttpUrl(next.url);
+    const ok = await saveSettings(withMcpPick(settings, next), { quiet });
+    if (!ok) return;
+    props.resetChat(chatLabel);
+    props.onApplied();
+  }
+
+  function openHttp() {
+    setOpen(false);
+    setUrl(saved || DEFAULT_MCP_HTTP_URL);
+    setCheck(null);
+    setDialog(true);
+  }
+
+  async function pickThisComputer() {
+    setOpen(false);
+    if (mode === "stdio") return;
+    const prev = settings?.mcp_url?.trim() ?? "";
+    if (prev) stashMcpHttpUrl(prev);
+    await apply({ enabled: true, url: "" }, true, "MCP · this computer");
+    if (!settings?.mcp_cwd?.trim()) {
+      props.onHint("Set the MCP folder in Settings to use tools on your computer.");
+    }
+  }
+
+  async function pickSavedHttp() {
+    setOpen(false);
+    if (!saved || (mode === "http" && settings?.mcp_url?.trim() === saved)) return;
+    await apply({ enabled: true, url: saved }, true, `MCP · ${inferenceHostLabel(saved)}`);
+  }
+
+  async function saveHttp() {
+    const next = url.trim();
+    if (!next) {
+      setCheck({ busy: false, ok: false, message: "Enter a URL." });
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(next);
+    } catch {
+      setCheck({
+        busy: false,
+        ok: false,
+        message: "Need an http(s) URL, for example http://127.0.0.1:8790/mcp.",
+      });
+      return;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      setCheck({ busy: false, ok: false, message: "URL must be http or https." });
+      return;
+    }
+    stashMcpHttpUrl(next);
+    await apply({ enabled: true, url: next }, false, `MCP · ${inferenceHostLabel(next)}`);
+    setDialog(false);
+  }
+
+  async function removeHttp() {
+    try {
+      localStorage.removeItem(MCP_HTTP_STASH);
+    } catch {
+      /* ignore */
+    }
+    const cwd = settings?.mcp_cwd?.trim() ?? "";
+    if (cwd) {
+      await apply({ enabled: true, url: "" }, false, "MCP · this computer");
+    } else {
+      await apply({ enabled: true, url: DEFAULT_MCP_HTTP_URL }, false, `MCP · ${inferenceHostLabel(DEFAULT_MCP_HTTP_URL)}`);
+    }
+    setDialog(false);
+  }
+
+  async function checkUrl() {
+    setCheck({ busy: true, message: "Checking…" });
+    try {
+      const r = await sidecarProbe("mcp", url.trim());
+      setCheck({ busy: false, ok: r.ok, message: r.message });
+    } catch (err) {
+      setCheck({ busy: false, ok: false, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return (
+    <div className="server-pick" ref={wrap}>
+      <button
+        type="button"
+        className="server-pick-btn"
+        title="This computer (folder) or an HTTP address you already started"
+        aria-label="MCP location"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {trigger}
+      </button>
+      {open ? (
+        <div className="server-menu" role="listbox">
+          <button
+            type="button"
+            className={mode === "stdio" ? "on" : undefined}
+            onClick={() => void pickThisComputer()}
+          >
+            This computer
+          </button>
+          {saved ? (
+            <button
+              type="button"
+              className={mode === "http" && settings?.mcp_url?.trim() === saved ? "on" : undefined}
+              onClick={() => void pickSavedHttp()}
+            >
+              {inferenceHostLabel(saved)}
+            </button>
+          ) : null}
+          <button type="button" className="server-add" onClick={openHttp}>
+            HTTP address
+          </button>
+        </div>
+      ) : null}
+      {dialog ? (
+        <div className="modal-root" onMouseDown={() => setDialog(false)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="late-mcp-http-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <h2 id="late-mcp-http-title">{saved ? "Edit MCP address" : "MCP address"}</h2>
+            <p className="hint">
+              A program you already started. Late will not start it. Streamable HTTP — same as Settings.
+              On your computer: <code>{DEFAULT_MCP_HTTP_URL}</code> after <code>npm run mcp:http</code>.
+              Port 8787 is the GUI, not MCP. Cloud AI stays off for a private IP.
+            </p>
+            <div className="url-check">
+              <label>
+                MCP address
+                <input
+                  value={url}
+                  autoFocus
+                  placeholder={DEFAULT_MCP_HTTP_URL}
+                  onChange={(e) => setUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void saveHttp();
+                    if (e.key === "Escape") setDialog(false);
+                  }}
+                />
+              </label>
+              <button type="button" className="ghost" disabled={check?.busy || !url.trim()} onClick={() => void checkUrl()}>
+                {check?.busy ? "Checking…" : "Check"}
+              </button>
+            </div>
+            {check?.message ? <p className={check.ok ? "hint" : "hint warn"}>{check.message}</p> : null}
+            <div className="actions">
+              {saved ? (
+                <button type="button" className="ghost" onClick={() => void removeHttp()}>
+                  Remove
+                </button>
+              ) : null}
+              <button type="button" className="ghost" onClick={() => setDialog(false)}>
+                Cancel
+              </button>
+              <button type="button" className="primary" onClick={() => void saveHttp()}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ChatPane() {
   const approval = useApp((s) => s.approval);
   const agentSeed = useApp((s) => s.agentSeed);
@@ -331,13 +600,13 @@ export function ChatPane() {
     anthropic: [],
     gemini: [],
     azure: [],
-    backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor"],
+    backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor", "mcp"],
   });
   const [busy, setBusy] = useState(false);
   const [thinking, setThinking] = useState("");
   const [thinkMs, setThinkMs] = useState(0);
   const [status, setStatus] = useState("sidecar idle");
-  const [gpu, setGpu] = useState({
+  const [gpu, setGpu] = useState<ReturnType<typeof fromStatus>>({
     running: false,
     starting: false,
     downloading: false,
@@ -347,6 +616,7 @@ export function ChatPane() {
     detail: "checking…",
     allowIntelCompose: false,
     lateOwned: false,
+    gpuLaunch: undefined,
   });
   const [gpuBusy, setGpuBusy] = useState(false);
   const [serveModel, setServeModel] = useState(() => {
@@ -367,8 +637,9 @@ export function ChatPane() {
     const m = await sidecarModels();
     setModels(m);
     setModel((cur) => {
-      if (cur) return cur;
       const b = backendRef.current;
+      if (b === "mcp") return MCP_MODEL;
+      if (cur) return cur;
       if (b === "ollama") return m.ollama[0] || "";
       if (b === "llamacpp") return m.llamacpp[0] || "";
       if (b === "anthropic") return m.anthropic?.[0] || "claude-sonnet-4-5";
@@ -390,7 +661,7 @@ export function ChatPane() {
   useEffect(() => {
     if (!settings) return;
     void refreshModels().catch((e: unknown) => setStatus(e instanceof Error ? e.message : String(e)));
-  }, [settings?.vllm_base_url, settings?.llama_cpp_base_url, settings?.ollama_base_url]);
+  }, [settings?.vllm_base_url, settings?.llama_cpp_base_url, settings?.ollama_base_url, settings?.mcp_enabled, settings?.mcp_cwd, settings?.mcp_url]);
 
   useEffect(() => {
     const engine = inferenceEngine(backend);
@@ -410,8 +681,8 @@ export function ChatPane() {
           setServeModel((cur) => {
             const ids = (s.localModels ?? []).map((m) => m.id);
             if (cur && ids.includes(cur)) return cur;
-            const rec = (s.localModels ?? []).find((m) => m.recommended);
-            const complete = (s.localModels ?? []).find((m) => m.complete && m.recommended);
+            const rec = (s.localModels ?? []).find((m) => m.recommended && m.newest);
+            const complete = (s.localModels ?? []).find((m) => m.complete && m.recommended && m.newest);
             const next = complete?.id || rec?.id || s.localModels?.[0]?.id || cur || defaultHubId(backend);
             try {
               if (next) localStorage.setItem(serveStorageKey(backend), next);
@@ -464,6 +735,7 @@ export function ChatPane() {
       else if (b === "anthropic") setModel(opts.model || models.anthropic?.[0] || "claude-sonnet-4-5");
       else if (b === "gemini") setModel(opts.model || models.gemini?.[0] || "gemini-2.5-flash");
       else if (b === "azure") setModel(opts.model || models.azure?.[0] || "");
+      else if (b === "mcp") setModel(MCP_MODEL);
       else setModel(opts.model || models.cursor[0] || "composer-2.5");
     } else if (opts?.model) {
       setModel(opts.model);
@@ -485,6 +757,7 @@ export function ChatPane() {
     else if (backendNext === "gemini") setModel(settings.gemini_model || models.gemini?.[0] || "gemini-2.5-flash");
     else if (backendNext === "azure") setModel(settings.azure_deployment || models.azure?.[0] || "");
     else if (backendNext === "cursor") setModel(settings.cursor_model || models.cursor[0] || "composer-2.5");
+    else if (backendNext === "mcp") setModel(MCP_MODEL);
     else setModel(settings.vllm_model || models.local[0] || "local");
   }, [settings, models.cursor, models.local, models.ollama, models.llamacpp, models.anthropic, models.gemini, models.azure]);
 
@@ -561,6 +834,7 @@ export function ChatPane() {
     setState({ approval: null });
     abort.current = new AbortController();
     let assistant = "";
+    let speakersSeen = false;
     const id = newId();
     try {
       await streamChat({
@@ -570,7 +844,24 @@ export function ChatPane() {
         conversationId: conv.current,
         signal: abort.current.signal,
         onEvent: (e) => {
-          if (e.type === "delta") {
+          if (e.type === "speaker") {
+            speakersSeen = true;
+            setThinking("Writing");
+            setMessages((cur) => [
+              ...cur,
+              {
+                id: newId(),
+                role: "assistant",
+                content: e.content,
+                speaker: e.speaker,
+                label: e.label,
+                nickname: e.nickname,
+                logoDataUrl: e.logoDataUrl,
+                skipped: e.skipped === true,
+              },
+            ]);
+          } else if (e.type === "delta") {
+            if (speakersSeen) return;
             assistant += e.text;
             setThinking("Writing");
             setMessages([...next, { id, role: "assistant", content: assistant }]);
@@ -619,9 +910,10 @@ export function ChatPane() {
           } else if (e.type === "error") {
             setStatus(e.message);
             setThinking("");
+            const line = agentStopLine(e.message);
             setMessages((cur) => [
               ...cur,
-              { id: newId(), role: "system", content: `Agent stopped: ${e.message}` },
+              { id: newId(), role: "system", content: `Agent stopped: ${line}` },
             ]);
           } else if (e.type === "round") {
             setThinking(`Thinking · round ${e.n}/${e.max}`);
@@ -631,7 +923,7 @@ export function ChatPane() {
             setStatus(e.message || "still thinking");
           } else if (e.type === "done") {
             setThinking("");
-            if (!assistant) setMessages([...next, { id, role: "assistant", content: e.message }]);
+            if (!assistant && !speakersSeen) setMessages([...next, { id, role: "assistant", content: e.message }]);
           }
         },
       });
@@ -669,6 +961,19 @@ export function ChatPane() {
     }
   }
 
+  async function setUseAllGpus(next: boolean) {
+    if (!settings) return;
+    const ok = await saveSettings({ ...settings, use_all_gpus: next }, { quiet: true });
+    if (!ok) return;
+    const engine = inferenceEngine(backend);
+    if (!engine) return;
+    try {
+      setGpu(fromStatus(await inferenceStatus(engine)));
+    } catch {
+      /* status refresh is best-effort */
+    }
+  }
+
   const intelCompose = gpu.allowIntelCompose;
 
   return (
@@ -683,7 +988,9 @@ export function ChatPane() {
         >
           Agent
         </span>
-        <span className="meta">{status}</span>
+        <span className="meta">
+          {status}{backend === "mcp" ? ` · ${mcpStatusLine(models.mcp)}` : ""}
+        </span>
         <span className="chat-head-actions">
           {stacked ? (
             <button type="button" className="ghost" title="Dock agent to the side" onClick={() => dockAgent("row")}>
@@ -711,6 +1018,21 @@ export function ChatPane() {
               setState({ settingsOpen: true });
               return;
             }
+            if (next === "mcp" && settings && !settings.mcp_enabled) {
+              const url =
+                settings.mcp_url?.trim() ||
+                stashedMcpHttpUrl() ||
+                (settings.mcp_cwd?.trim() ? "" : DEFAULT_MCP_HTTP_URL);
+              void saveSettings(withMcpPick(settings, { enabled: true, url }), { quiet: true }).then((ok) => {
+                if (!ok) return;
+                setBackend("mcp");
+                resetChat({ backend: "mcp", label: "MCP" });
+                void refreshModels().catch((err: unknown) =>
+                  setStatus(err instanceof Error ? err.message : String(err)),
+                );
+              });
+              return;
+            }
             setBackend(next);
             resetChat({ backend: next, label: backendLabel(next) });
           }}
@@ -718,6 +1040,7 @@ export function ChatPane() {
           <option value="local">vLLM</option>
           <option value="llamacpp">llama.cpp</option>
           <option value="ollama">Ollama</option>
+          <option value="mcp">MCP</option>
           <option value="anthropic">Anthropic Claude</option>
           <option value="gemini">Gemini</option>
           <option value="azure">Azure</option>
@@ -757,11 +1080,25 @@ export function ChatPane() {
                     ? (models.azure?.length ? models.azure : ["(set Azure deployment in Settings)"])
                     : backend === "local"
                       ? (models.local.length ? models.local : ["local"])
+                      : backend === "mcp"
+                        ? [MCP_MODEL]
                       : (models.cursor.length ? models.cursor : ["composer-2.5", "auto"])
           ).map((m) => (
             <option key={m} value={m} disabled={m.startsWith("(")}>{m}</option>
           ))}
         </select>
+        {backend === "mcp" ? (
+          <McpServerPick
+            settings={settings}
+            onApplied={() => {
+              void refreshModels().catch((e: unknown) =>
+                setStatus(e instanceof Error ? e.message : String(e)),
+              );
+            }}
+            resetChat={(label) => resetChat({ label })}
+            onHint={(text) => setStatus(text)}
+          />
+        ) : null}
       </div>
       {backend !== "cursor" && whereServer(targetOf(models, backend)) ? (
         <p className="meta" style={{ padding: "0 8px 6px", margin: 0 }}>
@@ -792,12 +1129,19 @@ export function ChatPane() {
         {gpu.gpu?.summary && (
           <p className="meta" style={{ margin: "0 0 8px" }}>{gpu.gpu.summary}</p>
         )}
+        <UseAllGpusRow
+          settings={settings}
+          gpu={gpu}
+          engine="vllm"
+          disabled={gpuBusy || gpu.running || gpu.starting}
+          onChange={(next) => void setUseAllGpus(next)}
+        />
         {intelCompose && targetOf(models, "local")?.egress !== "private" && targetOf(models, "local")?.egress !== "cloud" && (
         <>
-        {(gpu.localModels ?? []).some((m) => m.recommended) && (
+        {(gpu.localModels ?? []).length > 0 && (
           <div className="model-list">
-            <span className="meta">Recommended for your computer</span>
-            {(gpu.localModels ?? []).filter((m) => m.recommended).map((m) => (
+            <span className="meta">Catalog for your computer</span>
+            {(gpu.localModels ?? []).map((m) => (
               <div key={`rec-${m.id}`} className="model-line">
                 <button
                   type="button"
@@ -805,7 +1149,7 @@ export function ChatPane() {
                   title={m.note}
                   onClick={() => pickModel(m.id)}
                 >
-                  {m.complete ? "ready" : "get"} · {m.id}
+                  {m.complete ? "ready" : "get"} · {catalogFitLabel(m)} · {m.id}
                   {m.tp ? ` · TP${m.tp}` : ""}
                 </button>
                 {!m.complete && (
@@ -859,7 +1203,7 @@ export function ChatPane() {
               : [{ id: serveModel || "Qwen/Qwen3-8B", complete: false, sizeBytes: 0, note: "" }]
             ).map((m) => (
               <option key={m.id} value={m.id}>
-                {m.recommended ? "fits" : m.complete ? "cached" : "hub"} · {m.id}
+                {m.recommended ? "fits" : m.complete ? "cached" : "hub"}{m.newest ? " · newest" : ""} · {m.id}
                 {m.sizeBytes ? ` (${fmtSize(m.sizeBytes)})` : ""}
               </option>
             ))}
@@ -871,7 +1215,7 @@ export function ChatPane() {
         <div className="row" style={{ marginBottom: 8 }}>
           <input
             value={downloadId}
-            placeholder="google/gemma-3-4b-it or Qwen/Qwen3-8B"
+            placeholder="google/gemma-4-E4B-it or Qwen/Qwen3-8B"
             onChange={(e) => setDownloadId(e.target.value)}
           />
           <button
@@ -933,6 +1277,13 @@ export function ChatPane() {
       </div>
       </ModelsDock>
       )}
+      {backend === "mcp" && (
+        <p className="hint" style={{ padding: "0 8px" }}>
+          Chat goes through MCP (not vLLM). Device CLI still needs Approve. You start that program;
+          Late will not start it. Port 8787 is the GUI, not MCP — use{" "}
+          <code>{DEFAULT_MCP_HTTP_URL}</code> after <code>npm run mcp:http</code>.
+        </p>
+      )}
       {backend === "cursor" && (
         <p className="hint" style={{ padding: "0 8px" }}>
           Add a Cursor key in the app: click <button className="linkish" type="button" onClick={() => setState({ keysOpen: true })}>API keys</button>
@@ -984,6 +1335,8 @@ export function ChatPane() {
               .catch((e: unknown) => setGpu((g) => ({ ...g, detail: e instanceof Error ? e.message : String(e) })))
               .finally(() => setGpuBusy(false));
           }}
+          onUseAllGpus={(next) => void setUseAllGpus(next)}
+          settings={settings}
           onPull={() => {
             const id = downloadId.trim();
             setGpuBusy(true);
@@ -1006,8 +1359,17 @@ export function ChatPane() {
       )}
       <div className="log">
         {(messages ?? []).map((m) => (
-          <div key={m.id} className={`msg ${m.role}`}>
-            <div className="meta">{m.role}</div>
+          <div key={m.id} className={`msg ${m.role}${m.skipped ? " skipped" : ""}`}>
+            <div className="msg-head">
+              {m.logoDataUrl ? (
+                <img className="msg-avatar" alt="" src={m.logoDataUrl} />
+              ) : m.role === "assistant" && (m.nickname || m.label) ? (
+                <span className="msg-avatar letter" aria-hidden>
+                  {String(m.nickname || m.label || "?").trim().charAt(0).toUpperCase()}
+                </span>
+              ) : null}
+              <div className="meta">{m.nickname || m.label || m.role}</div>
+            </div>
             {m.content}
           </div>
         ))}
@@ -1068,6 +1430,41 @@ export function ChatPane() {
   );
 }
 
+function UseAllGpusRow(props: {
+  settings: AppSettings | null;
+  gpu: ReturnType<typeof fromStatus>;
+  engine: "vllm" | "llamacpp" | "ollama";
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const n = props.gpu.gpu?.discreteCount ?? props.gpu.gpuLaunch?.deviceCount ?? 0;
+  const multi = Boolean(props.gpu.gpuLaunch?.multiVisible) || n >= 2;
+  if (props.engine === "ollama") {
+    return (
+      <p className="meta" style={{ margin: "0 0 8px" }}>
+        Ollama already uses every GPU it can see. Late does not pin it.
+      </p>
+    );
+  }
+  if (!multi) return null;
+  const checked = props.settings?.use_all_gpus !== false;
+  const note = props.gpu.gpuLaunch?.note;
+  return (
+    <div style={{ margin: "0 0 8px" }}>
+      <label className="row" style={{ gap: 8, alignItems: "center" }}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={props.disabled}
+          onChange={(e) => props.onChange(e.target.checked)}
+        />
+        <span>Use all GPUs on this computer ({n} found)</span>
+      </label>
+      {note ? <p className="meta" style={{ margin: "4px 0 0" }}>{note}</p> : null}
+    </div>
+  );
+}
+
 function WeightsPanel(props: {
   engine: "llamacpp" | "ollama";
   gpu: ReturnType<typeof fromStatus>;
@@ -1076,12 +1473,14 @@ function WeightsPanel(props: {
   gpuBusy: boolean;
   sidecarHint?: string;
   networkServer?: boolean;
+  settings: AppSettings | null;
   onPick: (id: string) => void;
   onDownloadId: (id: string) => void;
   onFetch: (id: string) => void;
   onStart: () => void;
   onStop: () => void;
   onPull: () => void;
+  onUseAllGpus: (next: boolean) => void;
 }) {
   const llama = props.engine === "llamacpp";
   const statusWord = props.gpu.downloading
@@ -1101,7 +1500,7 @@ function WeightsPanel(props: {
           : props.sidecarHint ||
             (llama
               ? "Download a GGUF from Hugging Face into ~/.local/share/late/models/gguf/. Late does not install llama.cpp. Start needs llama-server on PATH, or run it yourself on 127.0.0.1:8080."
-              : "Pull talks to Ollama on loopback (library names like gemma3:4b or qwen2.5:7b, or Hugging Face ids like google/gemma-3-4b-it-qat-q4_0-gguf). Late does not install Ollama.")}
+              : "Pull talks to Ollama on loopback (library names like gemma4:e4b or qwen3:8b, or Hugging Face ids like google/gemma-4-E4B-it-qat-q4_0-gguf). Late does not install Ollama.")}
       </p>
       <div className="row" style={{ marginBottom: 8 }}>
         <span className="meta" style={{ flex: 1 }}>{llama ? "GGUF" : "Ollama models"}</span>
@@ -1111,10 +1510,17 @@ function WeightsPanel(props: {
         {props.gpu.models.length ? ` · ${props.gpu.models.join(", ")}` : ""}
       </div>
       <div className="meta" style={{ marginBottom: 8 }}>{props.gpu.detail}</div>
-      {(props.gpu.localModels ?? []).some((m) => m.recommended) && (
+      <UseAllGpusRow
+        settings={props.settings}
+        gpu={props.gpu}
+        engine={props.engine}
+        disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || props.networkServer}
+        onChange={props.onUseAllGpus}
+      />
+      {(props.gpu.localModels ?? []).length > 0 && (
         <div className="model-list">
-          <span className="meta">Recommended for your computer</span>
-          {(props.gpu.localModels ?? []).filter((m) => m.recommended).map((m) => (
+          <span className="meta">Catalog for your computer</span>
+          {(props.gpu.localModels ?? []).map((m) => (
             <div key={`rec-${m.id}`} className="model-line">
               <button
                 type="button"
@@ -1122,7 +1528,7 @@ function WeightsPanel(props: {
                 title={m.note}
                 onClick={() => props.onPick(m.id)}
               >
-                {m.complete ? "ready" : "get"} · {m.id}
+                {m.complete ? "ready" : "get"} · {catalogFitLabel(m)} · {m.id}
               </button>
               {!m.complete && (
                 <button
@@ -1167,7 +1573,7 @@ function WeightsPanel(props: {
             : [{ id: props.serveModel || defaultHubId(props.engine), complete: false, sizeBytes: 0, note: "" }]
           ).map((m) => (
             <option key={m.id} value={m.id}>
-              {m.recommended ? "fits" : m.complete ? "ready" : "hub"} · {m.id}
+              {m.recommended ? "fits" : m.complete ? "ready" : "hub"}{m.newest ? " · newest" : ""} · {m.id}
               {m.sizeBytes ? ` (${fmtSize(m.sizeBytes)})` : ""}
             </option>
           ))}
@@ -1180,7 +1586,7 @@ function WeightsPanel(props: {
       <div className="row" style={{ marginBottom: 8 }}>
         <input
           value={props.downloadId}
-          placeholder={llama ? "Qwen/Qwen3-8B-GGUF or google/gemma-3-4b-it-qat-q4_0-gguf" : "gemma3:4b or Qwen/Qwen3-8B-GGUF"}
+          placeholder={llama ? "Qwen/Qwen3-8B-GGUF or google/gemma-4-E4B-it-qat-q4_0-gguf" : "gemma4:e4b or Qwen/Qwen3-8B-GGUF"}
           onChange={(e) => props.onDownloadId(e.target.value)}
         />
         <button

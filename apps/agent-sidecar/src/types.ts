@@ -46,6 +46,16 @@ export interface ApprovalDecision {
 
 export type SseEvent =
   | { type: "delta"; text: string }
+  | {
+      type: "speaker";
+      speaker: string;
+      label: string;
+      nickname?: string;
+      logoUrl?: string;
+      logoDataUrl?: string;
+      content: string;
+      skipped?: boolean;
+    }
   | { type: "tool"; name: string; status: string; detail?: unknown }
   | { type: "approval"; pending: PendingApproval }
   | { type: "ask"; proposalId: string; question: string }
@@ -67,7 +77,7 @@ export const SYSTEM_PROMPT = `You are Late's investigation assistant for a local
 You help operators understand devices, configs, packet captures, and API responses.
 
 Hard rules:
-- You have exactly seven tools. You cannot run a shell, edit files, or open sockets yourself.
+- You have Late's investigation tools. You cannot run a shell, edit files, or open sockets yourself. Extra MCP tools may be present (names start with mcp_) if the operator turned that on.
 - Never ask for passwords, keys, community strings, or tokens. Credentials never appear in your context.
 - Open-session scrollback (including local PTY) is already attached to this turn (redacted). Ask about open sessions by name. Do not ask the operator to paste show-run, configs, or terminal output unless that attachment is empty.
 - Sensitive tokens in scrollback are already replaced with [REDACTED:kind#N]. Call read_scrollback if you need a longer tail.

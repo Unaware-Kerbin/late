@@ -14,12 +14,13 @@ import {
   type ChatTargetMeta,
 } from "./openai-loop.js";
 import { loadProviderKeys } from "./provider-keys.js";
-import { executeTool, liveSessionContext, OPENAI_TOOLS, type ToolCtx } from "./tools.js";
+import { allChatTools, executeTool, liveSessionContext, mcpSystemNote, type ToolCtx } from "./tools.js";
 import {
   MAX_ROUNDS,
   SYSTEM_PROMPT,
   TURN_TIMEOUT_MS,
   type ChatMessage,
+  type OpenAiTool,
   type SseEvent,
   type ToolCall,
 } from "./types.js";
@@ -67,6 +68,7 @@ const AZURE_API_VERSION = "2024-10-21";
 type CompleteFn = (
   messages: ChatMessage[],
   signal: AbortSignal,
+  tools: OpenAiTool[],
 ) => Promise<{ content: string; tool_calls: ToolCall[] }>;
 
 function clipToolResult(s: string, n = 4000): string {
@@ -83,9 +85,12 @@ async function runToolLoop(opts: {
   complete: CompleteFn;
 }): Promise<string> {
   const live = await liveSessionContext();
+  const catalog = await allChatTools();
+  const mcpNote = mcpSystemNote(catalog);
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "system", content: live },
+    ...(mcpNote ? [{ role: "system" as const, content: mcpNote }] : []),
     ...opts.messages.filter((m) => m.role !== "system"),
   ];
   let assistantText = "";
@@ -101,7 +106,7 @@ async function runToolLoop(opts: {
       });
     }, 5000);
     try {
-      done = await opts.complete(messages, opts.signal);
+      done = await opts.complete(messages, opts.signal, catalog);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (gathered) {
@@ -338,7 +343,7 @@ export async function runAnthropicChat(opts: NativeChatOpts): Promise<string> {
     conversationId: opts.conversationId,
     emit: opts.emit,
     signal: opts.signal,
-    complete: async (messages, signal) => {
+    complete: async (messages, signal, tools) => {
       const body = toAnthropicPayload(messages);
       const { status, json, text } = await readJson(
         url,
@@ -351,7 +356,7 @@ export async function runAnthropicChat(opts: NativeChatOpts): Promise<string> {
             max_tokens: 8192,
             system: body.system,
             messages: body.messages,
-            tools: openaiToolsToAnthropic(OPENAI_TOOLS),
+            tools: openaiToolsToAnthropic(tools),
             temperature: 0.2,
           }),
         },
@@ -376,7 +381,7 @@ export async function runGeminiChat(opts: NativeChatOpts): Promise<string> {
     conversationId: opts.conversationId,
     emit: opts.emit,
     signal: opts.signal,
-    complete: async (messages, signal) => {
+    complete: async (messages, signal, tools) => {
       const url = geminiGenerateUrl(base, model);
       const payload = toGeminiPayload(messages);
       const { status, json, text } = await readJson(
@@ -387,7 +392,7 @@ export async function runGeminiChat(opts: NativeChatOpts): Promise<string> {
           signal: AbortSignal.any([signal, AbortSignal.timeout(TURN_TIMEOUT_MS)]),
           body: JSON.stringify({
             ...payload,
-            tools: openaiToolsToGemini(OPENAI_TOOLS),
+            tools: openaiToolsToGemini(tools),
             generationConfig: { temperature: 0.2 },
           }),
         },
@@ -419,7 +424,7 @@ export async function runAzureChat(opts: NativeChatOpts): Promise<string> {
     conversationId: opts.conversationId,
     emit: opts.emit,
     signal: opts.signal,
-    complete: async (messages, signal) => {
+    complete: async (messages, signal, tools) => {
       const { status, json, text } = await readJson(
         url,
         {
@@ -428,7 +433,7 @@ export async function runAzureChat(opts: NativeChatOpts): Promise<string> {
           signal: AbortSignal.any([signal, AbortSignal.timeout(TURN_TIMEOUT_MS)]),
           body: JSON.stringify({
             messages,
-            tools: OPENAI_TOOLS,
+            tools,
             tool_choice: "auto",
             temperature: 0.2,
             stream: false,

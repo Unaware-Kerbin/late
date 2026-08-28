@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { cancelAll, decide, listPending } from "./approvals.js";
+import { resolveSidecarChatBackend } from "./chat-backend.js";
 import { runCursorChat } from "./cursor-loop.js";
 import { auditEvent, authorizeLocal, corsAllowOrigin, isLoopbackHostHeader } from "./local-auth.js";
 import {
@@ -22,6 +23,9 @@ import {
   runGeminiChat,
   type NativeKind,
 } from "./native-loop.js";
+import { probeMcp, listMcpAgents, mcpTargetMeta } from "./mcp-client.js";
+import { runMcpChatOrFallback } from "./mcp-loop.js";
+import { mcpSafeErrorMessage } from "./mcp-chat-format.js";
 import { SIDECAR_PORT, type ApprovalDecision, type ChatMessage, type SseEvent } from "./types.js";
 
 const runs = new Map<string, AbortController>();
@@ -89,7 +93,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/models") {
       const ollama = await listOllamaModels();
       const llamacpp = await listLlamaCppModels();
-      const [localTarget, ollamaTarget, llamacppTarget, anthropicTarget, geminiTarget, azureTarget] =
+      const [localTarget, ollamaTarget, llamacppTarget, anthropicTarget, geminiTarget, azureTarget, mcpTarget] =
         await Promise.all([
           chatTargetMeta("vllm"),
           chatTargetMeta("ollama"),
@@ -97,7 +101,10 @@ const server = createServer(async (req, res) => {
           nativeTargetMeta("anthropic"),
           nativeTargetMeta("gemini"),
           nativeTargetMeta("azure"),
+          mcpTargetMeta(),
         ]);
+      const mcp = await probeMcp();
+      const mcpAgents = await listMcpAgents();
       sendJson(res, req, 200, {
         local: await listLocalModels(),
         cursor: ["composer-2.5", "auto"],
@@ -110,7 +117,7 @@ const server = createServer(async (req, res) => {
         anthropic: await listNativeModels("anthropic"),
         gemini: await listNativeModels("gemini"),
         azure: await listNativeModels("azure"),
-        backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor"],
+        backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor", "mcp"],
         targets: {
           local: localTarget,
           ollama: ollamaTarget,
@@ -118,13 +125,20 @@ const server = createServer(async (req, res) => {
           anthropic: anthropicTarget,
           gemini: geminiTarget,
           azure: azureTarget,
+          mcp: mcpTarget,
         },
+        mcp: { ...mcp, agents: mcpAgents },
       });
       return;
     }
     if (req.method === "POST" && url.pathname === "/probe") {
       const body = (await readJson(req)) as { kind?: string; base?: string };
       const raw = body.kind ?? "vllm";
+      if (raw === "mcp") {
+        const base = typeof body.base === "string" ? body.base.trim() : "";
+        sendJson(res, req, 200, await probeMcp(true, base || undefined));
+        return;
+      }
       const native: NativeKind | null =
         raw === "anthropic" || raw === "gemini" || raw === "azure" ? raw : null;
       const kind =
@@ -136,7 +150,7 @@ const server = createServer(async (req, res) => {
         raw !== "local" &&
         !native
       ) {
-        sendJson(res, req, 400, { error: "kind must be vllm, ollama, llamacpp, anthropic, gemini, or azure" });
+        sendJson(res, req, 400, { error: "kind must be vllm, ollama, llamacpp, anthropic, gemini, azure, or mcp" });
         return;
       }
       const result = native
@@ -191,7 +205,8 @@ const server = createServer(async (req, res) => {
           | "llama_cpp"
           | "anthropic"
           | "gemini"
-          | "azure";
+          | "azure"
+          | "mcp";
         model?: string;
         conversationId?: string;
       };
@@ -222,26 +237,11 @@ const server = createServer(async (req, res) => {
           emit,
           signal: ac.signal,
         };
-        const backend =
-          body.backend === "cursor"
-            ? "cursor"
-            : body.backend === "ollama"
-              ? "ollama"
-              : body.backend === "llamacpp" ||
-                  body.backend === "llama.cpp" ||
-                  body.backend === "llama-cpp" ||
-                  body.backend === "llama_cpp"
-                ? "llamacpp"
-                : body.backend === "anthropic"
-                  ? "anthropic"
-                  : body.backend === "gemini"
-                    ? "gemini"
-                    : body.backend === "azure"
-                      ? "azure"
-                      : "local";
+        const backend = resolveSidecarChatBackend(body.backend);
         if (backend === "cursor") {
           await assertChatAllowed("cursor");
         }
+        // MCP stays on the orchestrator; never falls back to Late vLLM. Cursor SDK is only backend === "cursor".
         const text =
           backend === "cursor"
             ? await runCursorChat(chatOpts)
@@ -253,12 +253,15 @@ const server = createServer(async (req, res) => {
                   ? await runAnthropicChat(chatOpts)
                   : backend === "gemini"
                     ? await runGeminiChat(chatOpts)
-                    : backend === "azure"
-                      ? await runAzureChat(chatOpts)
+                  : backend === "azure"
+                    ? await runAzureChat(chatOpts)
+                    : backend === "mcp"
+                      ? await runMcpChatOrFallback(chatOpts)
                       : await runLocalChat(chatOpts);
         emit({ type: "done", message: text });
       } catch (err) {
-        emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        const raw = err instanceof Error ? err.message : String(err);
+        emit({ type: "error", message: mcpSafeErrorMessage(raw) });
       } finally {
         runs.delete(conversationId);
         res.end();

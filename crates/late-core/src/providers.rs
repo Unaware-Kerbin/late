@@ -20,6 +20,7 @@ pub const PROVIDER_NAMES: &[&str] = &[
     "groq",
     "openrouter",
     "custom",
+    "mcp",
 ];
 
 const MAX_KEY_LEN: usize = 8192;

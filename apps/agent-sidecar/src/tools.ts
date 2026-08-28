@@ -1,5 +1,7 @@
 import { daemon } from "./daemon.js";
 import { decide, isAlwaysAllowed, rememberAlways, requestApproval } from "./approvals.js";
+import { callMcpTool, listMcpOpenAiTools } from "./mcp-client.js";
+import { mcpNeedsApprove } from "./mcp-format.js";
 import type { ApprovalDecision, OpenAiTool, PendingApproval, SseEvent } from "./types.js";
 
 export type ToolCtx = {
@@ -70,7 +72,7 @@ function bodyMatchesFormat(format: StageFormatName, body: string): boolean {
   }
 }
 
-/** Six operator-gated tools plus one draft-only staging write. Never add file-transfer RPCs — copies stay UI-only. */
+/** Six operator-gated tools plus one draft-only staging write. Never add file-transfer RPCs — copies stay UI-only. Optional MCP tools are appended at runtime. */
 export const OPENAI_TOOLS: OpenAiTool[] = [
   {
     type: "function",
@@ -352,6 +354,26 @@ function waitAbort(signal: AbortSignal): Promise<never> {
   });
 }
 
+export async function allChatTools(): Promise<OpenAiTool[]> {
+  try {
+    const extra = await listMcpOpenAiTools();
+    return extra.length ? [...OPENAI_TOOLS, ...extra] : OPENAI_TOOLS;
+  } catch {
+    return OPENAI_TOOLS;
+  }
+}
+
+export function mcpSystemNote(tools: OpenAiTool[]): string {
+  const extra = tools.filter((t) => t.function.name.startsWith("mcp_"));
+  if (!extra.length) return "";
+  return [
+    `You also have ${extra.length} MCP tools (names start with mcp_).`,
+    "list_/get_/recommend_ and vllm_status run immediately.",
+    "start, stop, download, dispatch, chat_send, and write-directory grant changes wait for the operator to click Approve.",
+    "Device CLI still uses propose_command. Do not ask for API keys.",
+  ].join(" ");
+}
+
 export async function executeTool(name: string, rawArgs: string, ctx: ToolCtx): Promise<string> {
   let args: Record<string, unknown> = {};
   try {
@@ -415,8 +437,26 @@ async function dispatch(name: string, args: Record<string, unknown>, ctx: ToolCt
     case "propose_staged_artifact":
       return proposeStaged(args, ctx);
     default:
+      if (name.startsWith("mcp_")) return proposeMcp(name, args, ctx);
       return { error: `unknown tool ${name} — only the Late tools exist` };
   }
+}
+
+async function proposeMcp(name: string, args: Record<string, unknown>, ctx: ToolCtx) {
+  if (!mcpNeedsApprove(name)) {
+    return callMcpTool(name, args);
+  }
+  const raw = name.startsWith("mcp_") ? name.slice(4) : name;
+  const pending: Omit<PendingApproval, "proposalId"> = {
+    kind: "command",
+    title: `MCP: ${raw}`,
+    detail: { command: `mcp ${raw}`, mcp: raw, args },
+    allowAlwaysAllow: false,
+  };
+  const decision = await awaitGate(ctx, pending, (p) => p.detail.mcp === raw);
+  if (!decision.allow) return { executed: false, reason: "operator denied" };
+  const output = await callMcpTool(name, args);
+  return { executed: true, output };
 }
 
 async function awaitGate(
@@ -629,9 +669,9 @@ async function proposeStaged(args: Record<string, unknown>, ctx: ToolCtx) {
   });
 }
 
-export function cursorToolDefs(ctxFactory: () => ToolCtx) {
+export function cursorToolDefs(ctxFactory: () => ToolCtx, tools: OpenAiTool[] = OPENAI_TOOLS) {
   return Object.fromEntries(
-    OPENAI_TOOLS.map((t) => {
+    tools.map((t) => {
       const name = t.function.name;
       return [
         name,

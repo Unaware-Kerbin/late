@@ -24,6 +24,8 @@ pub struct LocalModel {
     #[serde(default)]
     pub recommended: bool,
     #[serde(default)]
+    pub newest: bool,
+    #[serde(default)]
     pub tp: u32,
 }
 
@@ -46,6 +48,8 @@ pub struct InferenceStatus {
     /// True when Late started this process (llama-server child / verified pid).
     #[serde(default)]
     pub late_owned: bool,
+    #[serde(default)]
+    pub gpu_launch: Option<crate::hardware::GpuLaunchPlan>,
 }
 
 #[derive(Default)]
@@ -133,6 +137,10 @@ pub fn validate_model(model: &str) -> Result<()> {
 }
 
 pub fn status() -> InferenceStatus {
+    status_with(true)
+}
+
+pub fn status_with(use_all_gpus: bool) -> InferenceStatus {
     let (starting, stopping, downloading, download_id, serve_model, last_error) = {
         let j = job().lock().unwrap_or_else(|e| e.into_inner());
         (
@@ -148,7 +156,8 @@ pub fn status() -> InferenceStatus {
         serve_model.or_else(|| read_env_key(&docker_dir().ok()?.join(".env"), "MODEL_PATH"));
     let models = probe_models();
     let gpu = crate::hardware::probe();
-    let local_models = list_local_models();
+    let gpu_launch = crate::hardware::launch_plan(&gpu, use_all_gpus);
+    let local_models = list_local_models_with(&gpu, use_all_gpus);
     let container = docker_status();
     let serving = !models.is_empty();
     let running = serving || container.as_deref() == Some("running") || starting;
@@ -198,6 +207,7 @@ pub fn status() -> InferenceStatus {
         detail,
         allow_intel_compose,
         late_owned: false,
+        gpu_launch: Some(gpu_launch),
     }
 }
 
@@ -406,21 +416,26 @@ fn scan_hf_cache() -> Vec<LocalModel> {
         } else {
             "incomplete download (config/tokenizer only)".into()
         };
-        out.push(LocalModel {
-            id,
-            complete,
-            size_bytes,
-            note,
-            recommended: false,
-            tp: 1,
-        });
+            out.push(LocalModel {
+                id,
+                complete,
+                size_bytes,
+                note,
+                recommended: false,
+                newest: false,
+                tp: 1,
+            });
     }
     out.sort_by(|a, b| b.complete.cmp(&a.complete).then(a.id.cmp(&b.id)));
     out
 }
 
 pub fn list_local_models() -> Vec<LocalModel> {
-    let gpu = crate::hardware::probe();
+    list_local_models_with(&crate::hardware::probe(), true)
+}
+
+fn list_local_models_with(gpu: &crate::hardware::GpuProfile, use_all: bool) -> Vec<LocalModel> {
+    let gpu = crate::hardware::serving_profile(gpu, use_all);
     let recs = crate::hardware::recommend(&gpu);
     let mut out = scan_hf_cache();
     for m in &mut out {
@@ -432,6 +447,7 @@ pub fn list_local_models() -> Vec<LocalModel> {
     for r in &recs {
         if let Some(m) = out.iter_mut().find(|m| m.id == r.id) {
             m.recommended = r.recommended;
+            m.newest = r.newest;
             m.tp = r.tp;
             m.note = if m.complete {
                 format!("{} · cached", r.reason)
@@ -445,6 +461,7 @@ pub fn list_local_models() -> Vec<LocalModel> {
                 size_bytes: 0,
                 note: r.reason.clone(),
                 recommended: r.recommended,
+                newest: r.newest,
                 tp: r.tp,
             });
         }
@@ -452,6 +469,7 @@ pub fn list_local_models() -> Vec<LocalModel> {
     out.sort_by(|a, b| {
         b.recommended
             .cmp(&a.recommended)
+            .then(b.newest.cmp(&a.newest))
             .then(b.complete.cmp(&a.complete))
             .then(a.id.cmp(&b.id))
     });
@@ -464,7 +482,7 @@ pub fn pick_default_model() -> String {
     let local = scan_hf_cache();
     if let Some(r) = recs
         .iter()
-        .filter(|r| r.recommended && local.iter().any(|m| m.id == r.id && m.complete))
+        .filter(|r| r.recommended && r.newest && local.iter().any(|m| m.id == r.id && m.complete))
         .max_by_key(|r| r.weight_gb)
     {
         return r.id.clone();
@@ -528,6 +546,10 @@ fn vllm_image() -> String {
 }
 
 pub fn start(model: &str) -> Result<InferenceStatus> {
+    start_with(model, true)
+}
+
+pub fn start_with(model: &str, use_all_gpus: bool) -> Result<InferenceStatus> {
     let model = if model.is_empty() || model == "local" {
         pick_default_model()
     } else {
@@ -536,21 +558,19 @@ pub fn start(model: &str) -> Result<InferenceStatus> {
     validate_model(&model)?;
     let gpu = crate::hardware::probe();
     require_intel_compose(&gpu)?;
-    if let Err(why) = crate::hardware::fits(&model, &gpu) {
+    let serving = crate::hardware::serving_profile(&gpu, use_all_gpus);
+    if let Err(why) = crate::hardware::fits(&model, &serving) {
         return Err(LateError::Message(why));
     }
-    let tp = crate::hardware::recommend(&gpu)
-        .into_iter()
-        .find(|r| r.id == model)
-        .map(|r| r.tp)
-        .unwrap_or(1)
+    let tp = crate::hardware::launch_plan(&gpu, use_all_gpus)
+        .tensor_parallel
         .max(1);
     require_complete_model(&model)?;
     let file = compose_file()?;
     {
         let mut j = job().lock().unwrap_or_else(|e| e.into_inner());
         if j.starting {
-            return Ok(status());
+            return Ok(status_with(use_all_gpus));
         }
         j.starting = true;
         j.stopping = false;
@@ -665,7 +685,7 @@ pub fn start(model: &str) -> Result<InferenceStatus> {
             }
         })
         .map_err(|e| LateError::Message(format!("could not spawn GPU start thread: {e}")))?;
-    Ok(status())
+    Ok(status_with(use_all_gpus))
 }
 
 pub fn stop() -> Result<InferenceStatus> {

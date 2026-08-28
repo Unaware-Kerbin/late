@@ -69,7 +69,7 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 ## After it opens
 
 1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter).
-2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: install [Ollama](https://ollama.com), pick **Ollama**, click **Local**, **Pull** a model (try `gemma3:4b`).
+2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: install [Ollama](https://ollama.com), pick **Ollama**, click **Local**, **Pull** a model (try `gemma4:e4b`).
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
 4. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
 5. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
@@ -80,7 +80,7 @@ The helper is the chat pane on the right. It can *suggest* commands. You still c
 
 Think of it as a brain in a box. You pick which box.
 
-**This computer.** In the Agent pane, pick **Ollama**, **vLLM**, or **llama.cpp**. The next menu says **Local**. That means the box on *this* desk. You start the program here (Ollama is the easy one). Late **Start** / **Pull** / **Download** only work for Local.
+**This computer.** In the Agent pane, pick **Ollama**, **vLLM**, or **llama.cpp**. The next menu says **Local**. That means the box on *this* desk. You start the program here (Ollama is the easy one). Late **Start** / **Pull** / **Download** only work for Local. If this computer has more than one GPU, **Use all GPUs on this computer** is on by default (uncheck to use one card). Ollama already uses every GPU it sees.
 
 **Another computer at home or in the lab.** You start the brain on *that* machine yourself (SSH into it if you want). Then in Late: same engine (vLLM / llama.cpp / Ollama) → open the menu under **Local** → **Add server**. Type the address, like `http://10.0.0.12:8000/v1`. Click **Check**, then **Save**. Next time that address is a row in the menu. Click **Local** to come home. Late will not press the power button on the other box for you.
 
@@ -91,6 +91,8 @@ That other box is still *your* network. Leave **Cloud AI** off. You do not need 
 **Claude, Gemini, or Azure on *your* network.** Settings has those names too. Point them at a box you run. Same rule: your network, Cloud AI off. The real anthropic.com / Google / public Azure sites still need Cloud AI.
 
 If the box asks for a secret, Settings → API keys → **Custom OpenAI-compatible** (or Anthropic / Gemini / Azure). The helper still has to speak the usual chat HTTP (`/v1` for vLLM, Ollama, llama.cpp). A weird custom protocol needs something like LiteLLM in front. Details for developers are below.
+
+**MCP as the agent.** In the Agent menu, pick **MCP** the same way you pick vLLM. Second control is This computer (folder in Settings) or an HTTP address (`http://127.0.0.1:8790/mcp` after `npm run mcp:http`). Port 8787 is the GUI, not MCP. Chat goes through that program; Late still waits for **Approve** before device commands. You start that program; Late will not start it, and will not send API keys into it.
 
 ## Help
 
@@ -183,7 +185,7 @@ npm run dev:sidecar
 
 UI talks to the daemon at `http://127.0.0.1:7420` (`GET /health`, `WS /ws` JSON-RPC). Connection errors surface in the status bar and toasts — the views are wired even if the daemon is still catching up.
 
-Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`GET /health` returns `{"ok":true}` only — it does not include a daemon boolean; `POST /chat`, `GET /models`, `POST /probe`, `GET /pending`, `POST /approve`, `POST /stop`). Privileged sidecar routes take the token from `X-Late-Token` or `Authorization: Bearer` (not a `?token=` query string). vLLM: `http://127.0.0.1:8000/v1` (Agent **Local**) or one saved LAN URL (**Add server**). llama.cpp: `http://127.0.0.1:8080/v1`. Ollama: `http://127.0.0.1:11434/v1`. Cursor: `@cursor/sdk` with `tools: ["mcp"]` and seven `local.customTools` (including `propose_staged_artifact`) — only after Settings **Cloud AI** is on. Public internet OpenAI-compatible URLs also need Cloud AI. Private RFC1918 / `.internal` URLs do not. Native Anthropic / Gemini / Azure adapters use the same private-vs-cloud gate. If the SDK import fails, the sidecar returns a clear error. vLLM Start/Download stay on the vLLM backend (Intel compose gate, loopback URL only). llama.cpp Download/Start and Ollama Pull are in the Agent pane when those backends are selected and the URL is this computer. Late does not SSH-start a remote vLLM.
+Agent chat talks to the sidecar at `http://127.0.0.1:7430` (`GET /health` returns `{"ok":true}` only — it does not include a daemon boolean; `POST /chat`, `GET /models`, `POST /probe`, `GET /pending`, `POST /approve`, `POST /stop`). Privileged sidecar routes take the token from `X-Late-Token` or `Authorization: Bearer` (not a `?token=` query string). vLLM: `http://127.0.0.1:8000/v1` (Agent **Local**) or one saved LAN URL (**Add server**). llama.cpp: `http://127.0.0.1:8080/v1`. Ollama: `http://127.0.0.1:11434/v1`. Cursor: `@cursor/sdk` with `tools: ["mcp"]` and Late `local.customTools` (including `propose_staged_artifact`, plus optional `mcp_*` when Settings **MCP** is on). `mcpServers` stays empty so those tools still go through Late Approve. Cursor chat is only after Settings **Cloud AI** is on. Public internet OpenAI-compatible URLs also need Cloud AI. Private RFC1918 / `.internal` URLs do not. Native Anthropic / Gemini / Azure adapters use the same private-vs-cloud gate. If the SDK import fails, the sidecar returns a clear error. vLLM Start/Download stay on the vLLM backend (Intel compose gate, loopback URL only). llama.cpp Download/Start and Ollama Pull are in the Agent pane when those backends are selected and the URL is this computer. Late does not SSH-start a remote vLLM. Optional MCP is a chat backend (Agent **MCP**, then This computer or HTTP at `mcp_url`) or extra `mcp_*` tools on other backends. `POST /probe` kind `mcp` works for both. Late does not start remote MCP.
 
 Safety: dual-gate is sidecar-only. On network OS CLI, `propose_command` runs the vendor permit list, then you click **Approve**. Linux CLI has no permit list (Approve every command). `propose_api_get` is operator click only (no vendor permit list). Always-allow (non-Linux) still re-runs the permit check. Daemon `session.input` is ungated for a client that already has the token. Operator **Push** from Staging is UI-only (`stage.plan` / `stage.push`): CLI types into an open SSH/serial session; Ansible / Netmiko / Salt / Chef run PATH tools on your computer (Late does not bundle them). PATH Push uses the inventory device’s auth profile (key, agent, or a password already in the daemon vault — injected at run time, never written into staging files). The helper cannot Push. Host-key and approval dialogs are not dismissed by clicking outside. **Trust**, **Approve**, and Staging **Push** need an explicit button click (not Enter). Escape does not Trust. The sidecar reads `sidecar.token` for auth; it must not contain keyring, russh, or `secrets.json` vault code.
 
@@ -262,11 +264,11 @@ Anthropic is `POST /v1/messages`. Gemini is `:generateContent`. Azure is deploym
 
 ### Ollama (optional — easiest local AI)
 
-Late does not install Ollama. On [ollama.com](https://ollama.com), download the installer for your OS, open it, and wait until Ollama is running (it stays in the background). In Late’s Agent pane choose **Ollama**, keep **Local**, then **Pull** a name such as `gemma3:4b` or `qwen2.5:7b`. A Hugging Face id also works (`google/gemma-3-4b-it-qat-q4_0-gguf`; Late sends it as `hf.co/…`). Pull only talks to Ollama on this computer. Another machine: **Add server**. Default API: `http://127.0.0.1:11434/v1`.
+Late does not install Ollama. On [ollama.com](https://ollama.com), download the installer for your OS, open it, and wait until Ollama is running (it stays in the background). In Late’s Agent pane choose **Ollama**, keep **Local**, then **Pull** a name such as `gemma3:4b` or `qwen3:8b`. A Hugging Face id also works (`google/gemma-3-4b-it-qat-q4_0-gguf`; Late sends it as `hf.co/…`). Pull only talks to Ollama on this computer. Another machine: **Add server**. Default API: `http://127.0.0.1:11434/v1`.
 
 ### llama.cpp (optional)
 
-Late does not install llama.cpp. Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) with the backend you want (CUDA, Vulkan, Metal, ROCm, or CPU). In the Agent pane choose **llama.cpp**, **Download** a GGUF Hugging Face id (for example `Qwen/Qwen3-8B-GGUF`, `google/gemma-3-4b-it-qat-q4_0-gguf`, or `…:Q4_K_M`). Files land in `~/.local/share/late/models/gguf/` (not the Intel vLLM Docker cache). **Start** runs `llama-server` on loopback if it is on `PATH`; otherwise run it yourself:
+Late does not install llama.cpp. Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) with the backend you want (CUDA, Vulkan, Metal, ROCm, or CPU). In the Agent pane choose **llama.cpp**, **Download** a GGUF Hugging Face id (for example `Qwen/Qwen3-8B-GGUF`, `google/gemma-3-4b-it-qat-q4_0-gguf`, or `…:Q4_K_M`). Files land in `~/.local/share/late/models/gguf/` (not the Intel vLLM Docker cache). **Start** runs `llama-server` on loopback if it is on `PATH`; otherwise run it yourself. With more than one GPU, Start adds `-ngl 99 -sm layer` so layers are shared (uncheck **Use all GPUs** to stay on one card):
 
 ```bash
 llama-server -m ~/.local/share/late/models/gguf/Qwen--Qwen3-8B-GGUF/*.gguf --port 8080 --host 127.0.0.1

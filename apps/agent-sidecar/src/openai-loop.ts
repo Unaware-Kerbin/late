@@ -9,7 +9,7 @@ import {
 import { daemon } from "./daemon.js";
 import { auditEvent } from "./local-auth.js";
 import { loadProviderKeys } from "./provider-keys.js";
-import { executeTool, liveSessionContext, OPENAI_TOOLS, type ToolCtx } from "./tools.js";
+import { allChatTools, executeTool, liveSessionContext, mcpSystemNote, type ToolCtx } from "./tools.js";
 import {
   LLAMACPP_BASE,
   MAX_ROUNDS,
@@ -90,7 +90,7 @@ function ollamaHelp(base: string, kind: "offline" | "empty"): string {
     if (remote) {
       return `Ollama at ${root} has no models. Pull on that machine (ollama pull …). Late Pull only works when the URL is this computer.`;
     }
-    return `Ollama is running at ${root} but has no models. Pull one from the Agent pane (for example qwen2.5:7b or Qwen/Qwen3-8B-GGUF).`;
+    return `Ollama is running at ${root} but has no models. Pull one from the Agent pane (for example qwen3:8b or Qwen/Qwen3-8B-GGUF).`;
   }
   if (remote) {
     return `Nothing answered at ${root}. On that machine bind Ollama to the LAN (OLLAMA_HOST=0.0.0.0) and allow the port. Chat needs OpenAI /v1.`;
@@ -121,6 +121,7 @@ function compatLabel(kind: string): string {
   if (kind === "anthropic") return "Anthropic";
   if (kind === "gemini") return "Gemini";
   if (kind === "azure") return "Azure";
+  if (kind === "mcp") return "MCP";
   return "vLLM";
 }
 
@@ -186,9 +187,12 @@ async function runCompatChat(opts: {
   }
   const model = opts.model || (await defaultModel(opts.kind, base));
   const live = await liveSessionContext();
+  const catalog = await allChatTools();
+  const mcpNote = mcpSystemNote(catalog);
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "system", content: live },
+    ...(mcpNote ? [{ role: "system" as const, content: mcpNote }] : []),
     ...opts.messages.filter((m) => m.role !== "system"),
   ];
 
@@ -209,7 +213,7 @@ async function runCompatChat(opts: {
         });
       }, 5000);
       try {
-        completion = await chatCompletions(opts.kind, label, base, model, messages, opts.signal);
+        completion = await chatCompletions(opts.kind, label, base, model, messages, catalog, opts.signal);
       } catch (err) {
         throw describeFetchError(err, label, base);
       } finally {
@@ -293,6 +297,7 @@ async function chatCompletions(
   base: string,
   model: string,
   messages: ChatMessage[],
+  tools: Awaited<ReturnType<typeof allChatTools>>,
   signal: AbortSignal,
 ) {
   const linked = AbortSignal.any([signal, AbortSignal.timeout(TURN_TIMEOUT_MS)]);
@@ -309,7 +314,7 @@ async function chatCompletions(
       body: JSON.stringify({
         model,
         messages,
-        tools: OPENAI_TOOLS,
+        tools,
         tool_choice: "auto",
         temperature: 0.2,
         stream: false,
@@ -354,7 +359,7 @@ const CLOUD_OFF =
   "Cloud AI is off. Turn it on in Settings. Session text may then leave your computer.";
 
 export async function assertChatAllowed(
-  kind: "vllm" | "ollama" | "llamacpp" | "cursor" | "anthropic" | "gemini" | "azure",
+  kind: "vllm" | "ollama" | "llamacpp" | "cursor" | "anthropic" | "gemini" | "azure" | "mcp",
   base?: string,
 ): Promise<void> {
   settingsCache = null;
@@ -364,6 +369,12 @@ export async function assertChatAllowed(
   if (kind === "cursor") {
     auditEvent("chat", { backend: "cursor", egress: "cloud", ok: cloud });
     if (!cloud) throw new Error(CLOUD_OFF);
+    return;
+  }
+  if (kind === "mcp") {
+    // Agent=MCP talks to the orchestrator. Late Cloud AI (Cursor SDK) is a different backend.
+    const egress: ChatEgress = base ? await classifyChatBase(base, extra) : "loopback";
+    auditEvent("chat", { backend: "mcp", egress, ok: true });
     return;
   }
   const egress: ChatEgress = base ? await classifyChatBase(base, extra) : "cloud";

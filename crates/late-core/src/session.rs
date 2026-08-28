@@ -168,11 +168,25 @@ impl App {
         self.validate_settings_dir(&settings.pcap_dir)?;
         self.validate_settings_dir(&settings.log_dir)?;
         let mut settings = settings;
+        settings.mcp_cwd = settings.mcp_cwd.trim().to_string();
+        settings.mcp_command = settings.mcp_command.trim().to_string();
+        settings.mcp_args = settings.mcp_args.trim().to_string();
+        settings.mcp_url = settings.mcp_url.trim().to_string();
+        crate::config::validate_mcp_http_url(&settings.mcp_url)?;
+        // Agent pane can pick This computer before the Settings folder is filled in.
+        if !settings.mcp_cwd.trim().is_empty() {
+            self.validate_settings_dir(&PathBuf::from(settings.mcp_cwd.trim()))?;
+        }
+        let cmd = settings.mcp_command.trim();
+        if cmd.starts_with('/') || cmd.contains(":\\") || cmd.starts_with("\\\\") {
+            self.validate_settings_dir(&PathBuf::from(cmd))?;
+        }
         if !settings.cloud_chat_enabled && settings.default_backend.eq_ignore_ascii_case("cursor") {
             settings.default_backend = "local".into();
         }
         crate::config::remember_remote_inference_urls(&mut settings);
         let prev_cloud = self.settings.lock().cloud_chat_enabled;
+        let prev_mcp = self.settings.lock().mcp_enabled;
         save_settings(&self.paths.settings(), &settings)?;
         *self.settings.lock() = settings.clone();
         if prev_cloud != settings.cloud_chat_enabled {
@@ -181,6 +195,14 @@ impl App {
                 "settings.cloud_chat",
                 true,
                 serde_json::json!({ "enabled": settings.cloud_chat_enabled }),
+            );
+        }
+        if prev_mcp != settings.mcp_enabled {
+            let _ = crate::audit::append_detail(
+                &self.paths,
+                "settings.mcp",
+                true,
+                serde_json::json!({ "enabled": settings.mcp_enabled }),
             );
         }
         Ok(())

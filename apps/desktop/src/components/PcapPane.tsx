@@ -349,11 +349,14 @@ export function PcapPane({ pane }: { pane: PaneState }) {
       toast("error", "open or capture packets first");
       return;
     }
+    const file = path || savePath;
     setState({
       chatOpen: true,
       agentSeed: {
         autoSend: true,
-        text: `Analyze the open packet capture${sessionId ? ` (session ${sessionId})` : ""}. Use query_pcap for summary and findings (retransmits, zero-window, DNS failures, TLS alerts, ICMP unreach, refused/RST). Correlate with any open SSH or serial scrollback. What is going on, and what should I check next?`,
+        text: file
+          ? `Analyze the packet capture at ${file}${sessionId ? ` (session ${sessionId})` : ""}. Use query_pcap for summary and findings (retransmits, zero-window, DNS failures, TLS alerts, ICMP unreach, refused/RST). Correlate with any open SSH or serial scrollback. What is going on, and what should I check next?`
+          : `Analyze the open packet capture${sessionId ? ` (session ${sessionId})` : ""}. Use query_pcap for summary and findings (retransmits, zero-window, DNS failures, TLS alerts, ICMP unreach, refused/RST). Correlate with any open SSH or serial scrollback. What is going on, and what should I check next?`,
       },
     });
     toast("ok", "handed to the agent");

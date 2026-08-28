@@ -42,6 +42,18 @@ pub struct AppSettings {
     pub cloud_chat_enabled: bool,
     /// Extra hostnames treated as private inference (air-gapped names that are not RFC1918 literals).
     pub private_inference_hosts: String,
+    /// Optional MCP client. Default false. Folder stdio on this computer and/or HTTP URL.
+    pub mcp_enabled: bool,
+    /// Project folder on this computer (must stay under home or Late data).
+    pub mcp_cwd: String,
+    /// Optional command. Empty = tsx src/index.ts or node dist/index.js in mcp_cwd.
+    pub mcp_command: String,
+    /// Optional extra argv (no shell). Empty unless mcp_command is set.
+    pub mcp_args: String,
+    /// Streamable HTTP MCP URL (another box). Empty = spawn mcp_cwd.
+    pub mcp_url: String,
+    /// When more than one GPU is on this computer, Local Start uses all of them. Default true.
+    pub use_all_gpus: bool,
 }
 
 impl Default for AppSettings {
@@ -75,6 +87,12 @@ impl Default for AppSettings {
             api_insecure_tls: false,
             cloud_chat_enabled: false,
             private_inference_hosts: String::new(),
+            mcp_enabled: false,
+            mcp_cwd: String::new(),
+            mcp_command: String::new(),
+            mcp_args: String::new(),
+            mcp_url: String::new(),
+            use_all_gpus: true,
         }
     }
 }
@@ -187,6 +205,50 @@ fn url_host_is_loopback(raw: &str) -> bool {
         || h.starts_with("127.")
 }
 
+/// http(s) only. Empty is ok (stdio folder). No file: / shell / userinfo.
+pub fn validate_mcp_http_url(raw: &str) -> Result<()> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(());
+    }
+    if t.bytes().any(|b| b < 0x20 || b == 0x7f)
+        || t.contains(';')
+        || t.contains('|')
+        || t.contains('&')
+        || t.contains('`')
+        || t.contains('$')
+        || t.contains('<')
+        || t.contains('>')
+        || t.contains('\\')
+    {
+        return Err(LateError::Config(
+            "MCP address cannot contain shell or control characters".into(),
+        ));
+    }
+    let u = reqwest::Url::parse(t).map_err(|_| {
+        LateError::Config("MCP address is not a valid URL".into())
+    })?;
+    if u.scheme() != "http" && u.scheme() != "https" {
+        return Err(LateError::Config(
+            "MCP address must be http:// or https:// (not a file path)".into(),
+        ));
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err(LateError::Config(
+            "MCP address cannot include a username or password".into(),
+        ));
+    }
+    if u.host_str().unwrap_or("").is_empty() {
+        return Err(LateError::Config("MCP address needs a host (IP or name)".into()));
+    }
+    if url_host_is_loopback(t) && u.port() == Some(8787) {
+        return Err(LateError::Config(
+            "That address is the GUI on this computer, not MCP. Use http://127.0.0.1:8790/mcp after npm run mcp:http, or the folder".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<()> {
     crate::fsutil::write_private(
         path,
@@ -229,6 +291,12 @@ log_dir = "/tmp/logs"
         assert!(!s.cloud_chat_enabled);
         assert_eq!(s.private_inference_hosts, "");
         assert!(!s.api_insecure_tls);
+        assert!(!s.mcp_enabled);
+        assert_eq!(s.mcp_cwd, "");
+        assert_eq!(s.mcp_command, "");
+        assert_eq!(s.mcp_args, "");
+        assert_eq!(s.mcp_url, "");
+        assert!(s.use_all_gpus);
     }
 
     #[test]
@@ -264,6 +332,34 @@ log_dir = "/tmp/logs"
     }
 
     #[test]
+    fn mcp_settings_round_trips() {
+        let mut s = AppSettings::default();
+        assert!(!s.mcp_enabled);
+        s.mcp_enabled = true;
+        s.mcp_cwd = "/home/me/MCP".into();
+        s.mcp_command = String::new();
+        s.mcp_args = String::new();
+        s.mcp_url = "http://10.0.0.12:8790/mcp".into();
+        let raw = toml::to_string_pretty(&s).unwrap();
+        let back: AppSettings = toml::from_str(&raw).unwrap();
+        assert!(back.mcp_enabled);
+        assert_eq!(back.mcp_cwd, "/home/me/MCP");
+        assert_eq!(back.mcp_command, "");
+        assert_eq!(back.mcp_args, "");
+        assert_eq!(back.mcp_url, "http://10.0.0.12:8790/mcp");
+    }
+
+    #[test]
+    fn use_all_gpus_round_trips_and_defaults_on() {
+        let mut s = AppSettings::default();
+        assert!(s.use_all_gpus);
+        s.use_all_gpus = false;
+        let raw = toml::to_string_pretty(&s).unwrap();
+        let back: AppSettings = toml::from_str(&raw).unwrap();
+        assert!(!back.use_all_gpus);
+    }
+
+    #[test]
     fn private_inference_hosts_round_trips() {
         let mut s = AppSettings::default();
         s.private_inference_hosts = "llm.airgap.mil, gpu.lab".into();
@@ -296,5 +392,19 @@ log_dir = "/tmp/logs"
         assert_eq!(back.default_backend, "llamacpp");
         assert_eq!(back.llama_cpp_model, "qwen2.5-7b");
         assert_eq!(back.llama_cpp_base_url, "http://127.0.0.1:8080/v1");
+    }
+
+    #[test]
+    fn mcp_http_url_accepts_http_and_rejects_file_and_shell() {
+        assert!(validate_mcp_http_url("").is_ok());
+        assert!(validate_mcp_http_url("http://10.0.0.12:8790/mcp").is_ok());
+        assert!(validate_mcp_http_url("http://127.0.0.1:8790/mcp").is_ok());
+        assert!(validate_mcp_http_url("http://127.0.0.1:8790/MCP").is_ok());
+        assert!(validate_mcp_http_url("http://localhost:8787/MCP").is_err());
+        assert!(validate_mcp_http_url("http://127.0.0.1:8787/").is_err());
+        assert!(validate_mcp_http_url("https://mcp.lab.internal/mcp").is_ok());
+        assert!(validate_mcp_http_url("file:///tmp/mcp").is_err());
+        assert!(validate_mcp_http_url("http://10.0.0.12:8790/mcp; rm -rf /").is_err());
+        assert!(validate_mcp_http_url("http://user:pass@10.0.0.12/mcp").is_err());
     }
 }

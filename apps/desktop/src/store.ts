@@ -969,6 +969,7 @@ export type LocalModel = {
   sizeBytes: number;
   note: string;
   recommended?: boolean;
+  newest?: boolean;
   tp?: number;
 };
 
@@ -978,6 +979,14 @@ export type GpuProfile = {
   vramGb: number;
   tpOk: boolean;
   summary: string;
+};
+
+export type GpuLaunchPlan = {
+  multiVisible?: boolean;
+  useAll?: boolean;
+  deviceCount?: number;
+  tensorParallel?: number;
+  note?: string;
 };
 
 export type InferenceStatus = {
@@ -993,6 +1002,7 @@ export type InferenceStatus = {
   detail: string;
   allowIntelCompose?: boolean;
   lateOwned?: boolean;
+  gpuLaunch?: GpuLaunchPlan;
 };
 
 export async function inferenceStatus(engine?: string): Promise<InferenceStatus> {

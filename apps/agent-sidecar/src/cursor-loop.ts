@@ -3,7 +3,7 @@ import { assertChatAllowed } from "./openai-loop.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cursorToolDefs, liveSessionContext, type ToolCtx } from "./tools.js";
+import { allChatTools, cursorToolDefs, liveSessionContext, mcpSystemNote, type ToolCtx } from "./tools.js";
 import { SYSTEM_PROMPT, TURN_TIMEOUT_MS, type ChatMessage, type SseEvent } from "./types.js";
 
 type AgentHandle = {
@@ -52,11 +52,14 @@ export async function runCursorChat(opts: {
     operatorText: lastUserText,
   };
   const operatorTurn = lastUserText || "Continue from the untrusted device output.";
+  const catalog = await allChatTools();
+  const mcpNote = mcpSystemNote(catalog);
 
   // Agent.create has no documented instructions/system field. Untrusted
   // device output stays in a SYSTEM/UNTRUSTED prefix, never after USER: lines.
   function isolationPrefix(deviceOutput: string, extraSystem = ""): string {
     const parts = ["SYSTEM:", SYSTEM_PROMPT];
+    if (mcpNote) parts.push("", mcpNote);
     if (extraSystem) parts.push("", extraSystem);
     parts.push(
       "",
@@ -75,7 +78,7 @@ export async function runCursorChat(opts: {
   const toolNotes: string[] = [];
   let lastToolDoneAt = 0;
   let toolsInFlight = 0;
-  const tools = cursorToolDefs(() => ctx);
+  const tools = cursorToolDefs(() => ctx, catalog);
   for (const def of Object.values(tools) as Record<string, unknown>[]) {
     for (const key of ["execute", "handler", "run"] as const) {
       const orig = def[key];

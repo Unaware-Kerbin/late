@@ -10,6 +10,16 @@ async function sidecarHeaders(base?: Record<string, string>): Promise<Record<str
 
 export type SidecarEvent =
   | { type: "delta"; text: string }
+  | {
+      type: "speaker";
+      speaker: string;
+      label: string;
+      nickname?: string;
+      logoUrl?: string;
+      logoDataUrl?: string;
+      content: string;
+      skipped?: boolean;
+    }
   | { type: "tool"; name: string; status: string; detail?: unknown }
   | { type: "approval"; pending: ApprovalPrompt }
   | { type: "ask"; proposalId: string; question: string }
@@ -51,6 +61,14 @@ export type SidecarModels = {
     anthropic?: ChatTargetMeta;
     gemini?: ChatTargetMeta;
     azure?: ChatTargetMeta;
+    mcp?: ChatTargetMeta;
+  };
+  mcp?: {
+    ok: boolean;
+    enabled: boolean;
+    tools: string[];
+    message: string;
+    agents?: string[];
   };
 };
 
@@ -70,33 +88,38 @@ export async function sidecarModels(): Promise<SidecarModels> {
     anthropic: body.anthropic ?? [],
     gemini: body.gemini ?? [],
     azure: body.azure ?? [],
-    backends: body.backends ?? ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor"],
+    backends: body.backends ?? ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor", "mcp"],
     targets: body.targets,
+    mcp: body.mcp ? { ...body.mcp, agents: ["orchestrator"] } : body.mcp,
   };
 }
 
 export async function sidecarProbe(
-  kind: "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure",
-  base: string,
+  kind: "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure" | "mcp",
+  base = "",
 ): Promise<{
   ok: boolean;
-  base: string;
-  egress: ChatEgress;
-  models: string[];
+  base?: string;
+  egress?: ChatEgress;
+  models?: string[];
+  tools?: string[];
+  enabled?: boolean;
   message: string;
 }> {
   const r = await fetch(`${SIDECAR_HTTP}/probe`, {
     method: "POST",
     headers: await sidecarHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ kind, base }),
-    signal: AbortSignal.timeout(8000),
+    body: JSON.stringify({ kind, ...(base ? { base } : {}) }),
+    signal: AbortSignal.timeout(kind === "mcp" ? 20_000 : 8000),
   });
   if (!r.ok) throw new Error(`sidecar probe ${r.status}`);
   return (await r.json()) as {
     ok: boolean;
-    base: string;
-    egress: ChatEgress;
-    models: string[];
+    base?: string;
+    egress?: ChatEgress;
+    models?: string[];
+    tools?: string[];
+    enabled?: boolean;
     message: string;
   };
 }
