@@ -4,6 +4,8 @@ interface LateRuntime {
   token?: () => Promise<string>;
   clipboardRead?: () => Promise<string>;
   clipboardWrite?: (text: string, which?: "clipboard" | "selection") => Promise<boolean>;
+  pathForFile?: (file: File) => string;
+  isDirectory?: (path: string) => Promise<boolean>;
 }
 
 interface Window {

@@ -174,9 +174,14 @@ pub fn render(
         });
     }
     let rendered = if let Some(b) = body.map(str::trim).filter(|s| !s.is_empty()) {
-        strip_secrets(b)?
+        fill_vendor_placeholder(vendor, intent, &strip_secrets(b)?)
     } else {
         strip_secrets(&scaffold(format, vendor, intent))?
+    };
+    let rendered = if looks_like_placeholder_cli(&rendered) {
+        fill_vendor_placeholder(vendor, intent, &rendered)
+    } else {
+        rendered
     };
     Ok(StageArtifact {
         id: String::new(),
@@ -194,6 +199,73 @@ fn yaml_name(intent: &str) -> String {
     intent.replace(['\n', '\r', ':'], " ")
 }
 
+fn vlan_id(intent: &str) -> Option<u16> {
+    let re = regex::Regex::new(r"(?i)\bvlan\s*(?:id\s*)?(?:of\s*)?(\d{1,4})\b").ok()?;
+    let n: u16 = re.captures(intent)?.get(1)?.as_str().parse().ok()?;
+    if (1..=4094).contains(&n) {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+fn vendor_vlan_cli(vendor: Vendor, vlan: u16) -> Option<String> {
+    match vendor {
+        Vendor::AosCx
+        | Vendor::CiscoIos
+        | Vendor::CiscoIosXe
+        | Vendor::CiscoNxos
+        | Vendor::AristaEos => Some(format!("vlan {vlan}\nname VLAN{vlan}")),
+        _ => None,
+    }
+}
+
+pub(crate) fn looks_like_placeholder_cli(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    l.contains("replace with vendor syntax")
+        || l.contains("placeholder")
+        || l.contains("paste vendor syntax")
+        || l.contains("# vendor syntax")
+}
+
+fn fill_vendor_placeholder(vendor: Vendor, intent: &str, body: &str) -> String {
+    let Some(vlan) = vlan_id(intent) else {
+        return body.to_string();
+    };
+    let Some(cli) = vendor_vlan_cli(vendor, vlan) else {
+        return body.to_string();
+    };
+    if !looks_like_placeholder_cli(body) && body.to_ascii_lowercase().contains(&format!("vlan {vlan}")) {
+        return body.to_string();
+    }
+    let mut out = String::new();
+    let mut replaced = false;
+    for line in body.lines() {
+        let t = line.trim();
+        let is_ph = t.starts_with("# Replace with vendor syntax")
+            || t.eq_ignore_ascii_case("# placeholder")
+            || t.contains("PLACEHOLDER")
+            || t.to_ascii_lowercase().contains("paste vendor syntax")
+            || t.to_ascii_lowercase().contains("# vendor syntax");
+        if is_ph {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            for cli_line in cli.lines() {
+                out.push_str(&indent);
+                out.push_str(cli_line);
+                out.push('\n');
+            }
+            replaced = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if replaced {
+        return out;
+    }
+    body.to_string()
+}
+
 fn scaffold(format: StageFormat, vendor: Vendor, intent: &str) -> String {
     let intent_c = yaml_name(intent);
     match format {
@@ -205,11 +277,25 @@ fn scaffold(format: StageFormat, vendor: Vendor, intent: &str) -> String {
     }
 }
 
+fn ansible_config_block(vendor: Vendor, intent: &str) -> String {
+    if let Some(vlan) = vlan_id(intent) {
+        if let Some(cli) = vendor_vlan_cli(vendor, vlan) {
+            return cli
+                .lines()
+                .map(|l| format!("          {l}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+    }
+    format!("          # Replace with vendor syntax for: {intent}")
+}
+
 fn ansible_scaffold(vendor: Vendor, intent: &str) -> String {
     let header = "# Late staging draft. Operator Push from Staging runs ansible-playbook on your computer.\n# The helper cannot Push. Auth is the device login Late already has on your computer — do not add login vars.\n";
+    let config = ansible_config_block(vendor, intent);
     if vendor == Vendor::Generic {
         return format!(
-            "---\n{header}# Set Vendor/OS on the inventory item before you fill ansible_network_os.\n# Do not guess an OS.\n- name: {intent}\n  hosts: late_targets\n  gather_facts: false\n  tasks:\n    - name: apply intended change\n      ansible.netcommon.cli_config:\n        config: |\n          # Replace with vendor syntax for: {intent}\n"
+            "---\n{header}# Set Vendor/OS on the inventory item before you fill ansible_network_os.\n# Do not guess an OS.\n- name: {intent}\n  hosts: late_targets\n  gather_facts: false\n  tasks:\n    - name: apply intended change\n      ansible.netcommon.cli_config:\n        config: |\n{config}\n"
         );
     }
     if vendor == Vendor::Linux {
@@ -219,7 +305,7 @@ fn ansible_scaffold(vendor: Vendor, intent: &str) -> String {
     }
     let (network_os, _, _) = platform_map(vendor);
     format!(
-        "---\n{header}- name: {intent}\n  hosts: late_targets\n  gather_facts: false\n  vars:\n    ansible_network_os: {network_os}\n    ansible_connection: network_cli\n  tasks:\n    - name: apply intended change\n      ansible.netcommon.cli_config:\n        config: |\n          # Replace with vendor syntax for: {intent}\n"
+        "---\n{header}- name: {intent}\n  hosts: late_targets\n  gather_facts: false\n  vars:\n    ansible_network_os: {network_os}\n    ansible_connection: network_cli\n  tasks:\n    - name: apply intended change\n      ansible.netcommon.cli_config:\n        config: |\n{config}\n"
     )
 }
 
@@ -231,8 +317,22 @@ fn netmiko_scaffold(vendor: Vendor, intent: &str) -> String {
         );
     }
     let (_, device_type, _) = platform_map(vendor);
+    let commands = if let Some(vlan) = vlan_id(intent) {
+        if let Some(cli) = vendor_vlan_cli(vendor, vlan) {
+            let quoted = cli
+                .lines()
+                .map(|l| format!("#     {l:?},"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("# conn.send_config_set([\n{quoted}\n# ])")
+        } else {
+            "#     # vendor syntax for INTENT\n".into()
+        }
+    } else {
+        "#     # vendor syntax for INTENT\n".into()
+    };
     format!(
-        "{header}INTENT = {intent:?}\nDEVICE_TYPE = {device_type:?}\n# from netmiko import ConnectHandler\n# conn = ConnectHandler(device_type=DEVICE_TYPE, host=host, username=user, use_keys=True)\n# conn.send_config_set([\n#     # vendor syntax for INTENT\n# ])\nprint(\"review-only draft; Late did not run this\")\n"
+        "{header}INTENT = {intent:?}\nDEVICE_TYPE = {device_type:?}\n# from netmiko import ConnectHandler\n# conn = ConnectHandler(device_type=DEVICE_TYPE, host=host, username=user, use_keys=True)\n{commands}\nprint(\"review-only draft; Late did not run this\")\n"
     )
 }
 
@@ -266,6 +366,11 @@ fn cli_scaffold(vendor: Vendor, intent: &str) -> String {
     let note = format!(
         "! intent: {intent}\n! review before Push — Late will not write memory or reboot for you\n"
     );
+    if let Some(vlan) = vlan_id(intent) {
+        if let Some(cli) = vendor_vlan_cli(vendor, vlan) {
+            return format!("{note}configure terminal\n{cli}\nend\n");
+        }
+    }
     match vendor {
         Vendor::CiscoIos
         | Vendor::CiscoIosXe
@@ -385,6 +490,21 @@ pub fn list(paths: &LatePaths) -> Result<Vec<StageMeta>> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+pub fn delete(paths: &LatePaths, id: &str) -> Result<()> {
+    let art = get(paths, id)?;
+    let body = artifact_path(paths, &art.id, art.format)?;
+    let extras = [
+        body.with_extension("meta.json"),
+        body.with_extension("inventory.ini"),
+        body.with_extension("sls"),
+    ];
+    fs::remove_file(&body).map_err(|e| LateError::Message(format!("could not delete draft: {e}")))?;
+    for p in extras {
+        let _ = fs::remove_file(p);
+    }
+    Ok(())
 }
 
 const GENERATED_FORBIDDEN: &[&str] = &[
@@ -949,6 +1069,31 @@ mod tests {
     }
 
     #[test]
+    fn aos_cx_vlan_2000_ansible_is_real_cli_not_placeholder() {
+        let a = render(
+            StageFormat::Ansible,
+            Vendor::AosCx,
+            "configure a vlan of 2000",
+            None,
+        )
+        .unwrap();
+        assert!(a.body.contains("vlan 2000"), "{}", a.body);
+        assert!(a.body.contains("name VLAN2000"), "{}", a.body);
+        assert!(a.body.contains("arubanetworks.aoscx"));
+        assert!(!a.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+        assert!(!a.body.contains("PLACEHOLDER"));
+        let filled = render(
+            StageFormat::Ansible,
+            Vendor::AosCx,
+            "configure VLAN 2000",
+            Some("# Replace with vendor syntax for: vlan\n"),
+        )
+        .unwrap();
+        assert!(filled.body.contains("vlan 2000"));
+        assert!(!filled.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+    }
+
+    #[test]
     fn ansible_has_no_ssh_pass() {
         let a = render(StageFormat::Ansible, Vendor::Junos, "mtu", None).unwrap();
         assert!(a.body.contains("junipernetworks.junos"));
@@ -989,6 +1134,10 @@ mod tests {
         let body_path = staging_dir(&paths).join(format!("{}.{}", a.id, a.format.ext()));
         assert!(body_path.exists());
         assert!(jail_ok(&staging_dir(&paths), &body_path));
+        delete(&paths, &a.id).unwrap();
+        assert!(list(&paths).unwrap().is_empty());
+        assert!(!body_path.exists());
+        assert!(delete(&paths, &a.id).is_err());
     }
 
     fn key_target(vendor: Vendor, host: &str) -> PushTarget {

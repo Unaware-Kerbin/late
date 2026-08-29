@@ -457,6 +457,10 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             app.stage_get(&req_str(&params, &["id"])?)?,
         )?),
         "stage.list" => Ok(serde_json::to_value(app.stage_list()?)?),
+        "stage.delete" => {
+            app.stage_delete(&req_str(&params, &["id"])?)?;
+            Ok(json!({"ok": true}))
+        }
         "stage.plan" => Ok(serde_json::to_value(app.stage_plan(
             pstr(&params, &["id"]).as_deref(),
             &pstr(&params, &["format"]).unwrap_or_else(|| "cli".into()),

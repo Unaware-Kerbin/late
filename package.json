@@ -18,6 +18,7 @@
     "dev:stack": "concurrently -n ui,sidecar,daemon -c cyan,magenta,green \"npm run dev -w late-desktop\" \"npm run dev -w late-agent-sidecar\" \"bash scripts/dev.sh --daemon-only\"",
     "build": "npm run build -w late-desktop && npm run build -w late-agent-sidecar",
     "typecheck": "npm run typecheck -w late-desktop && npm run typecheck -w late-agent-sidecar",
+    "test": "npm test -w late-agent-sidecar",
     "pack": "bash scripts/pack.sh",
     "pack:linux": "bash scripts/pack.sh --linux",
     "pack:mac": "bash scripts/pack.sh --mac",

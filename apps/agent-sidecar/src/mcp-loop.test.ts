@@ -9,6 +9,7 @@ import {
   MCP_IGNORED_CONTROL_DUMP,
   looksLikeMcpThreadJson,
   mcpChatSendArgs,
+  setGrantedMcpCwd,
   mcpIsolationPrefix,
   mcpJsonToolPreamble,
   mcpOperatorSend,
@@ -32,6 +33,7 @@ import {
   shouldDiscoverLoopbackMcp,
   shouldFallbackToLocalHelper,
   shouldReuseLiveMcpHttp,
+  shouldReuseLiveMcpHttpForProbe,
   stayOnMcp,
 } from "./mcp-stay.ts";
 import { runMcpChatOrFallback } from "./mcp-loop.ts";
@@ -145,6 +147,7 @@ describe("mcp chat backend", () => {
   });
 
   it("chat_send pin is debate so ready Cursor and Gemini join the round-table", () => {
+    setGrantedMcpCwd(undefined);
     assert.equal(MCP_CHAT_SEND_PIN, "debate");
     const args = mcpChatSendArgs("show interfaces", "thr-9");
     assert.equal(args.pin, "debate");
@@ -153,6 +156,18 @@ describe("mcp chat backend", () => {
     assert.equal(args.message, "show interfaces");
     const first = mcpChatSendArgs("hello");
     assert.equal("thread_id" in first, false);
+    assert.equal("cwd" in first, false);
+  });
+
+  it("chat_send includes a granted workspace cwd after drop", () => {
+    const prev = undefined;
+    try {
+      setGrantedMcpCwd("/tmp/mcp-workspace");
+      const send = mcpChatSendArgs("implement README");
+      assert.equal(send.cwd, "/tmp/mcp-workspace");
+    } finally {
+      setGrantedMcpCwd(prev);
+    }
   });
 
   it("JSON tool preamble does not say allowlist (orchestrator would dump write dirs)", () => {
@@ -326,6 +341,21 @@ describe("mcp chat backend", () => {
       }),
       false,
     );
+    assert.equal(
+      shouldReuseLiveMcpHttpForProbe({
+        liveSessionKey: "http\0http://127.0.0.1:9099/mcp",
+        probeUrl: "http://127.0.0.1:9099/mcp",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldReuseLiveMcpHttpForProbe({
+        liveSessionKey: "http\0http://127.0.0.1:9099/mcp",
+        probeUrl: "http://127.0.0.1:8790/mcp",
+      }),
+      false,
+    );
+    assert.equal(shouldReuseLiveMcpHttpForProbe({ probeUrl: "http://127.0.0.1:9099/mcp" }), false);
     assert.equal(shouldFallbackToLocalHelper("ECONNREFUSED"), true);
     assert.equal(shouldDiscoverLoopbackMcp("MCP HTTP 400: Bad Request: Mcp-Session-Id header is required"), false);
     assert.equal(shouldDiscoverLoopbackMcp("MCP chat_send timed out"), false);
@@ -605,5 +635,37 @@ describe("mcp chat backend", () => {
     assert.equal(resolveSidecarChatBackend("mcp", false), "mcp");
     assert.equal(resolveSidecarChatBackend("cursor", true), "cursor");
     assert.notEqual(resolveSidecarChatBackend("mcp", true), "cursor");
+  });
+
+  it("cli playbook vlan 2000 after show vlan prefers propose_staged_artifact JSON", () => {
+    const uuid = "c10bbc8d-aaaa-bbbb-cccc-ddddeeeeffff";
+    const operator = "Write a cli playbook for this switch to configure a vlan of 2000";
+    const live = [
+      "BEGIN UNTRUSTED DEVICE OUTPUT",
+      `### aos-cx  id=${uuid}  kind=ssh  vendor=aos_cx`,
+      "```",
+      "switch# show vlan",
+      "VLAN 1, 10",
+      "```",
+      "END UNTRUSTED DEVICE OUTPUT",
+    ].join("\n");
+    const wrap = mcpOperatorSend(SYSTEM_PROMPT, live, operator);
+    assert.match(mcpJsonToolPreamble(), /uuid from id=/i);
+    assert.doesNotMatch(mcpJsonToolPreamble(), /session_id":"<id>"/);
+    assert.match(wrap, /session_id must be that live UUID/);
+    assert.match(wrap, /propose_staged_artifact/);
+
+    const debate = [
+      "Arc Gemma: {\"tool\":\"propose_staged_artifact\",\"format\":\"ansible\",\"intent\":\"configure VLAN 2000\",\"session_id\":\"" +
+        uuid +
+        "\"}",
+      "Cursor local: Looking at src/chat/service.ts and timeout.ts. Early flush uses looksLikeLateToolJson. I would still run show vlan.",
+      '{"tool":"propose_command","session_id":"aos-cx","command":"show vlan","reason":"see vlans","intent":"investigate"}',
+    ].join("\n\n");
+    const parsed = parseMcpLateTool(debate, { lastLate: true, operatorTurn: operator });
+    assert.equal(parsed?.name, "propose_staged_artifact");
+    assert.equal(parsed?.args.format, "ansible");
+    assert.equal(parsed?.args.session_id, uuid);
+    assert.ok(parsed?.late);
   });
 });

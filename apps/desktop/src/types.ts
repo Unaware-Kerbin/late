@@ -406,6 +406,8 @@ export interface PaneState {
   kind: SessionKind | "empty" | "stage";
   stageId?: string;
   stageFormat?: string;
+  /** Bumped to remount Staging when starting a blank draft. */
+  stageEpoch?: number;
   session?: SessionInfo;
   deviceId?: string;
   disconnected: boolean;

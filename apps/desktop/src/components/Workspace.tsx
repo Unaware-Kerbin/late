@@ -125,7 +125,7 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
   if (pane.kind === "sftp") body = <SftpPane pane={pane} />;
   else if (pane.kind === "pcap") body = <PcapPane pane={pane} />;
   else if (pane.kind === "api") body = <ApiPane pane={pane} />;
-  else if (pane.kind === "stage") body = <StagePane key={`${pane.id}:${pane.stageId ?? ""}`} pane={pane} />;
+  else if (pane.kind === "stage") body = <StagePane key={`${pane.id}:${pane.stageId ?? ""}:${pane.stageEpoch ?? 0}`} pane={pane} />;
   else if (pane.kind === "empty") {
     body = (
       <div className="empty">

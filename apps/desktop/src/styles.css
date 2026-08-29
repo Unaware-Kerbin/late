@@ -196,6 +196,7 @@ button { cursor: pointer; }
   flex-direction: column;
 }
 .chat { border-right: none; min-width: 0; }
+.chat.drop-over { outline: 2px dashed var(--accent, #d4a017); outline-offset: -4px; }
 .chat-toolbar { flex: 0 0 auto; padding: 8px; }
 .chat-toolbar select { min-width: 0; }
 .chat-toolbar.row .server-pick {
@@ -1688,6 +1689,108 @@ html[data-font="mono"] {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.stage-drafts {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raise);
+  flex: 0 1 auto;
+  max-height: 40%;
+}
+.stage-drafts.open { flex: 0 1 12rem; }
+.stage-drafts-head {
+  display: flex;
+  align-items: stretch;
+  background: var(--panel-2);
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--line);
+}
+.stage-drafts-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.stage-drafts-toggle:hover { color: var(--accent); }
+.stage-drafts-toggle .meta { color: var(--muted); font-size: 11px; }
+.stage-drafts-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stage-drafts-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.stage-drafts-bar input {
+  flex: 1;
+  min-width: 8rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  font-family: inherit;
+}
+.stage-draft-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stage-draft-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 2px;
+}
+.stage-draft-list li.sel {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+.stage-draft-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.stage-draft-open strong {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stage-draft-open span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
 }
 .stage-preview {
   max-height: 16rem;

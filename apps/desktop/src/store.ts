@@ -1344,17 +1344,29 @@ export function openPcapPane() {
 }
 
 export function openStagePane(stageId?: string, format?: string) {
+  revealStagePane({ stageId, format });
+}
+
+/** Blank editor on the existing Staging pane (or open one). Does not delete saved drafts. */
+export function newStageDraft() {
+  revealStagePane({ clear: true });
+}
+
+function revealStagePane(opts: { stageId?: string; format?: string; clear?: boolean }) {
   const existing = Object.values(state.panes).find((p) => p.kind === "stage");
+  const patch = (base: PaneState): PaneState => ({
+    ...base,
+    kind: "stage",
+    stageId: opts.clear ? undefined : opts.stageId || base.stageId,
+    stageFormat: opts.clear ? undefined : opts.format || base.stageFormat,
+    stageEpoch: opts.clear ? Date.now() : base.stageEpoch,
+  });
   if (existing) {
     const tab = state.tabs.find((t) => treeHasPane(t.tree, existing.id));
     setState((s) => ({
       panes: {
         ...s.panes,
-        [existing.id]: {
-          ...s.panes[existing.id],
-          ...(stageId ? { stageId } : {}),
-          ...(format ? { stageFormat: format } : {}),
-        },
+        [existing.id]: patch(s.panes[existing.id]),
       },
       focusedPaneId: existing.id,
       activeTabId: tab?.id ?? s.activeTabId,
@@ -1367,12 +1379,7 @@ export function openStagePane(stageId?: string, format?: string) {
     setState((s) => ({
       panes: {
         ...s.panes,
-        [cur.id]: {
-          ...s.panes[cur.id],
-          kind: "stage",
-          ...(stageId ? { stageId } : {}),
-          ...(format ? { stageFormat: format } : {}),
-        },
+        [cur.id]: patch({ ...s.panes[cur.id], kind: "stage" }),
       },
       tabs: s.tabs.map((t) =>
         t.id === s.activeTabId ? { ...t, title: "Staging" } : t,
@@ -1380,12 +1387,7 @@ export function openStagePane(stageId?: string, format?: string) {
     }));
     return;
   }
-  const pane = {
-    ...freshPane(),
-    kind: "stage" as const,
-    ...(stageId ? { stageId } : {}),
-    ...(format ? { stageFormat: format } : {}),
-  };
+  const pane = patch({ ...freshPane(), kind: "stage" });
   const tab: TabState = {
     id: newId(),
     title: "Staging",

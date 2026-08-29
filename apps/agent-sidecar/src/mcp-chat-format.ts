@@ -83,7 +83,7 @@ function toolFromObj(obj: unknown): ParsedMcpTool | null {
 }
 
 /** First JSON tool call in MCP text. Plain replies return null. Prefer last Late investigation tool in a round-table. */
-export function parseMcpLateTool(text: string, opts?: { lastLate?: boolean }): ParsedMcpTool | null {
+export function parseMcpLateTool(text: string, opts?: { lastLate?: boolean; operatorTurn?: string }): ParsedMcpTool | null {
   const found: ParsedMcpTool[] = [];
   for (const obj of jsonObjects(text)) {
     if (Array.isArray(obj)) {
@@ -97,21 +97,37 @@ export function parseMcpLateTool(text: string, opts?: { lastLate?: boolean }): P
     if (t) found.push(t);
   }
   if (found.length === 0) return null;
+  const late = found.filter((t) => t.late);
+  const pool = late.length ? late : found;
+  const op = opts?.operatorTurn ?? "";
+  if (/\bansible\b|\bplaybook\b/i.test(op)) {
+    const staged = [...pool].reverse().find((t) => t.name === "propose_staged_artifact");
+    if (staged) return staged;
+  }
   if (opts?.lastLate) {
-    const late = found.filter((t) => t.late);
-    return late[late.length - 1] ?? found[found.length - 1] ?? null;
+    const uuid = [...pool].reverse().find((t) => isLiveSessionUuid(String(t.args.session_id ?? "")));
+    if (uuid) return uuid;
+    return pool[pool.length - 1] ?? found[found.length - 1] ?? null;
   }
   return found[0] ?? null;
+}
+
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isLiveSessionUuid(id: string): boolean {
+  return SESSION_UUID_RE.test(id.trim());
 }
 
 export function mcpJsonToolPreamble(): string {
   return [
     "You cannot run a shell, edit files, or open sockets on Late's computer. Credentials never appear in your context.",
     "If you need Late to run device CLI, an API GET, read more scrollback, or write a Staging draft, reply with a single JSON object and no other prose:",
-    '{"tool":"propose_command","session_id":"<id>","command":"<cli>","reason":"<why>","intent":"investigate"}',
+    '{"tool":"propose_command","session_id":"<uuid from id= in UNTRUSTED DEVICE OUTPUT>","command":"<cli>","reason":"<why>","intent":"investigate"}',
+    "session_id must be that live UUID. Never invent aos-cx or a nickname as session_id.",
+    "Playbook or Ansible → {\"tool\":\"propose_staged_artifact\",\"format\":\"ansible\",\"intent\":\"configure VLAN 2000\",\"session_id\":\"<uuid>\"} and omit body. format=cli is one-line only.",
     "Allowed Late tools: propose_command, propose_api_get, propose_staged_artifact, list_open_sessions, read_scrollback, query_pcap, ask_user.",
     "Do not call chat_send, dispatch, start_vllm, or MCP write-grant or download tools. Late will not run those without the operator clicking Approve.",
-    "If attached untrusted output already answers the question, reply in plain text only.",
+    "Do not cite orchestrator source files. If attached untrusted output already answers the question, reply in plain text only.",
   ].join(" ");
 }
 
@@ -122,12 +138,26 @@ export const MCP_CHAT_CAP_MS = 40_000;
 export const MCP_CHAT_POLL_MS = 400;
 
 export function mcpChatSendArgs(message: string, threadId?: string, wait = false): Record<string, unknown> {
+  const cwd = grantedMcpCwd();
   return {
     message,
     wait,
     pin: MCP_CHAT_SEND_PIN,
     ...(threadId ? { thread_id: threadId } : {}),
+    ...(cwd ? { cwd } : {}),
   };
+}
+
+let grantedWorkspaceCwd: string | undefined;
+
+/** Folder granted this session after Approve on add_allowed_dir. Must exist on the MCP host. */
+export function setGrantedMcpCwd(path: string | undefined): void {
+  const trimmed = path?.trim();
+  grantedWorkspaceCwd = trimmed || undefined;
+}
+
+export function grantedMcpCwd(): string | undefined {
+  return grantedWorkspaceCwd;
 }
 
 /** Orchestrator control dump from handleControl("allowlist") — not device CLI. */

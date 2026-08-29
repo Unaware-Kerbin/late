@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import { isProposalDismissed } from "../lib/approvals-ui";
 import {
   sidecarHealth,
+  sidecarGrantDir,
   sidecarModels,
   sidecarPending,
   sidecarProbe,
@@ -603,6 +604,7 @@ export function ChatPane() {
     backends: ["local", "llamacpp", "ollama", "anthropic", "gemini", "azure", "cursor", "mcp"],
   });
   const [busy, setBusy] = useState(false);
+  const [dropOver, setDropOver] = useState(false);
   const [thinking, setThinking] = useState("");
   const [thinkMs, setThinkMs] = useState(0);
   const [status, setStatus] = useState("sidecar idle");
@@ -629,6 +631,8 @@ export function ChatPane() {
   const [downloadId, setDownloadId] = useState("Qwen/Qwen3-8B");
   const conv = useRef(newId());
   const abort = useRef<AbortController>();
+  const busyRef = useRef(false);
+  const queuedGrantRef = useRef<string | null>(null);
   const backendRef = useRef(backend);
   backendRef.current = backend;
   const settingsApplied = useRef(false);
@@ -730,6 +734,8 @@ export function ChatPane() {
     abort.current?.abort();
     void stopChat(conv.current);
     conv.current = newId();
+    queuedGrantRef.current = null;
+    busyRef.current = false;
     setMessages([]);
     setInput("");
     setBusy(false);
@@ -817,7 +823,7 @@ export function ChatPane() {
 
   async function sendText(raw: string) {
     const text = raw.trim();
-    if (!text || busy) return;
+    if (!text || busyRef.current) return;
     if (backend === "cursor" && !settings?.cloud_chat_enabled) {
       setStatus("Cloud AI is off. Turn it on in Settings to use Cursor.");
       setState({ settingsOpen: true });
@@ -837,6 +843,7 @@ export function ChatPane() {
     const next: ChatMsg[] = [...messages, { id: newId(), role: "user", content: text }];
     setMessages(next);
     setInput("");
+    busyRef.current = true;
     setBusy(true);
     setThinking("Thinking");
     setState({ approval: null });
@@ -945,9 +952,93 @@ export function ChatPane() {
       setStatus(err instanceof Error ? err.message : String(err));
       setThinking("");
     } finally {
+      const queued = queuedGrantRef.current;
+      queuedGrantRef.current = null;
+      if (queued) {
+        await runFolderGrant(queued);
+      } else {
+        busyRef.current = false;
+        setBusy(false);
+        setThinking("");
+      }
+    }
+  }
+
+  function parentOfPath(p: string): string {
+    const trimmed = p.replace(/[\\/]+$/, "");
+    const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+    return idx > 0 ? trimmed.slice(0, idx) : trimmed;
+  }
+
+  async function pathFromDrop(dt: DataTransfer): Promise<string> {
+    try {
+      const file = dt.files?.[0];
+      if (!file) return "";
+      const raw = window.lateRuntime?.pathForFile?.(file)?.trim() || "";
+      if (!raw) return "";
+      let isDir: boolean | undefined;
+      try {
+        isDir = await window.lateRuntime?.isDirectory?.(raw);
+      } catch {
+        isDir = undefined;
+      }
+      return isDir === false ? parentOfPath(raw) : raw;
+    } catch {
+      return "";
+    }
+  }
+
+  async function runFolderGrant(folder: string) {
+    busyRef.current = true;
+    setBusy(true);
+    setThinking("Waiting for you to Approve the folder grant");
+    setStatus("Approve to grant this folder on the MCP host");
+    try {
+      const result = await sidecarGrantDir(folder);
+      if (result.denied) setStatus("Folder grant cancelled");
+      else if (result.ok) {
+        setStatus(
+          `Granted ${result.cwd ?? folder}. Later chat uses it as cwd. The path must already exist on the MCP host.`,
+        );
+      } else {
+        setStatus(result.error || result.note || "Grant failed — path must exist on the MCP host");
+      }
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      busyRef.current = false;
       setBusy(false);
       setThinking("");
     }
+  }
+
+  async function onFolderDrop(event: DragEvent<HTMLElement>) {
+    if (!event.dataTransfer?.types?.includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDropOver(false);
+    let folder = "";
+    try {
+      folder = await pathFromDrop(event.dataTransfer);
+    } catch {
+      folder = "";
+    }
+    if (!folder) {
+      setStatus(
+        "Could not read that folder path. Type mcp_cwd in Settings, or drop a folder in Late (Electron), not a browser tab.",
+      );
+      return;
+    }
+    if (backend !== "mcp") {
+      setStatus(`Switch Agent to MCP to grant ${folder}. Typed mcp_cwd in Settings is the fallback.`);
+      return;
+    }
+    if (busyRef.current) {
+      queuedGrantRef.current = folder;
+      setStatus(`Will grant ${folder} after this turn. Path must exist on the MCP host.`);
+      return;
+    }
+    await runFolderGrant(folder);
   }
 
   function pickModel(id: string) {
@@ -991,7 +1082,19 @@ export function ChatPane() {
   const intelCompose = gpu.allowIntelCompose;
 
   return (
-    <aside className="chat">
+    <aside
+      className={`chat${dropOver ? " drop-over" : ""}`}
+      onDragOver={(e) => {
+        if (!e.dataTransfer?.types?.includes("Files")) return;
+        e.preventDefault();
+        setDropOver(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setDropOver(false);
+      }}
+      onDrop={(e) => void onFolderDrop(e)}
+    >
       <div className="chat-head">
         <span
           className="shell-drag"
@@ -1292,7 +1395,8 @@ export function ChatPane() {
         <p className="hint" style={{ padding: "0 8px" }}>
           Chat goes through MCP (not Late’s vLLM on :8000). Device CLI still needs Approve. You start
           that program; Late will not start it. Paste the <code>/mcp</code> URL from the GUI
-          (Copy MCP URL) — same port as the web UI, or <code>npm run mcp:http</code>.
+          (Copy MCP URL) — same port as the web UI, or <code>npm run mcp:http</code>. Drop a folder to
+          Approve-grant it on the MCP host (same path must exist there; Late does not copy trees).
         </p>
       )}
       {backend === "cursor" && (
@@ -1429,6 +1533,7 @@ export function ChatPane() {
         <button
           className="ghost"
           onClick={() => {
+            queuedGrantRef.current = null;
             abort.current?.abort();
             void stopChat(conv.current);
             setState({ approval: null });

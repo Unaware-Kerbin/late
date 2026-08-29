@@ -83,6 +83,13 @@ export function shouldReuseLiveMcpHttp(opts: {
   return opts.openedForSettingsUrl === opts.settingsUrl.trim();
 }
 
+/** /models probe must not handshake a second session while chat_send is using this one. */
+export function shouldReuseLiveMcpHttpForProbe(opts: { liveSessionKey?: string; probeUrl: string }): boolean {
+  if (!opts.liveSessionKey) return false;
+  const parsed = parseMcpHttpUrl(opts.probeUrl);
+  return typeof parsed === "string" && opts.liveSessionKey === `http\0${parsed}`;
+}
+
 export type McpStayAction = "retry" | "fail" | "rethrow";
 
 /** Agent = MCP: retry connect briefly, then fail. Do not switch to Late vLLM. */

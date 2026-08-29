@@ -261,6 +261,7 @@ fn is_mutating(expanded: &str) -> bool {
             | "route-map"
             | "line"
             | "hostname"
+            | "name"
             | "commit"
             | "load"
             | "rollback"
@@ -427,6 +428,7 @@ fn cisco_family(vendor: &str, xe: bool) -> VendorPolicy {
             "deny",
             "permit",
             "remark",
+            "name",
             "exit",
         ]),
         deny,
@@ -511,6 +513,7 @@ fn eos() -> VendorPolicy {
             "deny",
             "permit",
             "remark",
+            "name",
             "exit",
         ]),
         deny: verbs(&[
@@ -591,6 +594,7 @@ fn aos_cx() -> VendorPolicy {
             "deny",
             "permit",
             "remark",
+            "name",
             "exit",
             "resequence",
         ]),
@@ -861,6 +865,8 @@ allow_always_allow: true
                 .allowed
         );
         assert!(e.check(Vendor::AosCx, "show vlan").allowed);
+        assert!(e.check(Vendor::AosCx, "vlan 2000").allowed);
+        assert!(e.check(Vendor::AosCx, "name VLAN2000").allowed);
         let acl = e.check(Vendor::AosCx, "configure terminal");
         assert!(acl.allowed, "{}", acl.reason);
         assert!(!acl.allow_always_allow);

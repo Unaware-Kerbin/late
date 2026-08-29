@@ -1,8 +1,15 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { rpc } from "../lib/rpc";
+import {
+  isSshInventoryDevice,
+  pushSessionChoices,
+  readStageArt,
+  resolvePathDeviceId,
+  type StageArtFields,
+} from "../lib/stageDrafts";
 import { coerceStageFormat, STAGE_FORMATS, type StageFormat } from "../lib/stageEditorLang";
-import { openStagePane, toast, useApp } from "../store";
-import type { Device, PaneState } from "../types";
+import { newStageDraft, openStagePane, toast, useApp } from "../store";
+import type { PaneState } from "../types";
 
 const FORMATS = STAGE_FORMATS;
 const StageEditor = lazy(() => import("./StageEditor").then((m) => ({ default: m.StageEditor })));
@@ -43,12 +50,6 @@ function coerceFormat(v: unknown, fallback: StageFormat = "cli"): StageFormat {
   return coerceStageFormat(v, fallback);
 }
 
-/** PATH Push talks SSH. A hostname/IP is enough even if the row was also used for serial. */
-function isSshInventoryDevice(d: Device): boolean {
-  const host = (d.host ?? "").trim();
-  return !!host && !host.includes("://");
-}
-
 function pushLabel(format: StageFormat): string {
   switch (format) {
     case "cli":
@@ -79,16 +80,6 @@ function confirmLabel(format: StageFormat): string {
   }
 }
 
-type StageArt = {
-  id?: string;
-  format?: string;
-  vendor?: string;
-  intent?: string;
-  body?: string;
-  askOperator?: string;
-  ask_operator?: string;
-};
-
 type StagePlan = {
   format?: string;
   argv?: string[];
@@ -108,6 +99,8 @@ type StagePushResult = {
   stderr_tail?: string;
 };
 
+type DraftRow = { id: string; format: string; intent: string; vendor: string };
+
 export function StagePane({ pane }: { pane: PaneState }) {
   const sessions = useApp((s) => s.sessions);
   const devices = useApp((s) => s.inventory.devices);
@@ -122,18 +115,24 @@ export function StagePane({ pane }: { pane: PaneState }) {
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [plan, setPlan] = useState<StagePlan | null>(null);
-  const [list, setList] = useState<{ id: string; format: string; intent: string }[]>([]);
+  const [pushId, setPushId] = useState("");
+  const [list, setList] = useState<DraftRow[]>([]);
+  const [draftsOpen, setDraftsOpen] = useState(true);
+  const [draftQuery, setDraftQuery] = useState("");
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const pushable = useMemo(
-    () => sessions.filter((s) => s.kind === "ssh" || s.kind === "serial"),
-    [sessions],
-  );
+  const pushable = useMemo(() => pushSessionChoices(sessions), [sessions]);
   const pathFormat = format !== "cli";
   const sshDevices = useMemo(() => devices.filter(isSshInventoryDevice), [devices]);
   const deviceChoices = pathFormat ? sshDevices : devices;
+  const visibleDrafts = useMemo(() => {
+    const q = draftQuery.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((r) => `${r.format} ${r.intent} ${r.vendor} ${r.id}`.toLowerCase().includes(q));
+  }, [list, draftQuery]);
 
   useEffect(() => {
-    if (!preview) return;
+    if (!preview && !deleteId) return;
     const trap = (e: KeyboardEvent) => {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -142,11 +141,12 @@ export function StagePane({ pane }: { pane: PaneState }) {
       if (e.key === "Escape") {
         e.preventDefault();
         setPreview(false);
+        setDeleteId(null);
       }
     };
     window.addEventListener("keydown", trap, true);
     return () => window.removeEventListener("keydown", trap, true);
-  }, [preview]);
+  }, [preview, deleteId]);
 
   useEffect(() => {
     void refreshList();
@@ -173,6 +173,7 @@ export function StagePane({ pane }: { pane: PaneState }) {
               id: String(o.id ?? ""),
               format: String(o.format ?? ""),
               intent: String(o.intent ?? ""),
+              vendor: String(o.vendor ?? ""),
             };
           })
           .filter((r) => r.id),
@@ -189,18 +190,26 @@ export function StagePane({ pane }: { pane: PaneState }) {
     }
   }
 
-  function apply(art: StageArt) {
-    setId(String(art.id ?? ""));
-    setFormat(coerceFormat(art.format, "cli"));
-    setIntent(art.intent ?? "");
-    setBody(art.body ?? "");
-    setVendor(art.vendor ?? "");
-    setAsk(art.askOperator || art.ask_operator || "");
+  function apply(art: StageArtFields) {
+    setId(art.id);
+    setFormat(art.format);
+    setIntent(art.intent);
+    setBody(art.body);
+    setVendor(art.vendor);
+    setAsk(art.ask);
+    const sess = art.sessionId;
+    if (sess) setSessionId(sess);
+    const path = art.format !== "cli";
+    const resolved = path
+      ? resolvePathDeviceId(art.deviceId, sess || sessionId, sessions, devices)
+      : art.deviceId;
+    if (resolved) setDeviceId(resolved);
+    else if (art.deviceId) setDeviceId(art.deviceId);
   }
 
   async function load(stageId: string) {
     try {
-      const art = await rpc.call<StageArt>("stage.get", { id: stageId });
+      const art = readStageArt(await rpc.call<unknown>("stage.get", { id: stageId }));
       apply(art);
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
@@ -209,31 +218,38 @@ export function StagePane({ pane }: { pane: PaneState }) {
 
   function commonParams() {
     const path = format !== "cli";
+    const sess = sessionId || undefined;
+    const device = path
+      ? resolvePathDeviceId(deviceId, sessionId, sessions, devices) || deviceId || undefined
+      : deviceId || undefined;
     return {
       format,
       intent,
       body,
       id: id || undefined,
-      deviceId: deviceId || undefined,
-      device_id: deviceId || undefined,
-      // PATH runners use inventory SSH. Push session is only for Push CLI into an open PTY.
-      sessionId: path ? undefined : sessionId || undefined,
-      session_id: path ? undefined : sessionId || undefined,
+      deviceId: device,
+      device_id: device,
+      // Keep session_id on PATH Push so late-core can recover the SSH inventory row
+      // the helper saved. Serial sessions are still not the Ansible target.
+      sessionId: sess,
+      session_id: sess,
     };
   }
 
   async function renderDraft() {
     setBusy(true);
     try {
-      const art = await rpc.call<StageArt>("stage.render", {
-        format,
-        intent,
-        body: body.trim() ? body : undefined,
-        deviceId: deviceId || undefined,
-        device_id: deviceId || undefined,
-        sessionId: format === "cli" ? sessionId || undefined : undefined,
-        session_id: format === "cli" ? sessionId || undefined : undefined,
-      });
+      const art = readStageArt(
+        await rpc.call<unknown>("stage.render", {
+          format,
+          intent,
+          body: body.trim() ? body : undefined,
+          deviceId: deviceId || undefined,
+          device_id: deviceId || undefined,
+          sessionId: sessionId || undefined,
+          session_id: sessionId || undefined,
+        }),
+      );
       apply(art);
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
@@ -245,8 +261,9 @@ export function StagePane({ pane }: { pane: PaneState }) {
   async function saveDraft() {
     setBusy(true);
     try {
-      const art = await rpc.call<StageArt>("stage.save", commonParams());
+      const art = readStageArt(await rpc.call<unknown>("stage.save", commonParams()));
       apply(art);
+      if (art.id) openStagePane(art.id, art.format);
       await refreshList();
       toast("ok", "draft saved on your computer (not sent to the device)");
     } catch (err) {
@@ -261,8 +278,11 @@ export function StagePane({ pane }: { pane: PaneState }) {
       toast("error", "Nothing to push.");
       return;
     }
+    const pathDevice = pathFormat
+      ? resolvePathDeviceId(deviceId, sessionId, sessions, devices) || deviceId
+      : deviceId;
     if (format !== "cli") {
-      const d = devices.find((x) => x.id === deviceId);
+      const d = devices.find((x) => x.id === pathDevice);
       if (!d || !isSshInventoryDevice(d)) {
         toast(
           "error",
@@ -276,12 +296,18 @@ export function StagePane({ pane }: { pane: PaneState }) {
     }
     setBusy(true);
     try {
-      const art = await rpc.call<StageArt>("stage.save", commonParams());
+      const art = readStageArt(await rpc.call<unknown>("stage.save", commonParams()));
       apply(art);
       await refreshList();
+      const savedId = art.id || id;
+      setPushId(savedId);
+      if (savedId) openStagePane(savedId, art.format);
       const next = await rpc.call<StagePlan>("stage.plan", {
         ...commonParams(),
-        id: art.id || id,
+        id: savedId || undefined,
+        body: art.body || body,
+        deviceId: pathDevice || undefined,
+        device_id: pathDevice || undefined,
       });
       setPlan(next);
       setPreview(true);
@@ -295,7 +321,19 @@ export function StagePane({ pane }: { pane: PaneState }) {
   async function confirmPush() {
     setBusy(true);
     try {
-      const result = await rpc.call<StagePushResult>("stage.push", commonParams(), 180_000);
+      const pathDevice = pathFormat
+        ? resolvePathDeviceId(deviceId, sessionId, sessions, devices) || deviceId
+        : deviceId;
+      const result = await rpc.call<StagePushResult>(
+        "stage.push",
+        {
+          ...commonParams(),
+          id: pushId || id || undefined,
+          deviceId: pathDevice || undefined,
+          device_id: pathDevice || undefined,
+        },
+        180_000,
+      );
       setPreview(false);
       const tail = [result.stdoutTail ?? result.stdout_tail, result.stderrTail ?? result.stderr_tail]
         .filter((s) => typeof s === "string" && s.trim())
@@ -310,6 +348,33 @@ export function StagePane({ pane }: { pane: PaneState }) {
     }
   }
 
+  async function confirmDelete() {
+    const target = deleteId;
+    if (!target) return;
+    setBusy(true);
+    try {
+      await rpc.call("stage.delete", { id: target });
+      setDeleteId(null);
+      if (id === target) {
+        setId("");
+        setIntent("");
+        setBody("");
+        setAsk("");
+        setVendor("");
+        setPushId("");
+        newStageDraft();
+      }
+      await refreshList();
+      toast("ok", "draft deleted on your computer");
+    } catch (err) {
+      toast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const deleteRow = list.find((r) => r.id === deleteId);
+
   return (
     <div className="stage-pane">
       <p className="hint">
@@ -317,7 +382,7 @@ export function StagePane({ pane }: { pane: PaneState }) {
         right shape — Ctrl+Space. Ask the helper for a playbook, script, state, or recipe and it will fill this
         pane. The helper cannot Push. Push CLI types into the <strong>Push session</strong>{" "}
         (open SSH/serial PTY). Ansible / Netmiko / Salt / Chef run on your computer with the <strong>Device</strong>{" "}
-        inventory SSH host and that device's auth profile (key, agent, or the login Late already saved on your
+        inventory SSH host and that device&apos;s auth profile (key, agent, or the login Late already saved on your
         computer) — not the serial session. Late does not bundle those PATH tools.
       </p>
       <div className="stage-toolbar">
@@ -375,34 +440,83 @@ export function StagePane({ pane }: { pane: PaneState }) {
         <button type="button" className="ghost" disabled={busy} onClick={() => void saveDraft()}>
           Save draft
         </button>
+        <button type="button" className="ghost" disabled={busy} onClick={() => newStageDraft()}>
+          New draft
+        </button>
         <button type="button" className="primary" disabled={busy || !body.trim()} onClick={() => void openPreview()}>
           {pushLabel(format)}
         </button>
       </div>
-      {list.length > 0 && (
-        <div className="stage-list">
-          {list.map((row) => (
-            <button
-              key={row.id}
-              type="button"
-              className="ghost"
-              onClick={() => {
-                openStagePane(row.id, row.format);
-                void load(row.id);
-              }}
-            >
-              {row.format}: {row.intent || row.id.slice(0, 8)}
-            </button>
-          ))}
+      <section className={`stage-drafts${draftsOpen ? " open" : ""}`}>
+        <div className="stage-drafts-head">
+          <button
+            type="button"
+            className="stage-drafts-toggle"
+            aria-expanded={draftsOpen}
+            onClick={() => setDraftsOpen((v) => !v)}
+          >
+            <span className="pcap-chevron" aria-hidden>
+              {draftsOpen ? "▾" : "▸"}
+            </span>
+            <span>Drafts on your computer</span>
+            <span className="meta">{list.length ? `${list.length}` : "empty"}</span>
+          </button>
         </div>
-      )}
+        {draftsOpen && (
+          <div className="stage-drafts-body">
+            <div className="stage-drafts-bar">
+              <input
+                value={draftQuery}
+                onChange={(e) => setDraftQuery(e.target.value)}
+                placeholder="Filter drafts…"
+                aria-label="Filter drafts"
+              />
+              <button type="button" className="ghost" onClick={() => void refreshList()}>
+                Refresh
+              </button>
+            </div>
+            {visibleDrafts.length === 0 ? (
+              <p className="hint">
+                No saved drafts{draftQuery.trim() ? " match that filter" : " yet"}. Save draft keeps the file here —
+                Push is still a separate click.
+              </p>
+            ) : (
+              <ul className="stage-draft-list">
+                {visibleDrafts.map((row) => (
+                  <li key={row.id} className={row.id === id ? "sel" : ""}>
+                    <button
+                      type="button"
+                      className="stage-draft-open"
+                      onClick={() => openStagePane(row.id, row.format)}
+                    >
+                      <strong>
+                        {row.format}
+                        {row.vendor ? ` · ${row.vendor}` : ""}
+                      </strong>
+                      <span>{row.intent || row.id.slice(0, 8)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost tiny"
+                      title="Delete draft"
+                      onClick={() => setDeleteId(row.id)}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
       {preview && (
         <div className="modal-root" onMouseDown={() => setPreview(false)}>
           <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
             <h2>{pushLabel(format).replace(/…$/, "?")}</h2>
             <p className="hint">
               {format === "cli"
-                ? "This types the draft into the selected SSH/serial session. Click to confirm — Enter does not confirm."
+                ? "This types the draft into the selected SSH/serial session. Permit list still runs. Click to confirm — Enter does not confirm."
                 : "This runs the saved draft on your computer with the PATH tool shown below. Late does not bundle that tool. Click to confirm — Enter does not confirm."}
             </p>
             <pre className="stage-preview">{plan?.display || body.slice(0, 4000)}</pre>
@@ -412,6 +526,25 @@ export function StagePane({ pane }: { pane: PaneState }) {
               </button>
               <button type="button" className="primary" disabled={busy} onClick={() => void confirmPush()}>
                 {confirmLabel(format)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteId && (
+        <div className="modal-root" onMouseDown={() => setDeleteId(null)}>
+          <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>Delete this draft?</h2>
+            <p className="hint">
+              Removes the file from Staging on your computer. It does not change the device.
+              {deleteRow ? ` ${deleteRow.format}: ${deleteRow.intent || deleteRow.id.slice(0, 8)}` : ""}
+            </p>
+            <div className="row">
+              <button type="button" className="ghost" onClick={() => setDeleteId(null)}>
+                Cancel
+              </button>
+              <button type="button" className="primary" disabled={busy} onClick={() => void confirmDelete()}>
+                Delete
               </button>
             </div>
           </div>

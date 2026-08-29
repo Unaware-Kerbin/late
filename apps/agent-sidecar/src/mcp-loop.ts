@@ -148,7 +148,7 @@ async function flushExtracted(
   token: string,
   origins: string[],
 ): Promise<{ assistantText: string; parsed: ParsedMcpTool | null; ignoredDump: boolean }> {
-  const parsed = parseMcpLateTool(extracted.text, { lastLate: true });
+  const parsed = parseMcpLateTool(extracted.text, { lastLate: true, operatorTurn });
   const visible = mcpVisibleReply(operatorTurn, extracted.text, parsed);
   const pending = extracted.pending
     ? `\n\n${extracted.pending} Approve that in the MCP program — Late cannot click it.`

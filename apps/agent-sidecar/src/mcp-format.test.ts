@@ -35,6 +35,7 @@ describe("mcp-format", () => {
     assert.equal(mcpNeedsApprove("dispatch"), true);
     assert.equal(mcpNeedsApprove("download_local_model"), true);
     assert.equal(mcpNeedsApprove("add_allowed_dir"), true);
+    assert.equal(mcpNeedsApprove("chat_delete"), true);
   });
 
   it("rejects shell characters in args", () => {

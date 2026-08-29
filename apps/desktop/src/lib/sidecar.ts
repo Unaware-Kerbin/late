@@ -124,6 +124,37 @@ export async function sidecarProbe(
   };
 }
 
+export async function sidecarGrantDir(path: string): Promise<{
+  ok: boolean;
+  cwd?: string;
+  denied?: boolean;
+  error?: string;
+  note?: string;
+}> {
+  const r = await fetch(`${SIDECAR_HTTP}/mcp/grant-dir`, {
+    method: "POST",
+    headers: await sidecarHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ path }),
+  });
+  const body = (await r.json().catch(() => ({}))) as {
+    ok?: boolean;
+    cwd?: string;
+    denied?: boolean;
+    error?: string;
+    note?: string;
+  };
+  if (!r.ok && !body.error) {
+    throw new Error(`sidecar grant-dir ${r.status}`);
+  }
+  return {
+    ok: Boolean(body.ok),
+    cwd: body.cwd,
+    denied: body.denied,
+    error: body.error,
+    note: body.note,
+  };
+}
+
 export async function sidecarPending(): Promise<ApprovalPrompt[]> {
   try {
     const r = await fetch(`${SIDECAR_HTTP}/pending`, {

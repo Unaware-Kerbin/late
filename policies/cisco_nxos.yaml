@@ -8,7 +8,7 @@ aliases:
   p: ping
   tr: traceroute
   conf: configure
-allow: [show, ping, traceroute, dir, more, terminal, where, undebug, configure, interface, vlan, access-list, ip, ipv6, no, end, do, write, router, route-map, line, access-class, deny, permit, remark, exit]
+allow: [show, ping, traceroute, dir, more, terminal, where, undebug, configure, interface, vlan, access-list, ip, ipv6, no, end, do, write, router, route-map, line, access-class, deny, permit, remark, name, exit]
 deny: [enable, disable, copy, delete, erase, write erase, format, archive, boot, reload, reset, clear, logout, quit, tclsh, tclquit, debug, event, run, python, source, guestshell, bash]
 deny_substrings: [tclsh, guestshell, app-hosting, event manager, run bash, python]
 allow_pipes: [include, exclude, begin, section, count, format]

@@ -23,7 +23,8 @@ import {
   runGeminiChat,
   type NativeKind,
 } from "./native-loop.js";
-import { probeMcp, listMcpAgents, mcpTargetMeta } from "./mcp-client.js";
+import { callMcpTool, probeMcp, listMcpAgents, mcpTargetMeta } from "./mcp-client.js";
+import { grantMcpAllowedDir, parseGrantDirPath } from "./mcp-grant-dir.js";
 import { runMcpChatOrFallback } from "./mcp-loop.js";
 import { mcpSafeErrorMessage } from "./mcp-chat-format.js";
 import { SIDECAR_PORT, type ApprovalDecision, type ChatMessage, type SseEvent } from "./types.js";
@@ -179,6 +180,25 @@ const server = createServer(async (req, res) => {
       sendJson(res, req, ok ? 200 : 404, { ok });
       return;
     }
+    if (req.method === "POST" && url.pathname === "/mcp/grant-dir") {
+      let raw: unknown;
+      try {
+        raw = await readJson(req);
+      } catch (err) {
+        sendJson(res, req, 400, { error: err instanceof Error ? err.message : "invalid JSON" });
+        return;
+      }
+      const parsed = parseGrantDirPath(raw);
+      if (!parsed.ok) {
+        sendJson(res, req, 400, { error: parsed.error });
+        return;
+      }
+      const result = await grantMcpAllowedDir(parsed.path, callMcpTool, (proposalId, path) => {
+        auditEvent("mcp-grant-dir", { path, proposalId });
+      });
+      sendJson(res, req, result.status, result.body);
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/stop") {
       const body = (await readJson(req)) as { conversationId?: string };
       if (body.conversationId) {
@@ -270,7 +290,15 @@ const server = createServer(async (req, res) => {
     }
     sendJson(res, req, 404, { error: "not found" });
   } catch (err) {
-    sendJson(res, req, 500, { error: err instanceof Error ? err.message : String(err) });
+    try {
+      if (!res.headersSent) {
+        sendJson(res, req, 500, { error: err instanceof Error ? err.message : String(err) });
+      } else {
+        res.end();
+      }
+    } catch {
+      /* client already gone — do not crash the sidecar */
+    }
   }
 });
 

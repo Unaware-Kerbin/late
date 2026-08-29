@@ -1,7 +1,7 @@
 vendor: arista_eos
 aliases:
   sh: show
-allow: [show, ping, traceroute, bash timeout, dir, configure, interface, vlan, ip, ipv6, no, end, access-list, deny, permit, remark, exit]
+allow: [show, ping, traceroute, bash timeout, dir, configure, interface, vlan, ip, ipv6, no, end, access-list, deny, permit, remark, name, exit]
 deny: [copy, delete, reload, bash, python, event-handler, agent, daemon, enable]
 deny_substrings: [bash, python, event-handler]
 allow_pipes: [include, exclude, begin, section, nz]

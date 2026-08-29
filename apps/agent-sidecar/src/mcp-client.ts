@@ -23,7 +23,8 @@ import {
   type JsonRpc,
   type McpHttpSession,
 } from "./mcp-http.js";
-import { isMcpConnectFailure, shouldReuseLiveMcpHttp } from "./mcp-stay.js";
+import { createRpcQueue } from "./mcp-rpc-queue.js";
+import { isMcpConnectFailure, shouldReuseLiveMcpHttp, shouldReuseLiveMcpHttpForProbe } from "./mcp-stay.js";
 import type { OpenAiTool } from "./types.js";
 
 type StdioSession = {
@@ -168,9 +169,13 @@ async function assertMcpHttp(url: string, s: Record<string, unknown>): Promise<v
   return;
 }
 
+const enqueueMcpRpc = createRpcQueue();
+
 async function rpcLive(live: Live, method: string, params?: unknown, timeoutMs = 8000): Promise<unknown> {
-  if (live.kind === "http") return mcpHttpRpc(live.sess, method, params, timeoutMs);
-  return rpcStdio(live, method, params, timeoutMs);
+  return enqueueMcpRpc(async () => {
+    if (live.kind === "http") return mcpHttpRpc(live.sess, method, params, timeoutMs);
+    return rpcStdio(live, method, params, timeoutMs);
+  });
 }
 
 export async function ensureMcpSession(force = false, overrideUrl?: string): Promise<void> {
@@ -297,6 +302,22 @@ async function probeHttpUrl(url: string): Promise<McpProbe> {
   const s = await loadSettings();
   try {
     await assertMcpHttp(url, s);
+    if (
+      session?.kind === "http" &&
+      shouldReuseLiveMcpHttpForProbe({ liveSessionKey: session.key, probeUrl: url })
+    ) {
+      const result = (await rpcLive(session, "tools/list")) as { tools?: McpToolDef[] };
+      const tools = Array.isArray(result?.tools) ? result.tools : [];
+      const names = tools.filter((t) => t?.name).map((t) => mcpToOpenAiTool(t).function.name);
+      const parsedUrl = parseMcpHttpUrl(url);
+      const shown = typeof parsedUrl === "string" ? parsedUrl : url;
+      return {
+        ok: true,
+        enabled: true,
+        tools: names,
+        message: `MCP online · ${names.length} tool${names.length === 1 ? "" : "s"} at ${shown}.`,
+      };
+    }
     const probed = await probeMcpHttpEndpoint(url);
     if (!probed.ok) {
       return { ok: false, enabled: true, tools: [], message: probed.message };

@@ -377,6 +377,14 @@ app.whenReady().then(async () => {
       return false;
     }
   });
+  ipcMain.handle("late:is-directory", (event, p) => {
+    if (!ipcAllowed(event) || typeof p !== "string" || !p.trim()) return false;
+    try {
+      return fs.statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  });
   installAppMenu();
   await startBackend();
   createWindow();

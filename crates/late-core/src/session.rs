@@ -1225,11 +1225,31 @@ impl App {
     }
 
     fn stage_vendor(&self, device_id: Option<&str>, session_id: Option<&str>) -> Result<Vendor> {
+        self.stage_vendor_hint(device_id, session_id, None)
+    }
+
+    fn stage_vendor_hint(
+        &self,
+        device_id: Option<&str>,
+        session_id: Option<&str>,
+        saved_vendor: Option<&str>,
+    ) -> Result<Vendor> {
         if let Some(id) = device_id.filter(|s| !s.is_empty()) {
             let inv = self.inventory.load()?;
             if let Some(d) = inv.devices.iter().find(|d| d.id == id) {
                 return Ok(d.vendor);
             }
+        }
+        if let Some(id) = session_id.filter(|s| !s.is_empty()) {
+            if let Some(s) = self.list_sessions().into_iter().find(|s| s.id == id) {
+                if s.vendor != Vendor::Generic {
+                    return Ok(s.vendor);
+                }
+            }
+        }
+        let saved = saved_vendor.map(Vendor::parse).unwrap_or(Vendor::Generic);
+        if saved != Vendor::Generic {
+            return Ok(saved);
         }
         if let Some(id) = session_id.filter(|s| !s.is_empty()) {
             if let Some(s) = self.list_sessions().into_iter().find(|s| s.id == id) {
@@ -1268,7 +1288,30 @@ impl App {
         session_id: Option<&str>,
         id: Option<&str>,
     ) -> Result<crate::stage::StageArtifact> {
-        let mut art = self.stage_render(format, intent, body, device_id, session_id)?;
+        let existing = id
+            .filter(|s| !s.is_empty())
+            .and_then(|i| self.stage_get(i).ok());
+        let device = device_id
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| existing.as_ref().and_then(|e| e.device_id.clone()));
+        let session = session_id
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| existing.as_ref().and_then(|e| e.session_id.clone()));
+        let vendor = self.stage_vendor_hint(
+            device.as_deref(),
+            session.as_deref(),
+            existing.as_ref().map(|e| e.vendor.as_str()),
+        )?;
+        let mut art = crate::stage::render(
+            crate::stage::StageFormat::parse(format)?,
+            vendor,
+            intent,
+            body,
+        )?;
+        art.device_id = device;
+        art.session_id = session;
         if let Some(id) = id.filter(|s| !s.is_empty()) {
             art.id = id.to_string();
         }
@@ -1283,6 +1326,10 @@ impl App {
         crate::stage::list(&self.paths)
     }
 
+    pub fn stage_delete(&self, id: &str) -> Result<()> {
+        crate::stage::delete(&self.paths, id)
+    }
+
     fn resolve_push_target(
         &self,
         device_id: Option<&str>,
@@ -1290,17 +1337,24 @@ impl App {
         art: &crate::stage::StageArtifact,
     ) -> Result<Option<crate::stage::PushTarget>> {
         use crate::stage::StageFormat;
-        // PATH Push uses the inventory device only. `session_id` is the Push-session
-        // dropdown (open PTY, often serial) and is CLI-only — never the Ansible target.
-        let _ = session_id;
+        // PATH Push uses the inventory device. Prefer the Device dropdown; if the
+        // helper only stored a live SSH session, use that session's inventory row.
+        // Serial consoles are never the Ansible/Netmiko target.
+        let from_session = self.ssh_session_device_id(
+            session_id
+                .filter(|s| !s.is_empty())
+                .or(art.session_id.as_deref()),
+        );
         let id = device_id
             .filter(|s| !s.is_empty())
             .or(art.device_id.as_deref())
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .or(from_session);
         match art.format {
             StageFormat::Cli => Ok(None),
             StageFormat::Chef | StageFormat::Salt => match id {
-                Some(id) => Ok(Some(self.require_push_target(id)?)),
+                Some(id) => Ok(Some(self.require_push_target(&id)?)),
                 None => Ok(None),
             },
             StageFormat::Ansible | StageFormat::Netmiko => {
@@ -1310,7 +1364,7 @@ impl App {
                             .into(),
                     )
                 })?;
-                Ok(Some(self.require_push_target(id)?))
+                Ok(Some(self.require_push_target(&id)?))
             }
         }
     }
@@ -1428,6 +1482,16 @@ impl App {
         })
     }
 
+    fn ssh_session_device_id(&self, session_id: Option<&str>) -> Option<String> {
+        let sid = session_id.filter(|s| !s.is_empty())?;
+        let inner = self.inner.lock();
+        let s = inner.sessions.get(sid)?;
+        if s.kind != SessionKind::Ssh {
+            return None;
+        }
+        s.device_id.clone().filter(|d| !d.is_empty())
+    }
+
     fn stage_prepare(
         &self,
         id: Option<&str>,
@@ -1437,15 +1501,33 @@ impl App {
         device_id: Option<&str>,
         session_id: Option<&str>,
     ) -> Result<crate::stage::StageArtifact> {
-        if let Some(id) = id.filter(|s| !s.is_empty()) {
+        let mut art = if let Some(id) = id.filter(|s| !s.is_empty()) {
             if body.map(|s| !s.trim().is_empty()).unwrap_or(false) {
-                self.stage_save(format, intent, body, device_id, session_id, Some(id))
+                self.stage_save(format, intent, body, device_id, session_id, Some(id))?
             } else {
-                self.stage_get(id)
+                self.stage_get(id)?
             }
         } else {
-            self.stage_save(format, intent, body, device_id, session_id, None)
+            self.stage_save(format, intent, body, device_id, session_id, None)?
+        };
+        if crate::stage::looks_like_placeholder_cli(&art.body) {
+            let body_owned = art.body.clone();
+            let intent_owned = if intent.trim().is_empty() {
+                art.intent.clone()
+            } else {
+                intent.to_string()
+            };
+            let id_owned = art.id.clone();
+            art = self.stage_save(
+                format,
+                &intent_owned,
+                Some(&body_owned),
+                device_id.or(art.device_id.as_deref()),
+                session_id.or(art.session_id.as_deref()),
+                Some(&id_owned),
+            )?;
         }
+        Ok(art)
     }
 
     pub fn stage_plan(
@@ -1524,21 +1606,40 @@ impl App {
                     "CLI Push needs an open SSH or serial session.".into(),
                 ));
             }
+            if s.input.is_none() || !s.info.connected {
+                return Err(LateError::Message(
+                    "Open the SSH or serial session on your computer first. CLI Push types into that terminal.".into(),
+                ));
+            }
         }
-        let mut lines = 0u32;
+        let mut lines: Vec<String> = Vec::new();
         for line in body.replace('\r', "").split('\n') {
             let t = line.trim();
             if t.is_empty() || t.starts_with('!') || t.starts_with('#') {
                 continue;
             }
+            let decision = self.check_command(session_id, t)?;
+            if !decision.allowed {
+                return Err(LateError::Message(format!(
+                    "Permit list denied `{t}`: {}. Push did not send any lines.",
+                    decision.reason
+                )));
+            }
+            lines.push(line.to_string());
+        }
+        if lines.is_empty() {
+            return Err(LateError::Message(
+                "Nothing to push. This draft has no CLI lines (comments or placeholder only). Render it, or use ansible format for a playbook.".into(),
+            ));
+        }
+        for line in &lines {
             self.write(session_id, format!("{line}\r").as_bytes())?;
-            lines += 1;
             std::thread::sleep(std::time::Duration::from_millis(40));
         }
         Ok(crate::stage::StagePushResult {
             ok: true,
             format: crate::stage::StageFormat::Cli,
-            display: format!("typed {lines} line(s) into session {session_id}"),
+            display: format!("typed {} line(s) into session {session_id}", lines.len()),
             exit_code: None,
             stdout_tail: String::new(),
             stderr_tail: String::new(),
@@ -2031,6 +2132,188 @@ mod stage_push_tests {
         );
         assert!(err.contains("your computer"), "{err}");
         assert!(!err.contains("PATH Push needs an SSH inventory device. Use Push CLI"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_without_session_keeps_saved_session_and_device() {
+        let (app, dir) = isolated_app();
+        let aruba = ssh_aruba_password(&app, Some("vault-secret"));
+        app.insert_test_session(ssh_session(&aruba.id));
+        let art = app
+            .stage_save(
+                "ansible",
+                "configure VLAN 2000",
+                None,
+                Some(&aruba.id),
+                Some("ssh-sess-1"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(art.session_id.as_deref(), Some("ssh-sess-1"));
+        assert_eq!(art.device_id.as_deref(), Some(aruba.id.as_str()));
+        let again = app
+            .stage_save(
+                "ansible",
+                "configure VLAN 2000",
+                Some(&art.body),
+                None,
+                None,
+                Some(&art.id),
+            )
+            .unwrap();
+        assert_eq!(again.session_id.as_deref(), Some("ssh-sess-1"));
+        assert_eq!(again.device_id.as_deref(), Some(aruba.id.as_str()));
+        assert!(again.body.contains("vlan 2000"), "{}", again.body);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_push_uses_ssh_session_device_when_device_id_omitted() {
+        let (app, dir) = isolated_app();
+        let aruba = ssh_aruba_password(&app, Some("vault-secret"));
+        app.insert_test_session(ssh_session(&aruba.id));
+        let art = app
+            .stage_save(
+                "ansible",
+                "configure VLAN 2000",
+                None,
+                None,
+                Some("ssh-sess-1"),
+                None,
+            )
+            .unwrap();
+        assert!(art.body.contains("vlan 2000"), "{}", art.body);
+        assert!(art.body.contains("name VLAN2000"), "{}", art.body);
+        assert!(!art.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+        let target = app
+            .resolve_push_target(None, Some("ssh-sess-1"), &art)
+            .unwrap()
+            .expect("SSH session inventory row is enough for PATH Push");
+        assert_eq!(target.host, "192.0.2.80");
+        assert_eq!(target.vendor, Vendor::AosCx);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn push_prepare_fills_placeholder_when_aoscx_device_is_known() {
+        let (app, dir) = isolated_app();
+        let aruba = ssh_aruba_password(&app, Some("vault-secret"));
+        let placeholder = "---\n- name: vlan\n  hosts: late_targets\n  tasks:\n    - name: apply\n      ansible.netcommon.cli_config:\n        config: |\n          # Replace with vendor syntax for: configure VLAN 2000\n";
+        let art = app
+            .stage_save(
+                "ansible",
+                "configure VLAN 2000",
+                Some(placeholder),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            art.body.to_ascii_lowercase().contains("replace with vendor syntax")
+                || art.vendor == "generic",
+            "{}",
+            art.body
+        );
+        let filled = app
+            .stage_plan(
+                Some(&art.id),
+                "ansible",
+                "configure VLAN 2000",
+                Some(placeholder),
+                Some(&aruba.id),
+                None,
+            );
+        match filled {
+            Ok(plan) => {
+                let play = std::path::PathBuf::from(plan.file.unwrap());
+                let body = std::fs::read_to_string(&play).unwrap();
+                assert!(body.contains("vlan 2000"), "{body}");
+                assert!(body.contains("name VLAN2000"), "{body}");
+                assert!(!body.to_ascii_lowercase().contains("replace with vendor syntax"));
+            }
+            Err(e) => {
+                let m = e.to_string();
+                assert!(
+                    m.contains("ansible-playbook") || m.contains("not installed"),
+                    "unexpected plan error: {m}"
+                );
+                let loaded = app.stage_get(&art.id).unwrap();
+                assert!(loaded.body.contains("vlan 2000"), "{}", loaded.body);
+                assert!(!loaded.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_push_refuses_placeholder_and_permit_denied() {
+        let (app, dir) = isolated_app();
+        let aruba = ssh_aruba_password(&app, Some("vault-secret"));
+        app.insert_test_session(ssh_session(&aruba.id));
+        let err = app
+            .stage_push(
+                None,
+                "cli",
+                "configure VLAN 2000",
+                Some("# Replace with vendor syntax for: vlan\n"),
+                Some(&aruba.id),
+                Some("ssh-sess-1"),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Open the SSH") || err.contains("Nothing to push") || err.contains("placeholder"),
+            "{err}"
+        );
+
+        let (in_tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        {
+            let mut inner = app.inner.lock();
+            if let Some(s) = inner.sessions.get_mut("ssh-sess-1") {
+                s.input = Some(in_tx);
+                s.info.connected = true;
+            }
+        }
+        let err = app
+            .stage_push(
+                None,
+                "cli",
+                "reload",
+                Some("reload\n"),
+                Some(&aruba.id),
+                Some("ssh-sess-1"),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Permit list") || err.contains("denied"), "{err}");
+        assert!(err.contains("did not send") || err.to_ascii_lowercase().contains("reload"), "{err}");
+
+        let ok = app
+            .stage_push(
+                None,
+                "cli",
+                "configure VLAN 2000",
+                Some("configure terminal\nvlan 2000\nname VLAN2000\nend\n"),
+                Some(&aruba.id),
+                Some("ssh-sess-1"),
+            )
+            .unwrap();
+        assert!(ok.ok);
+        assert!(ok.display.contains("4 line"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stage_delete_removes_saved_draft() {
+        let (app, dir) = isolated_app();
+        let art = app
+            .stage_save("cli", "ntp", Some("show ntp\n"), None, None, None)
+            .unwrap();
+        assert_eq!(app.stage_list().unwrap().len(), 1);
+        app.stage_delete(&art.id).unwrap();
+        assert!(app.stage_list().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
