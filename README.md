@@ -20,7 +20,7 @@ That is the whole idea.
 
 ## Install
 
-The easy way: download a ready-made app from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.6](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.6)). Pick the file that matches your computer:
+The easy way: download a ready-made app from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.7](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.7)). Pick the file that matches your computer:
 
 | Your computer | File | What you do |
 |---|---|---|
