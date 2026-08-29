@@ -27,6 +27,35 @@ export const VENDORS: Vendor[] = [
   "generic",
 ];
 
+export function vendorLabel(v: Vendor | string): string {
+  switch (v) {
+    case "aos_cx":
+      return "AOS-CX (Aruba)";
+    case "arista_eos":
+      return "EOS (Arista)";
+    case "cisco_ios":
+      return "Cisco IOS";
+    case "cisco_ios_xe":
+      return "Cisco IOS-XE";
+    case "cisco_nxos":
+      return "Cisco NX-OS";
+    case "junos":
+      return "Junos";
+    case "panos":
+      return "PAN-OS";
+    case "fortios":
+      return "FortiOS";
+    case "routeros":
+      return "RouterOS";
+    case "linux":
+      return "Linux";
+    case "generic":
+      return "generic (auto-detect)";
+    default:
+      return v;
+  }
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -406,7 +435,11 @@ export interface PaneState {
   kind: SessionKind | "empty" | "stage";
   stageId?: string;
   stageFormat?: string;
-  /** Bumped to remount Staging when starting a blank draft. */
+  stageIntent?: string;
+  /** Seeded when the helper writes a draft so the visible editor is not left on a blank buffer. */
+  stageBody?: string;
+  stageSessionId?: string;
+  /** Bumped to remount Staging when starting a blank draft or applying a tool seed. */
   stageEpoch?: number;
   session?: SessionInfo;
   deviceId?: string;

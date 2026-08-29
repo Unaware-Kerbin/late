@@ -36,6 +36,20 @@ impl Vendor {
         }
     }
 
+    pub const ALL: [Vendor; 11] = [
+        Vendor::Junos,
+        Vendor::CiscoIos,
+        Vendor::CiscoIosXe,
+        Vendor::CiscoNxos,
+        Vendor::AristaEos,
+        Vendor::Panos,
+        Vendor::Linux,
+        Vendor::Fortios,
+        Vendor::Routeros,
+        Vendor::AosCx,
+        Vendor::Generic,
+    ];
+
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "junos" | "juniper" => Vendor::Junos,

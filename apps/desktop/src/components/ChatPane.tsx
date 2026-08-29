@@ -26,6 +26,7 @@ import {
   type InferenceStatus,
   type LocalModel,
 } from "../store";
+import { stageOpenFromToolDetail } from "../lib/stageDrafts";
 import { onShellDragEnd, onShellDragStart } from "../shellDnD";
 import { isAgentStacked, MODELS_H } from "../shell";
 import {
@@ -886,10 +887,7 @@ export function ChatPane() {
             else if (e.status === "ok") {
               setThinking("Thinking about the result");
               if (name === "propose_staged_artifact") {
-                const detail = e.detail && typeof e.detail === "object" ? (e.detail as Record<string, unknown>) : {};
-                const sid = String(detail.id ?? "");
-                const fmt = String(detail.format ?? "");
-                openStagePane(sid || undefined, fmt || undefined);
+                openStagePane(stageOpenFromToolDetail(e.detail));
               }
             }
             else if (e.status === "denied") {

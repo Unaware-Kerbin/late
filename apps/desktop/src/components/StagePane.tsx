@@ -4,6 +4,7 @@ import {
   isSshInventoryDevice,
   pushSessionChoices,
   readStageArt,
+  resolveLivePushSession,
   resolvePathDeviceId,
   type StageArtFields,
 } from "../lib/stageDrafts";
@@ -105,13 +106,16 @@ export function StagePane({ pane }: { pane: PaneState }) {
   const sessions = useApp((s) => s.sessions);
   const devices = useApp((s) => s.inventory.devices);
   const [format, setFormat] = useState<StageFormat>(() => coerceFormat(pane.stageFormat));
-  const [intent, setIntent] = useState("");
-  const [body, setBody] = useState("");
+  const [intent, setIntent] = useState(() => pane.stageIntent ?? "");
+  const [body, setBody] = useState(() => pane.stageBody ?? "");
   const [ask, setAsk] = useState("");
   const [id, setId] = useState(pane.stageId ?? "");
   const [vendor, setVendor] = useState("");
   const [deviceId, setDeviceId] = useState(pane.deviceId ?? "");
-  const [sessionId, setSessionId] = useState(pane.session?.id ?? "");
+  const pushable = useMemo(() => pushSessionChoices(sessions), [sessions]);
+  const [sessionId, setSessionId] = useState(() =>
+    resolveLivePushSession(pane.stageSessionId || pane.session?.id || "", sessions),
+  );
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [plan, setPlan] = useState<StagePlan | null>(null);
@@ -121,7 +125,6 @@ export function StagePane({ pane }: { pane: PaneState }) {
   const [draftQuery, setDraftQuery] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
-  const pushable = useMemo(() => pushSessionChoices(sessions), [sessions]);
   const pathFormat = format !== "cli";
   const sshDevices = useMemo(() => devices.filter(isSshInventoryDevice), [devices]);
   const deviceChoices = pathFormat ? sshDevices : devices;
@@ -157,6 +160,10 @@ export function StagePane({ pane }: { pane: PaneState }) {
   }, [pane.stageFormat]);
 
   useEffect(() => {
+    setSessionId((cur) => resolveLivePushSession(cur || pane.stageSessionId || "", pushable));
+  }, [pushable, pane.stageSessionId]);
+
+  useEffect(() => {
     if (!pane.stageId) return;
     void load(pane.stageId);
   }, [pane.stageId]);
@@ -190,35 +197,35 @@ export function StagePane({ pane }: { pane: PaneState }) {
     }
   }
 
-  function apply(art: StageArtFields) {
+  function apply(art: StageArtFields, opts?: { keepSeedBody?: boolean }) {
     setId(art.id);
     setFormat(art.format);
-    setIntent(art.intent);
-    setBody(art.body);
+    setIntent(art.intent || pane.stageIntent || "");
+    if (art.body.trim() || !opts?.keepSeedBody) setBody(art.body);
+    else if (pane.stageBody) setBody(pane.stageBody);
     setVendor(art.vendor);
     setAsk(art.ask);
-    const sess = art.sessionId;
-    if (sess) setSessionId(sess);
+    const sess = resolveLivePushSession(art.sessionId || pane.stageSessionId || "", pushable);
+    setSessionId(sess);
     const path = art.format !== "cli";
     const resolved = path
       ? resolvePathDeviceId(art.deviceId, sess || sessionId, sessions, devices)
       : art.deviceId;
-    if (resolved) setDeviceId(resolved);
-    else if (art.deviceId) setDeviceId(art.deviceId);
+    setDeviceId(resolved || art.deviceId || pane.deviceId || "");
   }
 
   async function load(stageId: string) {
     try {
       const art = readStageArt(await rpc.call<unknown>("stage.get", { id: stageId }));
-      apply(art);
+      apply(art, { keepSeedBody: Boolean(pane.stageBody?.trim()) });
     } catch (err) {
       toast("error", err instanceof Error ? err.message : String(err));
     }
   }
 
-  function commonParams() {
+  function commonParams(sessionOverride?: string) {
     const path = format !== "cli";
-    const sess = sessionId || undefined;
+    const sess = (sessionOverride !== undefined ? sessionOverride : sessionId) || undefined;
     const device = path
       ? resolvePathDeviceId(deviceId, sessionId, sessions, devices) || deviceId || undefined
       : deviceId || undefined;
@@ -278,8 +285,10 @@ export function StagePane({ pane }: { pane: PaneState }) {
       toast("error", "Nothing to push.");
       return;
     }
+    const liveSess = format === "cli" ? resolveLivePushSession(sessionId, pushable) : sessionId;
+    if (liveSess && liveSess !== sessionId) setSessionId(liveSess);
     const pathDevice = pathFormat
-      ? resolvePathDeviceId(deviceId, sessionId, sessions, devices) || deviceId
+      ? resolvePathDeviceId(deviceId, liveSess, sessions, devices) || deviceId
       : deviceId;
     if (format !== "cli") {
       const d = devices.find((x) => x.id === pathDevice);
@@ -290,20 +299,19 @@ export function StagePane({ pane }: { pane: PaneState }) {
         );
         return;
       }
-    } else if (!sessionId) {
+    } else if (!liveSess) {
       toast("error", "Pick an open SSH or serial session for Push CLI.");
       return;
     }
     setBusy(true);
     try {
-      const art = readStageArt(await rpc.call<unknown>("stage.save", commonParams()));
+      const art = readStageArt(await rpc.call<unknown>("stage.save", commonParams(liveSess)));
       apply(art);
       await refreshList();
       const savedId = art.id || id;
       setPushId(savedId);
-      if (savedId) openStagePane(savedId, art.format);
       const next = await rpc.call<StagePlan>("stage.plan", {
-        ...commonParams(),
+        ...commonParams(liveSess),
         id: savedId || undefined,
         body: art.body || body,
         deviceId: pathDevice || undefined,
@@ -321,13 +329,19 @@ export function StagePane({ pane }: { pane: PaneState }) {
   async function confirmPush() {
     setBusy(true);
     try {
+      const liveSess = format === "cli" ? resolveLivePushSession(sessionId, pushable) : sessionId;
+      if (format === "cli" && !liveSess) {
+        toast("error", "Pick an open SSH or serial session for Push CLI.");
+        setBusy(false);
+        return;
+      }
       const pathDevice = pathFormat
-        ? resolvePathDeviceId(deviceId, sessionId, sessions, devices) || deviceId
+        ? resolvePathDeviceId(deviceId, liveSess, sessions, devices) || deviceId
         : deviceId;
       const result = await rpc.call<StagePushResult>(
         "stage.push",
         {
-          ...commonParams(),
+          ...commonParams(liveSess),
           id: pushId || id || undefined,
           deviceId: pathDevice || undefined,
           device_id: pathDevice || undefined,

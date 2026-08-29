@@ -13,7 +13,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/stageEditorLang.test.ts src/lib/stageDrafts.test.ts src/mcpPick.test.ts src/termHighlight.test.ts",
+    "test": "tsx --test src/lib/stageEditorLang.test.ts src/lib/stageDrafts.test.ts src/mcpPick.test.ts src/termHighlight.test.ts src/lib/permitList.test.ts",
     "tauri": "tauri",
     "native": "env -u ELECTRON_RUN_AS_NODE electron --no-sandbox electron/main.cjs",
     "tauri:dev": "tauri dev",

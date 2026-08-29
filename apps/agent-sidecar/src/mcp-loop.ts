@@ -19,6 +19,9 @@ import {
   mcpThreadPollIdle,
   operatorWantsAllowlist,
   parseMcpLateTool,
+  firstLiveSessionUuid,
+  isLiveSessionUuid,
+  preferMcpStagedTool,
   type McpSpeakerTurn,
   type ParsedMcpTool,
 } from "./mcp-chat-format.js";
@@ -41,7 +44,7 @@ import {
   restOriginsFromMcpUrl,
 } from "./orch-rest.js";
 import { assertChatAllowed } from "./openai-loop.js";
-import { executeTool, liveSessionContext, type ToolCtx } from "./tools.js";
+import { executeTool, inferNamedStageTool, liveSessionContext, type ToolCtx } from "./tools.js";
 import { MAX_ROUNDS, SYSTEM_PROMPT, type ChatMessage, type SseEvent } from "./types.js";
 
 export {
@@ -77,6 +80,8 @@ export {
   mcpThreadPollIdle,
   operatorWantsAllowlist,
   parseMcpLateTool,
+  preferMcpStagedTool,
+  firstLiveSessionUuid,
 } from "./mcp-chat-format.js";
 export { firstReachableMcpUrl, mcpDiscoverCandidates } from "./mcp-discover.js";
 export { parseMcpCatalogAgents } from "./mcp-format.js";
@@ -140,6 +145,76 @@ async function emitNewSpeakers(
   return added;
 }
 
+/** When debate JSON is missing but the operator asked for a playbook, still fill Staging on your computer. */
+export function mcpStagedFallback(
+  operatorTurn: string,
+  parsed: ParsedMcpTool | null,
+  live: string,
+): ParsedMcpTool | null {
+  const format = inferNamedStageTool(operatorTurn);
+  if (!format) return parsed;
+  if (parsed?.name === "propose_staged_artifact") return parsed;
+  const sessionId = firstLiveSessionUuid(live) ?? "";
+  return {
+    name: "propose_staged_artifact",
+    late: true,
+    args: {
+      format,
+      intent: operatorTurn.replace(/\s+/g, " ").trim().slice(0, 200) || `configure ${format}`,
+      ...(sessionId ? { session_id: sessionId } : {}),
+    },
+  };
+}
+
+export function bindLiveSessionId(parsed: ParsedMcpTool | null, live: string): ParsedMcpTool | null {
+  if (!parsed?.late) return parsed;
+  const sid = String(parsed.args.session_id ?? "").trim();
+  if (sid && isLiveSessionUuid(sid)) return parsed;
+  const liveId = firstLiveSessionUuid(live);
+  if (!liveId) return parsed;
+  return { ...parsed, args: { ...parsed.args, session_id: liveId } };
+}
+
+function stagedHasEditorBody(t: ParsedMcpTool | null): boolean {
+  return Boolean(t && typeof t.args.body === "string" && t.args.body.trim());
+}
+
+/** Omit-body ansible still fills Staging when the operator asked for a playbook. Body-seed always fills. */
+function shouldExecuteStaged(staged: ParsedMcpTool | null, operatorTurn: string): boolean {
+  if (!staged) return false;
+  if (stagedHasEditorBody(staged)) return true;
+  if (inferNamedStageTool(operatorTurn)) return true;
+  return /\b(?:write|create|generate|draft)\b.{0,40}\bconfig\b/i.test(operatorTurn);
+}
+
+/** Debate may emit propose_command plus a staged JSON with body — execute the draft that has editor text. */
+export function parseExtractedTool(
+  operatorTurn: string,
+  extracted: ReturnType<typeof extractMcpAssistantText>,
+  live: string,
+): ParsedMcpTool | null {
+  const opts = { lastLate: true as const, operatorTurn };
+  const chunks = [
+    extracted.text,
+    extracted.pendingSummary ?? "",
+    ...extracted.speakers.map((s) => s.content),
+  ];
+  const found: ParsedMcpTool[] = [];
+  let best: ParsedMcpTool | null = null;
+  for (const chunk of chunks) {
+    if (!chunk?.trim()) continue;
+    const parsed = parseMcpLateTool(chunk, opts);
+    if (!parsed) continue;
+    found.push(parsed);
+    if (parsed.late) best = parsed;
+  }
+  const staged = preferMcpStagedTool(found, operatorTurn);
+  if (shouldExecuteStaged(staged, operatorTurn)) return bindLiveSessionId(staged, live);
+  const cmd = [...found].reverse().find((t) => t.late && t.name !== "propose_staged_artifact") ?? null;
+  if (cmd) return bindLiveSessionId(mcpStagedFallback(operatorTurn, cmd, live), live);
+  return bindLiveSessionId(mcpStagedFallback(operatorTurn, staged ?? best, live), live);
+}
+
 async function flushExtracted(
   operatorTurn: string,
   extracted: ReturnType<typeof extractMcpAssistantText>,
@@ -147,8 +222,9 @@ async function flushExtracted(
   emit: (e: SseEvent) => void,
   token: string,
   origins: string[],
+  live: string,
 ): Promise<{ assistantText: string; parsed: ParsedMcpTool | null; ignoredDump: boolean }> {
-  const parsed = parseMcpLateTool(extracted.text, { lastLate: true, operatorTurn });
+  const parsed = parseExtractedTool(operatorTurn, extracted, live);
   const visible = mcpVisibleReply(operatorTurn, extracted.text, parsed);
   const pending = extracted.pending
     ? `\n\n${extracted.pending} Approve that in the MCP program — Late cannot click it.`
@@ -341,6 +417,7 @@ export async function runMcpChat(opts: {
         opts.emit,
         restCtx.token,
         restCtx.origins,
+        deviceBlock,
       );
       if (flushed.assistantText) {
         assistantText += assistantText && !flushed.assistantText.startsWith("\n") ? `\n${flushed.assistantText}` : flushed.assistantText;

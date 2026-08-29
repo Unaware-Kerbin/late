@@ -46,7 +46,27 @@ import {
   useApp,
 } from "../store";
 import { rpc } from "../lib/rpc";
-import { VENDORS, coerceChatBackend, emptyDevice, isLoopbackInferenceUrl, newId, normalizeFolderPath, type AuthProfile, type Device, type DeviceKind } from "../types";
+import {
+  addPermitToken,
+  coercePermitPolicy,
+  coercePermitPolicyList,
+  isDangerousPermitVerb,
+  removePermitToken,
+  type PermitPolicyView,
+} from "../lib/permitList";
+import {
+  VENDORS,
+  coerceChatBackend,
+  emptyDevice,
+  isLoopbackInferenceUrl,
+  newId,
+  normalizeFolderPath,
+  vendorLabel,
+  type AuthProfile,
+  type Device,
+  type DeviceKind,
+  type Vendor,
+} from "../types";
 
 function trap(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -766,6 +786,7 @@ function SettingsModal() {
           The folder must stay under your home directory. Blank command uses that folder&apos;s{" "}
           <code>tsx</code> plus <code>src/index.ts</code> (or <code>dist/index.js</code>).
         </p>
+        <PermitListSection />
         {defaultBackend === "cursor" && (
           <p className="hint">
             Cursor uses the API key stored under API keys. vLLM Start/Download stay in the Agent pane when Local is selected; llama.cpp and Ollama have their own download/pull controls.
@@ -993,6 +1014,183 @@ function SettingsModal() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function PermitListSection() {
+  const [vendor, setVendor] = useState<Vendor>("aos_cx");
+  const [views, setViews] = useState<PermitPolicyView[]>([]);
+  const [allow, setAllow] = useState<string[]>([]);
+  const [token, setToken] = useState("");
+  const [warn, setWarn] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const current = views.find((v) => v.vendor === vendor) ?? null;
+  const linux = vendor === "linux" || Boolean(current?.unrestricted);
+
+  async function load() {
+    setErr("");
+    try {
+      setViews(coercePermitPolicyList(await rpc.call<unknown>("policy.list", {})));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  useEffect(() => {
+    const row = views.find((v) => v.vendor === vendor);
+    setAllow(row ? [...row.allow] : []);
+    setToken("");
+    setWarn("");
+  }, [vendor, views]);
+
+  function add() {
+    const next = addPermitToken(allow, token);
+    if ("error" in next) {
+      setWarn(next.error);
+      return;
+    }
+    setAllow(next.allow);
+    setToken("");
+    setWarn(
+      isDangerousPermitVerb(next.token)
+        ? `${next.token} is a dangerous verb (reload / erase / shell). Overlay deny will no longer block it. Approve is still required. Push still needs a click.`
+        : "",
+    );
+  }
+
+  async function save() {
+    if (linux) return;
+    setBusy(true);
+    setErr("");
+    try {
+      const saved = coercePermitPolicy(await rpc.call<unknown>("policy.set", { vendor, allow }));
+      if (saved) {
+        setViews((rows) => {
+          const rest = rows.filter((r) => r.vendor !== saved.vendor);
+          return [...rest, saved];
+        });
+        setAllow([...saved.allow]);
+        toast("ok", `Permit list saved for ${vendorLabel(saved.vendor)}`);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="permit-list">
+      <h3>Permit list</h3>
+      <p className="hint">
+        Commands Late may type on the switch on <strong>your computer</strong> after you click{" "}
+        <strong>Approve</strong>. This is not the MCP grant-folder list (folders a helper may write
+        after Approve). Linux has no permit list and no always-allow.
+      </p>
+      <label>
+        Vendor
+        <select value={vendor} onChange={(e) => setVendor(e.target.value as Vendor)}>
+          {VENDORS.map((v) => (
+            <option key={v} value={v}>
+              {vendorLabel(v)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {linux ? (
+        <p className="hint">
+          Linux sessions have no permit list. Every command needs an explicit Approve click.
+          Always-allow stays off.
+        </p>
+      ) : (
+        <>
+          <p className="hint">
+            Allowed verbs
+            {current?.path ? (
+              <>
+                {" "}
+                — saved to <code>{current.path}</code>
+              </>
+            ) : null}
+          </p>
+          <div className="permit-verbs" aria-label="Allowed verbs">
+            {allow.length === 0 ? <span className="hint">None in the overlay file.</span> : null}
+            {allow.map((v) => (
+              <span key={v} className={isDangerousPermitVerb(v) ? "permit-verb danger" : "permit-verb"}>
+                {v}
+                <button
+                  type="button"
+                  className="permit-verb-x"
+                  aria-label={`Remove ${v}`}
+                  onClick={() => {
+                    setAllow(removePermitToken(allow, v));
+                    setWarn("");
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+          {current && current.builtinAllow.length > 0 ? (
+            <>
+              <p className="hint">
+                Also allowed by Late (built-in floor — removing them from the file does not block them)
+              </p>
+              <div className="permit-verbs" aria-label="Built-in allowed verbs">
+                {current.builtinAllow.map((v) => (
+                  <span key={v} className="permit-verb floor">
+                    {v}
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : null}
+          <p className="hint">Denied (deny still wins unless you explicitly add the verb above)</p>
+          <div className="permit-verbs" aria-label="Denied verbs">
+            {(current?.deny ?? []).map((v) => (
+              <span key={v} className="permit-verb deny">
+                {v}
+              </span>
+            ))}
+            {(current?.denySubstrings ?? []).map((v) => (
+              <span key={`sub-${v}`} className="permit-verb deny">
+                contains {v}
+              </span>
+            ))}
+          </div>
+          <div className="url-check">
+            <label>
+              Add allow token
+              <input
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="name"
+                aria-label="Add allow token"
+              />
+            </label>
+            <button type="button" className="ghost" onClick={add}>
+              Add
+            </button>
+          </div>
+          {warn ? <p className="hint warn">{warn}</p> : null}
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button type="button" className="ghost" disabled={busy} onClick={() => void load()}>
+              Reload
+            </button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void save()}>
+              {busy ? "Saving…" : "Save permit list"}
+            </button>
+          </div>
+        </>
+      )}
+      {err ? <p className="hint warn">{err}</p> : null}
     </div>
   );
 }
@@ -1239,7 +1437,7 @@ function DeviceModal({ device }: { device: Device }) {
             >
               {VENDORS.map((v) => (
                 <option key={v} value={v}>
-                  {v === "aos_cx" ? "AOS-CX (Aruba)" : v === "generic" ? "generic (auto-detect)" : v}
+                  {vendorLabel(v)}
                 </option>
               ))}
             </select>

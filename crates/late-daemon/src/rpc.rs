@@ -232,6 +232,16 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 Ok(serde_json::to_value(app.check_policy(vendor, &cmd))?)
             }
         }
+        "policy.list" => Ok(serde_json::to_value(app.policy_list())?),
+        "policy.get" => {
+            let vendor = Vendor::parse(&req_str(&params, &["vendor"])?);
+            Ok(serde_json::to_value(app.policy_get(vendor))?)
+        }
+        "policy.set" => {
+            let vendor = Vendor::parse(&req_str(&params, &["vendor"])?);
+            let allow = parse_string_list(&params, &["allow", "tokens"])?;
+            Ok(serde_json::to_value(app.policy_set_allow(vendor, allow)?)?)
+        }
         "sftp.list" | "sftp.ls" | "scp.list" | "scp.ls" => {
             let id = req_str(&params, &["id", "session_id"])?;
             let path = pstr(&params, &["path"]).unwrap_or_else(|| "/".into());
@@ -574,6 +584,28 @@ fn pstr(v: &Value, keys: &[&str]) -> Option<String> {
 
 fn req_str(v: &Value, keys: &[&str]) -> Result<String, LateError> {
     pstr(v, keys).ok_or_else(|| LateError::Message(format!("missing {}", keys.join("/"))))
+}
+
+fn parse_string_list(v: &Value, keys: &[&str]) -> Result<Vec<String>, LateError> {
+    for k in keys {
+        match v.get(*k) {
+            Some(Value::Array(arr)) => {
+                return Ok(arr
+                    .iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect());
+            }
+            Some(Value::String(s)) => {
+                return Ok(s
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect());
+            }
+            _ => {}
+        }
+    }
+    Err(LateError::Message(format!("missing {}", keys.join("/"))))
 }
 
 fn to_snake(v: Value) -> Value {

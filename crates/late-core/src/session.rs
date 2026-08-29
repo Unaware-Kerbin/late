@@ -9,7 +9,7 @@ use crate::inventory::InventoryStore;
 use crate::known_hosts::KnownHosts;
 use crate::local_pty;
 use crate::pcap::{self, CaptureInfo, LiveCapture};
-use crate::policy::PolicyEngine;
+use crate::policy::{self, PolicyEngine, PolicyView};
 use crate::providers::ProviderVault;
 use crate::redact::Redactor;
 use crate::secrets::SecretStore;
@@ -61,7 +61,7 @@ pub struct App {
     pub inventory: InventoryStore,
     pub secrets: SecretStore,
     pub providers: ProviderVault,
-    pub policy: PolicyEngine,
+    pub policy: Arc<Mutex<PolicyEngine>>,
     pub events: broadcast::Sender<AppEvent>,
     inner: Arc<Mutex<Inner>>,
 }
@@ -120,7 +120,7 @@ impl App {
             providers: ProviderVault::open(paths.clone())?,
             paths: paths.clone(),
             settings: Arc::new(Mutex::new(settings)),
-            policy,
+            policy: Arc::new(Mutex::new(policy)),
             events,
             inner: Arc::new(Mutex::new(Inner {
                 sessions: HashMap::new(),
@@ -314,19 +314,62 @@ impl App {
     }
 
     pub fn check_command(&self, session_id: &str, command: &str) -> Result<PolicyDecision> {
-        let mut inner = self.inner.lock();
-        let s = inner
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| LateError::NotFound(session_id.into()))?;
-        let text = String::from_utf8_lossy(&s.scrollback);
-        let vendor = Vendor::infer_from_text(&text, s.vendor);
-        s.vendor = vendor;
-        Ok(self.policy.check(vendor, command))
+        let vendor = {
+            let mut inner = self.inner.lock();
+            let s = inner
+                .sessions
+                .get_mut(session_id)
+                .ok_or_else(|| LateError::NotFound(session_id.into()))?;
+            let text = String::from_utf8_lossy(&s.scrollback);
+            let vendor = Vendor::infer_from_text(&text, s.vendor);
+            s.vendor = vendor;
+            vendor
+        };
+        Ok(self.policy.lock().check(vendor, command))
     }
 
     pub fn check_policy(&self, vendor: Vendor, command: &str) -> PolicyDecision {
-        self.policy.check(vendor, command)
+        self.policy.lock().check(vendor, command)
+    }
+
+    pub fn policy_list(&self) -> Vec<PolicyView> {
+        let dir = self.paths.config.join("policies");
+        let engine = self.policy.lock();
+        Vendor::ALL
+            .iter()
+            .map(|v| engine.view(*v, &dir))
+            .collect()
+    }
+
+    pub fn policy_get(&self, vendor: Vendor) -> PolicyView {
+        let dir = self.paths.config.join("policies");
+        self.policy.lock().view(vendor, &dir)
+    }
+
+    pub fn policy_set_allow(&self, vendor: Vendor, allow: Vec<String>) -> Result<PolicyView> {
+        if vendor == Vendor::Linux {
+            return Err(LateError::Message(
+                "Linux has no permit list. Every command still needs Approve. Always-allow stays off."
+                    .into(),
+            ));
+        }
+        let dir = self.paths.config.join("policies");
+        std::fs::create_dir_all(&dir)?;
+        let path = policy::overlay_path(&dir, vendor);
+        let current = if path.is_file() {
+            let raw = std::fs::read_to_string(&path)?;
+            serde_yaml::from_str(&raw)?
+        } else {
+            self.policy.lock().get(vendor)
+        };
+        let saved = policy::apply_allow_list(current, allow)?;
+        policy::write_vendor_policy(&path, &saved)?;
+        {
+            let bundled = first_bundled_policy_dir();
+            let mut engine = self.policy.lock();
+            engine.reload(&bundled, &dir)?;
+        }
+        Ok(self.policy_get(vendor))
     }
 
     pub fn send_break(&self, session_id: &str) -> Result<()> {
@@ -1796,9 +1839,15 @@ fn seed_bundled_policies(paths: &LatePaths) -> Result<()> {
         }
         for entry in std::fs::read_dir(&bundled)? {
             let entry = entry?;
+            let src = entry.path();
+            if !src.is_file() {
+                continue;
+            }
             let to = dest.join(entry.file_name());
-            if !to.exists() && entry.path().is_file() {
-                let _ = std::fs::copy(entry.path(), to);
+            if !to.exists() {
+                let _ = std::fs::copy(&src, &to);
+            } else {
+                let _ = crate::policy::absorb_bundled_allow(&to, &src);
             }
         }
         break;
@@ -1814,6 +1863,23 @@ mod stage_push_tests {
     fn isolated_app() -> (App, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("late-stage-push-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        (app, dir)
+    }
+
+    fn boot_with_stale_aos_cx_policy() -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("late-stage-stale-{}", Uuid::new_v4()));
+        let dest = dir.join("policies");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(
+            dest.join("aos_cx.yaml"),
+            "vendor: aos_cx\nallow: [show, configure, vlan, end]\ndeny: [erase, reload, start-shell]\n",
+        )
+        .unwrap();
         let paths = LatePaths {
             config: dir.clone(),
             data: dir.clone(),
@@ -2169,6 +2235,50 @@ mod stage_push_tests {
     }
 
     #[test]
+    fn mcp_cli_body_save_keeps_session_for_cli_push() {
+        let (app, dir) = isolated_app();
+        let aruba = ssh_aruba_password(&app, Some("vault-secret"));
+        app.insert_test_session(ssh_session(&aruba.id));
+        let art = app
+            .stage_save(
+                "cli",
+                "configure VLAN 2500",
+                Some("vlan 2500\nname VLAN2500\n"),
+                None,
+                Some("ssh-sess-1"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(art.session_id.as_deref(), Some("ssh-sess-1"));
+        assert!(art.body.contains("vlan 2500"), "{}", art.body);
+        assert!(art.body.contains("name VLAN2500"), "{}", art.body);
+
+        let (in_tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        {
+            let mut inner = app.inner.lock();
+            if let Some(s) = inner.sessions.get_mut("ssh-sess-1") {
+                s.input = Some(in_tx);
+                s.info.connected = true;
+            }
+        }
+        let pushed = app
+            .stage_push(
+                Some(&art.id),
+                "cli",
+                "configure VLAN 2500",
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(pushed.ok, "{}", pushed.display);
+        assert!(pushed.display.contains("2 line"), "{}", pushed.display);
+        let first = rx.try_recv().expect("CLI Push must type into the saved session");
+        assert!(String::from_utf8_lossy(&first).contains("vlan 2500"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn path_push_uses_ssh_session_device_when_device_id_omitted() {
         let (app, dir) = isolated_app();
         let aruba = ssh_aruba_password(&app, Some("vault-secret"));
@@ -2302,6 +2412,87 @@ mod stage_push_tests {
             .unwrap();
         assert!(ok.ok);
         assert!(ok.display.contains("4 line"));
+
+        let vlan2500 = app
+            .stage_push(
+                None,
+                "cli",
+                "configure VLAN 2500",
+                Some("configure terminal\nvlan 2500\nname VLAN2500\nend\n"),
+                Some(&aruba.id),
+                Some("ssh-sess-1"),
+            )
+            .unwrap();
+        assert!(vlan2500.ok, "{}", vlan2500.display);
+        assert!(vlan2500.display.contains("4 line"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_push_vlan_name_works_when_config_yaml_omits_name() {
+        let (app, dir) = boot_with_stale_aos_cx_policy();
+        let aruba = ssh_aruba_password(&app, Some("vault-secret"));
+        app.insert_test_session(ssh_session(&aruba.id));
+        let (in_tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        {
+            let mut inner = app.inner.lock();
+            if let Some(s) = inner.sessions.get_mut("ssh-sess-1") {
+                s.input = Some(in_tx);
+                s.info.connected = true;
+            }
+        }
+        let name = app.check_command("ssh-sess-1", "name VLAN2500").unwrap();
+        assert!(name.allowed, "{}", name.reason);
+        let ok = app
+            .stage_push(
+                None,
+                "cli",
+                "configure VLAN 2500",
+                Some("configure terminal\nvlan 2500\nname VLAN2500\nend\n"),
+                Some(&aruba.id),
+                Some("ssh-sess-1"),
+            )
+            .unwrap();
+        assert!(ok.ok, "{}", ok.display);
+        let denied = app.check_command("ssh-sess-1", "reload").unwrap();
+        assert!(!denied.allowed, "{}", denied.reason);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn policy_set_allow_saves_yaml_and_reloads() {
+        let (app, dir) = isolated_app();
+        let listed = app.policy_list();
+        assert!(listed.iter().any(|p| p.vendor == "aos_cx"));
+        let linux = app.policy_get(Vendor::Linux);
+        assert!(linux.unrestricted);
+        assert!(!linux.allow_always_allow);
+        let err = app.policy_set_allow(Vendor::Linux, vec!["ls".into()]).unwrap_err();
+        assert!(err.to_string().contains("Linux has no permit list"));
+
+        let mut allow = app.policy_get(Vendor::AosCx).allow;
+        if !allow.iter().any(|a| a.eq_ignore_ascii_case("name")) {
+            allow.push("name".into());
+        }
+        let view = app.policy_set_allow(Vendor::AosCx, allow).unwrap();
+        assert!(view.allow.iter().any(|a| a.eq_ignore_ascii_case("name")));
+        let yaml = std::fs::read_to_string(dir.join("policies/aos_cx.yaml")).unwrap();
+        assert!(yaml.to_ascii_lowercase().contains("name"));
+        assert!(app.check_policy(Vendor::AosCx, "name VLAN2500").allowed);
+        assert!(!app.check_policy(Vendor::AosCx, "reload").allowed);
+
+        let without_name: Vec<String> = view
+            .allow
+            .into_iter()
+            .filter(|a| !a.eq_ignore_ascii_case("name"))
+            .collect();
+        let after = app.policy_set_allow(Vendor::AosCx, without_name).unwrap();
+        assert!(!after.allow.iter().any(|a| a.eq_ignore_ascii_case("name")));
+        assert!(after
+            .builtin_allow
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("name")));
+        assert!(app.check_policy(Vendor::AosCx, "name VLAN2500").allowed);
         let _ = std::fs::remove_dir_all(dir);
     }
 

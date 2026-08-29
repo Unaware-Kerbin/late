@@ -36,6 +36,7 @@ import {
   type ShellPaneId,
 } from "./shell";
 import { isHostKeyError, rpc, textToB64 } from "./lib/rpc";
+import { stageBodyAfterOpen, stageDeviceAfterOpen, stageSessionAfterOpen, stagingSeedRemounts } from "./lib/stageDrafts";
 import {
   coerceAuth,
   coerceInventory,
@@ -1343,7 +1344,20 @@ export function openPcapPane() {
   }));
 }
 
-export function openStagePane(stageId?: string, format?: string) {
+export type StagePaneOpen = {
+  stageId?: string;
+  format?: string;
+  intent?: string;
+  body?: string;
+  sessionId?: string;
+  deviceId?: string;
+};
+
+export function openStagePane(stageId?: string | StagePaneOpen, format?: string) {
+  if (stageId && typeof stageId === "object") {
+    revealStagePane(stageId);
+    return;
+  }
   revealStagePane({ stageId, format });
 }
 
@@ -1352,14 +1366,19 @@ export function newStageDraft() {
   revealStagePane({ clear: true });
 }
 
-function revealStagePane(opts: { stageId?: string; format?: string; clear?: boolean }) {
+function revealStagePane(opts: StagePaneOpen & { clear?: boolean }) {
   const existing = Object.values(state.panes).find((p) => p.kind === "stage");
+  const remount = stagingSeedRemounts(opts);
   const patch = (base: PaneState): PaneState => ({
     ...base,
     kind: "stage",
     stageId: opts.clear ? undefined : opts.stageId || base.stageId,
     stageFormat: opts.clear ? undefined : opts.format || base.stageFormat,
-    stageEpoch: opts.clear ? Date.now() : base.stageEpoch,
+    stageIntent: opts.clear ? undefined : opts.intent !== undefined ? opts.intent : base.stageIntent,
+    stageBody: stageBodyAfterOpen(base, opts),
+    stageSessionId: stageSessionAfterOpen(base, opts),
+    deviceId: stageDeviceAfterOpen(base, opts),
+    stageEpoch: remount ? Date.now() : base.stageEpoch,
   });
   if (existing) {
     const tab = state.tabs.find((t) => treeHasPane(t.tree, existing.id));

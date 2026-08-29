@@ -132,6 +132,8 @@ export function StageEditor({
   const monacoRef = useRef<MonacoNs | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const [failed, setFailed] = useState(false);
   const theme = useApp((s) => s.theme);
   const termFontSize = useApp((s) => s.termFontSize);
@@ -156,7 +158,7 @@ export function StageEditor({
         ensureProviders(monaco);
         defineLateTheme(monaco, theme);
         const lang = stageMonacoLanguage(format);
-        const model = monaco.editor.createModel(value, lang, monaco.Uri.parse(`inmemory://late/stage/${crypto.randomUUID()}`));
+        const model = monaco.editor.createModel(valueRef.current, lang, monaco.Uri.parse(`inmemory://late/stage/${crypto.randomUUID()}`));
         formatByModel.set(model.uri.toString(), format);
         const editor = monaco.editor.create(hostRef.current, {
           model,
@@ -184,6 +186,7 @@ export function StageEditor({
           placeholder,
         });
         editorRef.current = editor;
+        if (editor.getValue() !== valueRef.current) editor.setValue(valueRef.current);
         paintSecrets(monaco, model);
         sub = editor.onDidChangeModelContent(() => {
           const text = editor.getValue();

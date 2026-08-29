@@ -958,6 +958,58 @@ pre.fp {
   letter-spacing: 0;
 }
 .setting-switch.on .setting-switch-note { color: var(--amber); }
+.permit-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.permit-list h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.permit-verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+.permit-verb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text);
+}
+.permit-verb.deny {
+  color: var(--muted);
+  border-color: var(--line-strong);
+}
+.permit-verb.floor {
+  color: var(--muted);
+}
+.permit-verb.danger {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.permit-verb-x {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.permit-verb-x:hover { color: var(--text); }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 .palette {

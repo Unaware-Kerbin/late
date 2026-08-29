@@ -20,11 +20,56 @@ export type ParsedMcpTool = {
   late: boolean;
 };
 
+/** LLM JSON often puts real newlines inside "body":"...". Repair only those, not pretty-printed keys. */
+export function repairJsonNewlinesInStrings(raw: string): string {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (const c of raw) {
+    if (inStr) {
+      if (esc) {
+        out += c;
+        esc = false;
+        continue;
+      }
+      if (c === "\\") {
+        out += c;
+        esc = true;
+        continue;
+      }
+      if (c === "\"") {
+        out += c;
+        inStr = false;
+        continue;
+      }
+      if (c === "\n") {
+        out += "\\n";
+        continue;
+      }
+      if (c === "\r") {
+        out += "\\r";
+        continue;
+      }
+      out += c;
+      continue;
+    }
+    if (c === "\"") inStr = true;
+    out += c;
+  }
+  return out;
+}
+
 function jsonObjects(text: string): unknown[] {
   const out: unknown[] = [];
   const tryParse = (raw: string) => {
     try {
       out.push(JSON.parse(raw) as unknown);
+      return;
+    } catch {
+      /* unescaped newlines in strings */
+    }
+    try {
+      out.push(JSON.parse(repairJsonNewlinesInStrings(raw)) as unknown);
     } catch {
       /* skip */
     }
@@ -82,6 +127,63 @@ function toolFromObj(obj: unknown): ParsedMcpTool | null {
   return { name, args, late: LATE_INVESTIGATION_TOOLS.has(name) };
 }
 
+function isPreambleExample(t: ParsedMcpTool): boolean {
+  const sid = String(t.args.session_id ?? "");
+  if (/<uuid|<id>|from id=/i.test(sid)) return true;
+  const cmd = String(t.args.command ?? "");
+  if (cmd === "<cli>" || /^<.+>$/.test(cmd)) return true;
+  if (/<why>/.test(String(t.args.reason ?? ""))) return true;
+  return false;
+}
+
+function stagedBody(t: ParsedMcpTool): string {
+  return typeof t.args.body === "string" ? t.args.body : "";
+}
+
+function namedStageFormat(operatorTurn: string): string | null {
+  const hay = operatorTurn.toLowerCase();
+  if (/\bansible\b|\bplaybook\b/.test(hay)) return "ansible";
+  if (/\bnetmiko\b|\bparamiko\b/.test(hay)) return "netmiko";
+  if (/\bsalt(?:stack)?\b|\bsalt[- ]state\b|\.sls\b/.test(hay)) return "salt";
+  if (/\bchef\b|\bcookbook\b/.test(hay)) return "chef";
+  return null;
+}
+
+/** Prefer a draft that already has editor text. Named Ansible/Netmiko/Salt/Chef still wins so omit-body fill stays. */
+function pickStaged(pool: ParsedMcpTool[], operatorTurn = ""): ParsedMcpTool | null {
+  const staged = pool.filter((t) => t.name === "propose_staged_artifact");
+  if (!staged.length) return null;
+  const named = namedStageFormat(operatorTurn);
+  if (named) {
+    const match = [...staged].reverse().find((t) => String(t.args.format ?? "").toLowerCase() === named);
+    if (match) return withStagedSession(match, staged);
+  }
+  const withBody = [...staged].reverse().find((t) => stagedBody(t).trim());
+  if (withBody) return withStagedSession(withBody, staged);
+  const uuid = [...staged].reverse().find((t) => isLiveSessionUuid(String(t.args.session_id ?? "")));
+  return uuid ?? staged[staged.length - 1] ?? null;
+}
+
+/** Body-only JSON often omits session_id; keep a UUID/device from a sibling staged call. */
+function withStagedSession(picked: ParsedMcpTool, staged: ParsedMcpTool[]): ParsedMcpTool {
+  const sid = String(picked.args.session_id ?? "").trim();
+  const did = String(picked.args.device_id ?? picked.args.deviceId ?? "").trim();
+  const uuid = [...staged].reverse().find((t) => isLiveSessionUuid(String(t.args.session_id ?? "")));
+  const device = [...staged].reverse().find((t) => String(t.args.device_id ?? t.args.deviceId ?? "").trim());
+  if (isLiveSessionUuid(sid) && did) return picked;
+  const next = { ...picked.args };
+  if (!isLiveSessionUuid(sid) && uuid) next.session_id = uuid.args.session_id;
+  if (!did && device) {
+    const d = String(device.args.device_id ?? device.args.deviceId ?? "").trim();
+    if (d) next.device_id = d;
+  }
+  return { ...picked, args: next };
+}
+
+export function preferMcpStagedTool(pool: ParsedMcpTool[], operatorTurn = ""): ParsedMcpTool | null {
+  return pickStaged(pool, operatorTurn);
+}
+
 /** First JSON tool call in MCP text. Plain replies return null. Prefer last Late investigation tool in a round-table. */
 export function parseMcpLateTool(text: string, opts?: { lastLate?: boolean; operatorTurn?: string }): ParsedMcpTool | null {
   const found: ParsedMcpTool[] = [];
@@ -96,20 +198,37 @@ export function parseMcpLateTool(text: string, opts?: { lastLate?: boolean; oper
     const t = toolFromObj(obj);
     if (t) found.push(t);
   }
-  if (found.length === 0) return null;
-  const late = found.filter((t) => t.late);
-  const pool = late.length ? late : found;
+  const usable = found.filter((t) => !isPreambleExample(t));
+  if (usable.length === 0) return null;
+  const late = usable.filter((t) => t.late);
+  const pool = late.length ? late : usable;
   const op = opts?.operatorTurn ?? "";
-  if (/\bansible\b|\bplaybook\b/i.test(op)) {
-    const staged = [...pool].reverse().find((t) => t.name === "propose_staged_artifact");
-    if (staged) return staged;
-  }
+  const wantsDraft =
+    /\bansible\b|\bplaybook\b|\bnetmiko\b|\bsalt(?:stack)?\b|\bchef\b|\bcookbook\b/i.test(op) ||
+    /\b(?:write|create|generate|draft)\b.{0,40}\bconfig\b/i.test(op);
+  const staged = pickStaged(pool, op);
+  if (staged && (wantsDraft || opts?.lastLate || stagedBody(staged).trim())) return staged;
   if (opts?.lastLate) {
     const uuid = [...pool].reverse().find((t) => isLiveSessionUuid(String(t.args.session_id ?? "")));
     if (uuid) return uuid;
-    return pool[pool.length - 1] ?? found[found.length - 1] ?? null;
+    return pool[pool.length - 1] ?? usable[usable.length - 1] ?? null;
   }
-  return found[0] ?? null;
+  return staged ?? usable[0] ?? null;
+}
+
+export function compactLateToolJson(parsed: ParsedMcpTool): string {
+  return JSON.stringify({ tool: parsed.name, ...parsed.args });
+}
+
+/** Speakers often echo Late's SYSTEM wrap; keep the Late JSON so Staging still fills. */
+export function speakerTextForLateParse(raw: string): string | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const wrap = /^SYSTEM:/m.test(t) && /UNTRUSTED DEVICE OUTPUT/i.test(t);
+  if (!wrap) return t;
+  const parsed = parseMcpLateTool(t, { lastLate: true });
+  if (!parsed?.late) return null;
+  return compactLateToolJson(parsed);
 }
 
 const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -118,13 +237,21 @@ export function isLiveSessionUuid(id: string): boolean {
   return SESSION_UUID_RE.test(id.trim());
 }
 
+const LIVE_ID_EQ_RE =
+  /\bid=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/i;
+
+export function firstLiveSessionUuid(text: string): string | undefined {
+  const m = text.match(LIVE_ID_EQ_RE);
+  return m?.[1];
+}
+
 export function mcpJsonToolPreamble(): string {
   return [
     "You cannot run a shell, edit files, or open sockets on Late's computer. Credentials never appear in your context.",
     "If you need Late to run device CLI, an API GET, read more scrollback, or write a Staging draft, reply with a single JSON object and no other prose:",
     '{"tool":"propose_command","session_id":"<uuid from id= in UNTRUSTED DEVICE OUTPUT>","command":"<cli>","reason":"<why>","intent":"investigate"}',
     "session_id must be that live UUID. Never invent aos-cx or a nickname as session_id.",
-    "Playbook or Ansible → {\"tool\":\"propose_staged_artifact\",\"format\":\"ansible\",\"intent\":\"configure VLAN 2000\",\"session_id\":\"<uuid>\"} and omit body. format=cli is one-line only.",
+    "Playbook or Ansible → {\"tool\":\"propose_staged_artifact\",\"format\":\"ansible\",\"intent\":\"configure VLAN 2000\",\"session_id\":\"<uuid>\"} and omit body. format=cli may include a multiline session draft in body (AOS-CX: vlan <id> then name VLAN<id>).",
     "Allowed Late tools: propose_command, propose_api_get, propose_staged_artifact, list_open_sessions, read_scrollback, query_pcap, ask_user.",
     "Do not call chat_send, dispatch, start_vllm, or MCP write-grant or download tools. Late will not run those without the operator clicking Approve.",
     "Do not cite orchestrator source files. If attached untrusted output already answers the question, reply in plain text only.",
@@ -295,6 +422,7 @@ export function extractMcpAssistantText(raw: string): {
   text: string;
   threadId?: string;
   pending?: string;
+  pendingSummary?: string;
   speakers: McpSpeakerTurn[];
   thinking: McpThinkingTurn[];
   busy?: boolean;
@@ -329,9 +457,10 @@ export function extractMcpAssistantText(raw: string): {
         }
         if (typeof m.content !== "string" || !String(m.content).trim()) continue;
         const rawContent = String(m.content).trim();
-        if (/^SYSTEM:/m.test(rawContent) && /UNTRUSTED DEVICE OUTPUT/i.test(rawContent)) continue;
-        const skipped = isSkippedSpeaker(m.status, rawContent);
-        const content = skipped ? speakerSkipChip(label, rawContent) : rawContent;
+        const recovered = speakerTextForLateParse(rawContent);
+        if (recovered === null) continue;
+        const skipped = isSkippedSpeaker(m.status, recovered);
+        const content = skipped ? speakerSkipChip(label, recovered) : recovered;
         const logoUrl = typeof m.logoUrl === "string" && m.logoUrl.trim() ? m.logoUrl.trim() : undefined;
         speakers.push({
           speaker,
@@ -347,8 +476,13 @@ export function extractMcpAssistantText(raw: string): {
       }
       const pending =
         data.approvalRequired && typeof data.note === "string" && data.note.trim() ? data.note.trim() : "";
+      const pa = data.pendingApproval;
+      const pendingSummary =
+        pa && typeof pa === "object" && !Array.isArray(pa) && typeof (pa as Record<string, unknown>).summary === "string"
+          ? String((pa as Record<string, unknown>).summary)
+          : "";
       const busy = data.busy === true ? true : data.busy === false ? false : undefined;
-      return { text: bits.join("\n\n"), threadId, pending, speakers, thinking, busy };
+      return { text: bits.join("\n\n"), threadId, pending, pendingSummary, speakers, thinking, busy };
     }
     if (typeof data.error === "string" && data.error.trim()) {
       if (looksLikeMcpThreadDump(data.error)) {
