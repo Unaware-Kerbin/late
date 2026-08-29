@@ -4,6 +4,11 @@ import { BlockList, isIP } from "node:net";
 /** Where chat tokens may go. `cloud` is public internet / unknown. */
 export type ChatEgress = "loopback" | "private" | "cloud";
 
+/** Loopback and RFC1918 / extra hosts do not need Cloud AI. Public hosts do. */
+export function chatEgressAllowed(egress: ChatEgress, cloud: boolean): boolean {
+  return egress === "loopback" || egress === "private" || cloud;
+}
+
 const LOOPBACK = new BlockList();
 LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK.addSubnet("0.0.0.0", 8, "ipv4");

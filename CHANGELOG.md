@@ -6,7 +6,7 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 **MCP is an Agent backend, like vLLM.**
 
-- Pick **MCP** in the first Agent menu (vLLM / llama.cpp / Ollama / MCP / …). Chat goes through that program (`chat_send`), not local vLLM. Second control is This computer (folder) or an HTTP address (`http://127.0.0.1:8790/mcp`). Port 8787 is the GUI, not MCP. Late still Approve for device CLI. Extra `chat_send` / `dispatch` / `start_vllm` still wait for Approve; Send is the one chat round. Cursor `mcpServers` stays empty. Late does not copy API keys into that program.
+- Pick **MCP** in the first Agent menu (vLLM / llama.cpp / Ollama / MCP / …). Chat goes through that program (`chat_send`), not local vLLM. Second control is This computer (folder) or an HTTP address. Paste the printed `/mcp` URL (the GUI also serves `/mcp` on the same port as the web UI; the page itself is not MCP). If Settings still has a stale port, Late tries the URL that program advertised when it bound. Example dedicated URL: `http://127.0.0.1:8790/mcp`. Late still Approve for device CLI. Extra `chat_send` / `dispatch` / `start_vllm` still wait for Approve; Send is the one chat round. Cursor `mcpServers` stays empty. Late does not copy API keys into that program. Late still chats when MCP is off.
 
 **Agent pane catalogs list every snapshot, with fit labeled.**
 
@@ -18,11 +18,11 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 **Agent pane MCP picker (this computer / HTTP) when the backend is MCP.**
 
-- With **MCP** selected: second control is **This computer** (stdio folder from Settings) or **HTTP address** (`http://127.0.0.1:8790/mcp` after `npm run mcp:http`). Port 8787 is the GUI, not MCP. Status shows MCP on · N tools or MCP error. The third menu is **orchestrator** only (auto-route via `chat_send`). Specialists and vLLM / Ollama / Cloud stay in the first Agent menu. Cursor `mcpServers` stays empty.
+- With **MCP** selected: second control is **This computer** (stdio folder from Settings) or **HTTP address** (paste the printed `/mcp` URL; example `http://127.0.0.1:8790/mcp` after `npm run mcp:http`). The GUI root is HTML, not MCP; `/mcp` on that same port is Streamable HTTP. Status shows MCP on · N tools or MCP error. The third menu is **orchestrator** only (auto-route via `chat_send`). Specialists and vLLM / Ollama / Cloud stay in the first Agent menu. Cursor `mcpServers` stays empty.
 
 **Optional MCP tools — folder on this computer, or Streamable HTTP on :8790.**
 
-- Settings **MCP** (off by default) can point at a project folder on this computer (stdio) **or** a Streamable HTTP URL such as `http://127.0.0.1:8790/mcp` (`npm run mcp:http` on that computer). Port 8787 is the GUI, not MCP. If both folder and address are set, Late uses the address. The sidecar is the client and adds those tools as `mcp_*`. List/status tools run immediately. Starts, downloads, dispatch, and writes still wait for Approve. A homelab MCP URL does not need Cloud AI; a public internet host does. Cursor Cloud AI still uses empty `mcpServers` so Approve is not bypassed. Late does not copy API keys into that program, and does not start MCP on another machine.
+- Settings **MCP** (off by default) can point at a project folder on this computer (stdio) **or** a Streamable HTTP URL. Paste the printed `/mcp` URL (GUI `/mcp` on the web UI port, or `http://127.0.0.1:8790/mcp` after `npm run mcp:http`). If both folder and address are set, Late uses the address. The sidecar is the client and adds those tools as `mcp_*`. List/status tools run immediately. Starts, downloads, dispatch, and writes still wait for Approve. A homelab MCP URL does not need Cloud AI; a public internet host does. Cursor Cloud AI still uses empty `mcpServers` so Approve is not bypassed. Late does not copy API keys into that program, and does not start MCP on another machine.
 
 ## 2026-08-26
 

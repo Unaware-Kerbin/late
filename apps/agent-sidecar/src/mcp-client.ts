@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { classifyChatBase, parseExtraHosts } from "./chat-target.js";
 import { daemon } from "./daemon.js";
+import { firstReachableMcpUrl, mcpDiscoverCandidates } from "./mcp-discover.js";
 import {
   MCP_GUI_AGENTS,
   mcpToOpenAiTool,
@@ -22,6 +23,7 @@ import {
   type JsonRpc,
   type McpHttpSession,
 } from "./mcp-http.js";
+import { isMcpConnectFailure, shouldReuseLiveMcpHttp } from "./mcp-stay.js";
 import type { OpenAiTool } from "./types.js";
 
 type StdioSession = {
@@ -42,6 +44,8 @@ type Live = StdioSession | HttpLive;
 
 let session: Live | null = null;
 let lastProbe: { at: number; value: McpProbe } | null = null;
+/** Settings URL at the time the live HTTP session was opened (may differ after discover). */
+let openedForSettingsUrl = "";
 
 type McpProbe = {
   ok: boolean;
@@ -175,14 +179,21 @@ export async function ensureMcpSession(force = false, overrideUrl?: string): Pro
 
 async function ensureSession(overrideUrl?: string, force = false): Promise<Live> {
   const cfg = await mcpSettingsFromDaemon();
-  const url = (overrideUrl ?? cfg.url).trim();
-  if (session && !overrideUrl) {
-    if (url && session.kind === "http") {
-      const parsed = parseMcpHttpUrl(url);
-      if (typeof parsed === "string" && session.key === `http\0${parsed}`) return session;
-    }
-    if (!url && session.kind === "stdio") return session;
+  const settingsUrl = cfg.url.trim();
+  const url = (overrideUrl ?? settingsUrl).trim();
+  if (
+    session?.kind === "http" &&
+    shouldReuseLiveMcpHttp({
+      hasHttpSession: true,
+      sessionKey: session.key,
+      overrideUrl,
+      settingsUrl,
+      openedForSettingsUrl,
+    })
+  ) {
+    return session;
   }
+  if (session && !overrideUrl && !url && session.kind === "stdio") return session;
   const target = resolveMcpTarget(
     { ...cfg, enabled: force || cfg.enabled || Boolean(url), url },
     existsSync,
@@ -193,11 +204,15 @@ async function ensureSession(overrideUrl?: string, force = false): Promise<Live>
     const s = await loadSettings();
     await assertMcpHttp(target.url, s);
     const key = `http\0${target.url}`;
-    if (session && session.kind === "http" && session.key === key) return session;
+    if (session && session.kind === "http" && session.key === key) {
+      openedForSettingsUrl = settingsUrl;
+      return session;
+    }
     closeMcp();
     const sess = await openMcpHttpSession(target.url);
     const live: HttpLive = { kind: "http", key, sess };
     session = live;
+    openedForSettingsUrl = settingsUrl;
     return live;
   }
   const key = `${target.command}\0${target.args.join("\0")}\0${target.cwd}`;
@@ -211,6 +226,7 @@ async function ensureSession(overrideUrl?: string, force = false): Promise<Live>
   const sess: StdioSession = { kind: "stdio", key, child, pending: new Map(), nextId: 1 };
   attachReader(sess);
   session = sess;
+  openedForSettingsUrl = "";
   try {
     await handshakeStdio(sess);
   } catch (err) {
@@ -222,6 +238,7 @@ async function ensureSession(overrideUrl?: string, force = false): Promise<Live>
 
 export function closeMcp() {
   lastProbe = null;
+  openedForSettingsUrl = "";
   if (!session) return;
   const s = session;
   session = null;
@@ -297,13 +314,35 @@ async function probeHttpUrl(url: string): Promise<McpProbe> {
   }
 }
 
+async function discoverReachableHttp(cfg: { url: string; cwd: string }, skipUrl?: string): Promise<string | undefined> {
+  const skip = new Set<string>();
+  if (skipUrl?.trim()) {
+    const parsed = parseMcpHttpUrl(skipUrl);
+    if (typeof parsed === "string") skip.add(parsed);
+  }
+  return firstReachableMcpUrl(
+    mcpDiscoverCandidates({ settingsUrl: cfg.url, mcpCwd: cfg.cwd }),
+    (candidate) => probeMcpHttpEndpoint(candidate),
+    skip,
+  );
+}
+
 async function probeMcpFresh(overrideUrl?: string): Promise<McpProbe> {
   const cfg = await mcpSettingsFromDaemon();
   const url = (overrideUrl ?? cfg.url).trim();
   if (!overrideUrl && !cfg.enabled) {
     return { ok: true, enabled: false, tools: [], message: "MCP is off. The helper still works." };
   }
-  if (url) return probeHttpUrl(url);
+  if (url) {
+    const first = await probeHttpUrl(url);
+    if (first.ok || overrideUrl) return first;
+    if (!isMcpConnectFailure(first.message)) return first;
+    const found = await discoverReachableHttp(cfg, url);
+    if (found) return probeHttpUrl(found);
+    return first;
+  }
+  const advertised = await discoverReachableHttp(cfg);
+  if (advertised) return probeHttpUrl(advertised);
   try {
     const tools = await listMcpOpenAiTools();
     const names = tools.map((t) => t.function.name);
@@ -346,7 +385,7 @@ export async function mcpChatTarget(): Promise<McpChatTarget> {
     return {
       error:
         target.error === "MCP is off in Settings"
-          ? "Pick This computer or an HTTP address for MCP. On your computer: http://127.0.0.1:8790/mcp after npm run mcp:http. Port 8787 is the GUI, not MCP."
+          ? "Pick This computer or an HTTP address for MCP. Use the /mcp URL printed when you started the GUI or npm run mcp:http (Late Settings is the source of truth)."
           : target.error,
     };
   }

@@ -114,9 +114,6 @@ export function parseMcpHttpUrl(raw: string): string | { error: string } {
   if (!u.hostname) {
     return { error: "MCP address needs a host (IP or name)." };
   }
-  if (isLoopbackGuiPort(u)) {
-    return { error: GUI_NOT_MCP };
-  }
   rewriteLoopbackHostname(u);
   const stripped = u.pathname.replace(/\/+$/, "") || "/";
   const lower = stripped.toLowerCase();
@@ -132,17 +129,10 @@ export function parseMcpHttpUrl(raw: string): string | { error: string } {
   return u.toString();
 }
 
-/** Short ELI5 when someone pastes the GUI (8787) as MCP. */
+/** HTML page (GUI `/`) is not Streamable HTTP. Late Settings URL is the source of truth. */
 export const GUI_NOT_MCP =
-  "That address is the GUI on this computer, not MCP. Start Streamable HTTP with npm run mcp:http, then use http://127.0.0.1:8790/mcp (or the folder).";
+  "That address returned the web UI, not Streamable HTTP MCP. Use the /mcp URL printed when you started the GUI or npm run mcp:http (the address in Late Settings).";
 
-function isLoopbackGuiPort(u: URL): boolean {
-  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const loopback =
-    host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "localhost.localdomain";
-  const port = u.port || (u.protocol === "https:" ? "443" : "80");
-  return loopback && port === "8787";
-}
 
 /** MCP HTTP binds 127.0.0.1. Prefer that over localhost / ::1 so IPv6 DNS does not miss it. */
 function rewriteLoopbackHostname(u: URL): void {

@@ -11,7 +11,7 @@ export type SidecarChatBackend =
 
 /**
  * Pick the sidecar loop from the GUI/backend field.
- * `cloudAiEnabled` is ignored: Agent=MCP always stays on the orchestrator, including Cursor cloud speakers.
+ * `cloudAiEnabled` is ignored: Agent=MCP still selects the MCP loop (chat_send, not Late vLLM).
  */
 export function resolveSidecarChatBackend(
   raw?: string,

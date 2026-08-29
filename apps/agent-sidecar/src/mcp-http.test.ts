@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { describe, it } from "node:test";
 import { parseMcpHttpUrl, parseSseJsonRpc } from "./mcp-format.ts";
+import { formatMcpHttpStatusError, probeMcpHttpEndpoint } from "./mcp-http.ts";
 
 function jsonRpc(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, {
@@ -216,5 +217,34 @@ describe("mcp-http", () => {
     }
     assert.equal(failed, true);
     assert.ok(Date.now() - started < 2000);
+  });
+
+  it("HTTP 400 surfaces the server error text, not MCP unreachable", async () => {
+    assert.equal(
+      formatMcpHttpStatusError(400, JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: Mcp-Session-Id header is required" }, id: null })),
+      "MCP HTTP 400: Bad Request: Mcp-Session-Id header is required",
+    );
+    const server = createServer((_req, res) => {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Bad Request: Mcp-Session-Id header is required" },
+          id: null,
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    assert.ok(addr && typeof addr === "object");
+    try {
+      const probed = await probeMcpHttpEndpoint(`http://127.0.0.1:${addr.port}/mcp`);
+      assert.equal(probed.ok, false);
+      assert.match(probed.message, /MCP HTTP 400/);
+      assert.match(probed.message, /Mcp-Session-Id header is required/);
+      assert.doesNotMatch(probed.message, /unreachable|will not switch to the local vLLM helper/i);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
   });
 });

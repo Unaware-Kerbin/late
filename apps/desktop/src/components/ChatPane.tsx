@@ -452,7 +452,7 @@ function McpServerPick(props: {
       setCheck({
         busy: false,
         ok: false,
-        message: "Need an http(s) URL, for example http://127.0.0.1:8790/mcp.",
+        message: "Need an http(s) URL, for example the /mcp address printed by the GUI or npm run mcp:http.",
       });
       return;
     }
@@ -475,7 +475,7 @@ function McpServerPick(props: {
     if (cwd) {
       await apply({ enabled: true, url: "" }, false, "MCP · this computer");
     } else {
-      await apply({ enabled: true, url: DEFAULT_MCP_HTTP_URL }, false, `MCP · ${inferenceHostLabel(DEFAULT_MCP_HTTP_URL)}`);
+      await apply({ enabled: true, url: "" }, false, "MCP");
     }
     setDialog(false);
   }
@@ -538,8 +538,8 @@ function McpServerPick(props: {
             <h2 id="late-mcp-http-title">{saved ? "Edit MCP address" : "MCP address"}</h2>
             <p className="hint">
               A program you already started. Late will not start it. Streamable HTTP — same as Settings.
-              On your computer: <code>{DEFAULT_MCP_HTTP_URL}</code> after <code>npm run mcp:http</code>.
-              Port 8787 is the GUI, not MCP. Cloud AI stays off for a private IP.
+              Use the <code>/mcp</code> URL printed when you started the GUI or <code>npm run mcp:http</code>
+              (default example <code>{DEFAULT_MCP_HTTP_URL}</code> if you did not set a port). Late Settings is the source of truth. Cloud AI stays off for a private IP.
             </p>
             <div className="url-check">
               <label>
@@ -662,6 +662,14 @@ export function ChatPane() {
     if (!settings) return;
     void refreshModels().catch((e: unknown) => setStatus(e instanceof Error ? e.message : String(e)));
   }, [settings?.vllm_base_url, settings?.llama_cpp_base_url, settings?.ollama_base_url, settings?.mcp_enabled, settings?.mcp_cwd, settings?.mcp_url]);
+
+  useEffect(() => {
+    if (backend !== "mcp") return;
+    const tick = () => void refreshModels().catch(() => undefined);
+    tick();
+    const id = window.setInterval(tick, 5000);
+    return () => window.clearInterval(id);
+  }, [backend]);
 
   useEffect(() => {
     const engine = inferenceEngine(backend);
@@ -911,9 +919,15 @@ export function ChatPane() {
             setStatus(e.message);
             setThinking("");
             const line = agentStopLine(e.message);
+            const prefix =
+              /MCP HTTP\s+[1-5]\d\d|MCP unreachable|MCP is not reachable|MCP is off|no chat_send/i.test(
+                e.message,
+              )
+                ? "Agent error"
+                : "Agent stopped";
             setMessages((cur) => [
               ...cur,
-              { id: newId(), role: "system", content: `Agent stopped: ${line}` },
+              { id: newId(), role: "system", content: `${prefix}: ${line}` },
             ]);
           } else if (e.type === "round") {
             setThinking(`Thinking · round ${e.n}/${e.max}`);
@@ -1019,10 +1033,7 @@ export function ChatPane() {
               return;
             }
             if (next === "mcp" && settings && !settings.mcp_enabled) {
-              const url =
-                settings.mcp_url?.trim() ||
-                stashedMcpHttpUrl() ||
-                (settings.mcp_cwd?.trim() ? "" : DEFAULT_MCP_HTTP_URL);
+              const url = settings.mcp_url?.trim() || stashedMcpHttpUrl() || "";
               void saveSettings(withMcpPick(settings, { enabled: true, url }), { quiet: true }).then((ok) => {
                 if (!ok) return;
                 setBackend("mcp");
@@ -1279,9 +1290,9 @@ export function ChatPane() {
       )}
       {backend === "mcp" && (
         <p className="hint" style={{ padding: "0 8px" }}>
-          Chat goes through MCP (not vLLM). Device CLI still needs Approve. You start that program;
-          Late will not start it. Port 8787 is the GUI, not MCP — use{" "}
-          <code>{DEFAULT_MCP_HTTP_URL}</code> after <code>npm run mcp:http</code>.
+          Chat goes through MCP (not Late’s vLLM on :8000). Device CLI still needs Approve. You start
+          that program; Late will not start it. Paste the <code>/mcp</code> URL from the GUI
+          (Copy MCP URL) — same port as the web UI, or <code>npm run mcp:http</code>.
         </p>
       )}
       {backend === "cursor" && (

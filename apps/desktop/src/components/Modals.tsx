@@ -730,10 +730,10 @@ function SettingsModal() {
         </div>
         <p className="hint">
           Leave blank to use the folder below. If both are set, Late uses the address. That program
-          must already be listening — Late will not start it. On this computer:{" "}
-          <code>http://127.0.0.1:8790/mcp</code> after <code>npm run mcp:http</code>. Port 8787 is
-          the GUI, not MCP. Same dual-gate as chat: your network does not need Cloud AI; a public
-          internet host does.
+          must already be listening — Late will not start it. Put the <code>/mcp</code> URL printed
+          by the GUI or <code>npm run mcp:http</code> here (example{" "}
+          <code>http://127.0.0.1:8790/mcp</code> if you left the default port). Same dual-gate as
+          chat: your network does not need Cloud AI; a public internet host does.
         </p>
         <label>
           MCP folder (this computer)

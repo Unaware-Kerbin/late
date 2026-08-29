@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  chatEgressAllowed,
   classifyChatBase,
   classifyChatBaseSync,
   fetchStayOnBox,
@@ -358,6 +359,8 @@ async function cloudChatEnabled(): Promise<boolean> {
 const CLOUD_OFF =
   "Cloud AI is off. Turn it on in Settings. Session text may then leave your computer.";
 
+export { chatEgressAllowed };
+
 export async function assertChatAllowed(
   kind: "vllm" | "ollama" | "llamacpp" | "cursor" | "anthropic" | "gemini" | "azure" | "mcp",
   base?: string,
@@ -371,14 +374,8 @@ export async function assertChatAllowed(
     if (!cloud) throw new Error(CLOUD_OFF);
     return;
   }
-  if (kind === "mcp") {
-    // Agent=MCP talks to the orchestrator. Late Cloud AI (Cursor SDK) is a different backend.
-    const egress: ChatEgress = base ? await classifyChatBase(base, extra) : "loopback";
-    auditEvent("chat", { backend: "mcp", egress, ok: true });
-    return;
-  }
-  const egress: ChatEgress = base ? await classifyChatBase(base, extra) : "cloud";
-  const ok = egress === "loopback" || egress === "private" || cloud;
+  const egress: ChatEgress = base ? await classifyChatBase(base, extra) : kind === "mcp" ? "loopback" : "cloud";
+  const ok = chatEgressAllowed(egress, cloud);
   auditEvent("chat", { backend: kind, egress, ok });
   if (!ok) {
     throw new Error(

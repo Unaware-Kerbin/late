@@ -22,8 +22,16 @@ import {
   type McpSpeakerTurn,
   type ParsedMcpTool,
 } from "./mcp-chat-format.js";
+import { firstReachableMcpUrl, mcpDiscoverCandidates } from "./mcp-discover.js";
 import { mcpToolName, parseMcpHttpUrl } from "./mcp-format.js";
-import { stayOnMcp } from "./mcp-stay.js";
+import { probeMcpHttpEndpoint } from "./mcp-http.js";
+import {
+  MCP_OFF_MESSAGE,
+  MCP_NO_CHAT_SEND,
+  MCP_STAY_HEARTBEAT,
+  shouldDiscoverLoopbackMcp,
+  stayOnMcp,
+} from "./mcp-stay.js";
 import {
   extractPcapPaths,
   fetchLogoDataUrl,
@@ -38,12 +46,18 @@ import { MAX_ROUNDS, SYSTEM_PROMPT, type ChatMessage, type SseEvent } from "./ty
 
 export {
   MCP_CONNECT_ATTEMPTS,
+  MCP_FALLBACK_HEARTBEAT,
+  MCP_NO_CHAT_SEND,
+  MCP_OFF_MESSAGE,
   MCP_RETRY_MS,
+  MCP_STAY_HEARTBEAT,
   MCP_UNREACHABLE_MESSAGE,
   decideMcpStay,
   isMcpConnectFailure,
   isMcpUnavailable,
   mcpStayUnreachableMessage,
+  shouldDiscoverLoopbackMcp,
+  shouldFallbackToLocalHelper,
   stayOnMcp,
 } from "./mcp-stay.js";
 export {
@@ -64,6 +78,7 @@ export {
   operatorWantsAllowlist,
   parseMcpLateTool,
 } from "./mcp-chat-format.js";
+export { firstReachableMcpUrl, mcpDiscoverCandidates } from "./mcp-discover.js";
 export { parseMcpCatalogAgents } from "./mcp-format.js";
 export { extractPcapPaths } from "./orch-rest.js";
 
@@ -87,16 +102,13 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-async function mcpHasChatGet(): Promise<boolean> {
-  try {
-    const tools = await listMcpOpenAiTools();
-    return tools.some((t) => {
-      const n = t.function.name.replace(/^mcp_/, "");
-      return n === "chat_get";
-    });
-  } catch {
-    return false;
-  }
+function mcpListedName(name: string): string {
+  return name.replace(/^mcp_/, "");
+}
+
+async function listMcpToolNames(): Promise<string[]> {
+  const tools = await listMcpOpenAiTools();
+  return tools.map((t) => mcpListedName(t.function.name));
 }
 
 async function emitNewSpeakers(
@@ -209,8 +221,15 @@ export async function runMcpChat(opts: {
   conversationId: string;
   emit: (e: SseEvent) => void;
   signal: AbortSignal;
+  /** Override Settings URL (used after loopback /mcp discovery). */
+  mcpUrl?: string;
 }): Promise<string> {
-  const target = await mcpChatTarget();
+  const override = opts.mcpUrl?.trim();
+  const parsedOverride = override ? parseMcpHttpUrl(override) : undefined;
+  if (parsedOverride && typeof parsedOverride !== "string") throw new Error(parsedOverride.error);
+  const target = parsedOverride
+    ? { mode: "http" as const, url: parsedOverride }
+    : await mcpChatTarget();
   if ("error" in target) throw new Error(target.error);
   if (target.mode === "http") {
     const parsed = parseMcpHttpUrl(target.url);
@@ -220,7 +239,7 @@ export async function runMcpChat(opts: {
     await assertChatAllowed("mcp");
   }
   await stayOnMcp({
-    run: () => ensureMcpSession(true),
+    run: () => ensureMcpSession(true, typeof parsedOverride === "string" ? parsedOverride : undefined),
     emit: opts.emit,
     signal: opts.signal,
     reset: closeMcp,
@@ -236,7 +255,11 @@ export async function runMcpChat(opts: {
     operatorText: operatorTurn,
   };
   const stored = threads.get(opts.conversationId);
-  const canPoll = await mcpHasChatGet();
+  const listed = await listMcpToolNames();
+  if (!listed.includes("chat_send")) {
+    throw new Error(MCP_NO_CHAT_SEND);
+  }
+  const canPoll = listed.includes("chat_get");
 
   let assistantText = "";
   let deviceBlock = live;
@@ -342,16 +365,84 @@ export async function runMcpChat(opts: {
   }
 }
 
-/**
- * Agent = MCP: connect with a short retry, then stay on MCP. Never falls back to Late vLLM :8000.
- * MCP off in Settings uses local/cloud helpers via other backends (this path is not used).
- */
-export async function runMcpChatOrFallback(opts: {
+export type McpChatFn = (opts: {
   messages: ChatMessage[];
   model?: string;
   conversationId: string;
   emit: (e: SseEvent) => void;
   signal: AbortSignal;
-}): Promise<string> {
-  return runMcpChat(opts);
+}) => Promise<string>;
+
+async function discoverAndRunMcp(opts: {
+  messages: ChatMessage[];
+  model?: string;
+  conversationId: string;
+  emit: (e: SseEvent) => void;
+  signal: AbortSignal;
+}): Promise<string | undefined> {
+  const cfg = await mcpSettingsFromDaemon();
+  const skip = new Set<string>();
+  if (cfg.url.trim()) {
+    const parsed = parseMcpHttpUrl(cfg.url);
+    if (typeof parsed === "string") skip.add(parsed);
+  }
+  const found = await firstReachableMcpUrl(
+    mcpDiscoverCandidates({ settingsUrl: cfg.url, mcpCwd: cfg.cwd }),
+    (url) => probeMcpHttpEndpoint(url),
+    skip,
+  );
+  if (!found) return undefined;
+  opts.emit({ type: "heartbeat", message: `Using MCP at ${found}` });
+  return runMcpChat({ ...opts, mcpUrl: found });
+}
+
+/**
+ * Agent = MCP: Settings URL, then other loopback /mcp on connect refuse only
+ * (GUI /mcp, dedicated mcp:http). Never Late's vLLM on :8000.
+ * Live HTTP errors stay on MCP.
+ */
+export async function runMcpChatOrFallback(
+  opts: {
+    messages: ChatMessage[];
+    model?: string;
+    conversationId: string;
+    emit: (e: SseEvent) => void;
+    signal: AbortSignal;
+  },
+  deps?: {
+    mcpChat?: McpChatFn;
+    /** Ignored. Agent=MCP does not call Late vLLM. */
+    localChat?: McpChatFn;
+    mcpEnabled?: boolean;
+    discoverChat?: () => Promise<string | undefined>;
+  },
+): Promise<string> {
+  const mcpChat = deps?.mcpChat ?? runMcpChat;
+  const discover =
+    deps?.discoverChat ?? (deps?.mcpChat ? async () => undefined : () => discoverAndRunMcp(opts));
+  let enabled = deps?.mcpEnabled;
+  if (enabled === undefined) {
+    try {
+      enabled = (await mcpSettingsFromDaemon()).enabled;
+    } catch {
+      enabled = false;
+    }
+  }
+  if (!enabled) throw new Error(MCP_OFF_MESSAGE);
+  try {
+    return await mcpChat(opts);
+  } catch (err) {
+    if (opts.signal.aborted) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!shouldDiscoverLoopbackMcp(msg)) throw err;
+    try {
+      const discovered = await discover();
+      if (discovered !== undefined) return discovered;
+    } catch (discoveredErr) {
+      if (opts.signal.aborted) throw discoveredErr;
+      throw discoveredErr;
+    }
+    opts.emit({ type: "heartbeat", message: MCP_STAY_HEARTBEAT });
+    throw err;
+  }
 }

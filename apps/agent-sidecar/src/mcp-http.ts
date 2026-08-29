@@ -1,6 +1,6 @@
 import { fetchStayOnBox } from "./chat-target.js";
 import { GUI_NOT_MCP, mcpHttpProbeUrls, parseMcpHttpUrl, parseSseJsonRpc, type JsonRpcMsg } from "./mcp-format.js";
-import { mcpTransportError, unreachableMcp } from "./mcp-transport.js";
+import { mcpTransportError } from "./mcp-transport.js";
 
 export { mcpTransportError, unreachableMcp } from "./mcp-transport.js";
 
@@ -78,15 +78,40 @@ export function htmlPageNotMcp(_url: string): Error {
   return new Error(GUI_NOT_MCP);
 }
 
+/** Prefer JSON-RPC / `{error}` text so HTTP 400 is not shown as “MCP unreachable”. */
+export function formatMcpHttpStatusError(status: number, body: string): string {
+  const clipped = clipHttpErrorBody(body);
+  if (clipped) return `MCP HTTP ${status}: ${clipped}`;
+  return `MCP HTTP ${status}`;
+}
+
+function clipHttpErrorBody(text: string): string {
+  const t = text.trim();
+  if (!t) return "";
+  try {
+    const data = JSON.parse(t) as { error?: unknown; message?: unknown };
+    if (data && typeof data === "object") {
+      if (typeof data.error === "string" && data.error.trim()) return data.error.trim().slice(0, 220);
+      if (data.error && typeof data.error === "object") {
+        const msg = (data.error as { message?: unknown }).message;
+        if (typeof msg === "string" && msg.trim()) return msg.trim().slice(0, 220);
+      }
+      if (typeof data.message === "string" && data.message.trim()) return data.message.trim().slice(0, 220);
+    }
+  } catch {
+    /* plain text */
+  }
+  return t.slice(0, 220);
+}
+
 async function readRpcResponse(r: Response, id: number, url: string): Promise<{ result: unknown; sessionId: string }> {
   const sessionId = r.headers.get("mcp-session-id") ?? "";
   if (!r.ok && r.status >= 400 && r.status !== 202) {
     const text = await r.text().catch(() => "");
-    if (r.status === 404 || r.status === 502 || r.status === 503) throw unreachableMcp(url);
     if (looksLikeHtml((r.headers.get("content-type") ?? "").toLowerCase(), text)) {
       throw htmlPageNotMcp(url);
     }
-    throw new Error(`MCP HTTP ${r.status}${text ? `: ${text.slice(0, 200)}` : ""}`);
+    throw new Error(formatMcpHttpStatusError(r.status, text));
   }
   const ctype = (r.headers.get("content-type") ?? "").toLowerCase();
   if (r.status === 202) return { result: undefined, sessionId };
@@ -154,7 +179,7 @@ export type McpHttpProbe = {
 
 /**
  * MCP is on iff initialize + tools/list succeed on the Streamable HTTP URL.
- * Does not touch GUI :8787. Connection failures say unreachable; 401/403/405 keep their text.
+ * Connection refused/reset say unreachable; HTTP 4xx/5xx keep the server error text.
  */
 export async function probeMcpHttpEndpoint(rawUrl: string): Promise<McpHttpProbe> {
   const parsed = parseMcpHttpUrl(rawUrl);

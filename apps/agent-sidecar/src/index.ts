@@ -241,7 +241,7 @@ const server = createServer(async (req, res) => {
         if (backend === "cursor") {
           await assertChatAllowed("cursor");
         }
-        // MCP stays on the orchestrator; never falls back to Late vLLM. Cursor SDK is only backend === "cursor".
+        // Agent=MCP is runMcpChatOrFallback (MCP only, never Late vLLM). Cursor SDK is only backend === "cursor".
         const text =
           backend === "cursor"
             ? await runCursorChat(chatOpts)

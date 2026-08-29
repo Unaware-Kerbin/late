@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  chatEgressAllowed,
   classifyChatBaseSync,
   classifyHostname,
   parseExtraHosts,
@@ -62,4 +63,16 @@ test("base URLs", () => {
   assert.equal(classifyChatBaseSync("https://api.openai.com/v1"), "cloud");
   assert.equal(classifyChatBaseSync("ftp://10.0.0.1/v1"), "cloud");
   assert.equal(classifyChatBaseSync("not a url"), "cloud");
+});
+
+test("Cloud AI gate: loopback/private MCP stay off; public MCP needs Cloud AI", () => {
+  assert.equal(chatEgressAllowed("loopback", false), true);
+  assert.equal(chatEgressAllowed("private", false), true);
+  assert.equal(chatEgressAllowed("cloud", false), false);
+  assert.equal(chatEgressAllowed("cloud", true), true);
+  const publicMcp = classifyChatBaseSync("https://mcp.example.com/mcp");
+  assert.equal(publicMcp, "cloud");
+  assert.equal(chatEgressAllowed(publicMcp, false), false);
+  assert.equal(chatEgressAllowed(classifyChatBaseSync("http://127.0.0.1:8787/mcp"), false), true);
+  assert.equal(chatEgressAllowed(classifyChatBaseSync("http://10.0.0.12:8790/mcp"), false), true);
 });

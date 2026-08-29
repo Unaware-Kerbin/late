@@ -276,7 +276,7 @@ export function withInferenceServer(
   return { ...settings, vllm_base_url: next.base, vllm_remote_url: next.remote };
 }
 
-/** Streamable HTTP after `npm run mcp:http`. Port 8787 is the GUI, not MCP. */
+/** Example Streamable HTTP URL when MCP_PORT is left at the default. Late Settings is the source of truth. */
 export const DEFAULT_MCP_HTTP_URL = "http://127.0.0.1:8790/mcp";
 
 export type McpPickMode = "off" | "stdio" | "http";
@@ -312,7 +312,7 @@ export function withMcpPick(settings: AppSettings, next: { enabled: boolean; url
   return { ...settings, mcp_enabled: next.enabled, mcp_url: next.url.trim() };
 }
 
-/** Agent status line: MCP HTTP initialize/tools/list, not GUI :8787. */
+/** Agent status line: MCP HTTP initialize/tools/list on the Settings URL. */
 export function mcpStatusLine(mcp?: {
   ok?: boolean;
   enabled?: boolean;
@@ -325,7 +325,7 @@ export function mcpStatusLine(mcp?: {
     return `MCP on · ${n} tool${n === 1 ? "" : "s"}`;
   }
   const msg = mcp.message?.trim() ?? "";
-  if (/logo|8787|GUI/i.test(msg) && !/not MCP|not reachable/i.test(msg)) {
+  if (/GUI logos unavailable|logo fetch|fetchLogo/i.test(msg)) {
     return "GUI logos unavailable";
   }
   return "MCP error";

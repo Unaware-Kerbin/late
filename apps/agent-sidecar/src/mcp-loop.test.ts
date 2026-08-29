@@ -24,9 +24,17 @@ import {
   isMcpConnectFailure,
   isMcpUnavailable,
   mcpStayUnreachableMessage,
+  MCP_FALLBACK_HEARTBEAT,
+  MCP_NO_CHAT_SEND,
+  MCP_OFF_MESSAGE,
+  MCP_STAY_HEARTBEAT,
   MCP_UNREACHABLE_MESSAGE,
+  shouldDiscoverLoopbackMcp,
+  shouldFallbackToLocalHelper,
+  shouldReuseLiveMcpHttp,
   stayOnMcp,
 } from "./mcp-stay.ts";
+import { runMcpChatOrFallback } from "./mcp-loop.ts";
 import { extractPcapPaths, restOriginsFromMcpUrl } from "./orch-rest.ts";
 import { SYSTEM_PROMPT } from "./types.ts";
 
@@ -122,13 +130,11 @@ describe("mcp chat backend", () => {
     assert.deepEqual(specialists, ["planner", "builder"]);
   });
 
-  it("rejects the GUI port 8787 as MCP", () => {
+    it("rejects the GUI HTML page as MCP, not a hardcoded port", () => {
     const gui = parseMcpHttpUrl("http://127.0.0.1:8787/mcp");
-    assert.ok(typeof gui === "object" && "error" in gui);
-    if (typeof gui === "object" && "error" in gui) {
-      assert.match(gui.error, /GUI on this computer, not MCP/);
-      assert.match(gui.error, /8790\/mcp/);
-    }
+    assert.equal(gui, "http://127.0.0.1:8787/mcp");
+    const custom = parseMcpHttpUrl("http://127.0.0.1:8107/mcp");
+    assert.equal(custom, "http://127.0.0.1:8107/mcp");
   });
 
   it("isolation prefix does not put operator text inside the untrusted block", () => {
@@ -259,16 +265,16 @@ describe("mcp chat backend", () => {
     assert.deepEqual(extractPcapPaths("Analyze /tmp/trace.pcap please"), ["/tmp/trace.pcap"]);
     assert.deepEqual(extractPcapPaths("open ~/caps/foo.pcapng"), ["~/caps/foo.pcapng"]);
     assert.equal(extractPcapPaths("no capture here").length, 0);
-    assert.deepEqual(restOriginsFromMcpUrl("http://127.0.0.1:8790/mcp"), [
-      "http://127.0.0.1:8790",
-      "http://127.0.0.1:8787",
-    ]);
+    assert.deepEqual(restOriginsFromMcpUrl("http://127.0.0.1:8798/mcp"), ["http://127.0.0.1:8798"]);
+    assert.deepEqual(restOriginsFromMcpUrl("http://127.0.0.1:8107/mcp"), ["http://127.0.0.1:8107"]);
   });
 
-  it("Agent=MCP stays on orchestrator: retry connect, then MCP unreachable, never vLLM :8000", async () => {
+  it("Agent=MCP retries connect, discovers other loopback /mcp, never Late vLLM :8000", async () => {
     assert.equal(MCP_UNREACHABLE_MESSAGE, "MCP unreachable");
-    assert.match(mcpStayUnreachableMessage("down"), /Chat stays on MCP/);
-    assert.match(mcpStayUnreachableMessage("down"), /:8000/);
+    assert.equal(MCP_STAY_HEARTBEAT, "Staying on MCP — not using Late vLLM");
+    assert.equal(MCP_FALLBACK_HEARTBEAT, MCP_STAY_HEARTBEAT);
+    assert.match(mcpStayUnreachableMessage("down"), /will not switch to local vLLM/);
+    assert.doesNotMatch(mcpStayUnreachableMessage("down"), /using local vLLM/);
     assert.equal(isMcpUnavailable("ECONNREFUSED"), true);
     assert.equal(
       isMcpConnectFailure(
@@ -277,13 +283,54 @@ describe("mcp chat backend", () => {
       true,
     );
     assert.equal(isMcpConnectFailure("ECONNREFUSED"), true);
-    assert.equal(isMcpConnectFailure("Gemma timed out after 25s — skipped so other speakers can finish."), false);
+    assert.equal(isMcpConnectFailure("MCP HTTP 400: Bad Request: Mcp-Session-Id header is required"), false);
+    assert.equal(isMcpConnectFailure("MCP HTTP 401: unauthorized"), false);
+    assert.equal(isMcpConnectFailure("MCP HTTP 404: Not found. MCP Streamable HTTP is /mcp"), false);
+    assert.equal(decideMcpStay({ message: "MCP HTTP 400: Bad Request: Mcp-Session-Id header is required", attempt: 1 }), "rethrow");
+    assert.equal(decideMcpStay({ message: "MCP HTTP 400: Bad Request: Mcp-Session-Id header is required", attempt: 3 }), "rethrow");
     assert.equal(isMcpConnectFailure("vLLM is not reachable at http://127.0.0.1:8000/v1"), false);
     assert.equal(decideMcpStay({ message: "ECONNREFUSED", attempt: 1 }), "retry");
     assert.equal(decideMcpStay({ message: "ECONNREFUSED", attempt: 3 }), "fail");
     assert.equal(decideMcpStay({ message: "MCP chat_send timed out", attempt: 1 }), "rethrow");
     assert.equal(decideMcpStay({ message: "Cursor speaker timed out", attempt: 3 }), "rethrow");
     assert.equal(decideMcpStay({ message: "MCP is off in Settings", attempt: 1 }), "rethrow");
+    assert.equal(shouldDiscoverLoopbackMcp("MCP is off in Settings"), false);
+    assert.equal(shouldDiscoverLoopbackMcp("Set the MCP folder (this computer) or an address"), true);
+    assert.equal(shouldDiscoverLoopbackMcp("Pick This computer or an HTTP address for MCP"), true);
+    assert.equal(shouldDiscoverLoopbackMcp("ECONNREFUSED"), true);
+    assert.equal(
+      shouldReuseLiveMcpHttp({
+        hasHttpSession: true,
+        sessionKey: "http\0http://127.0.0.1:8120/mcp",
+        settingsUrl: "http://127.0.0.1:8798/mcp",
+        openedForSettingsUrl: "http://127.0.0.1:8798/mcp",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldReuseLiveMcpHttp({
+        hasHttpSession: true,
+        sessionKey: "http\0http://127.0.0.1:8120/mcp",
+        overrideUrl: "http://127.0.0.1:8120/mcp",
+        settingsUrl: "http://127.0.0.1:8798/mcp",
+        openedForSettingsUrl: "http://127.0.0.1:8798/mcp",
+      }),
+      true,
+    );
+    assert.equal(
+      shouldReuseLiveMcpHttp({
+        hasHttpSession: true,
+        sessionKey: "http\0http://127.0.0.1:8120/mcp",
+        settingsUrl: "http://127.0.0.1:8790/mcp",
+        openedForSettingsUrl: "http://127.0.0.1:8798/mcp",
+      }),
+      false,
+    );
+    assert.equal(shouldFallbackToLocalHelper("ECONNREFUSED"), true);
+    assert.equal(shouldDiscoverLoopbackMcp("MCP HTTP 400: Bad Request: Mcp-Session-Id header is required"), false);
+    assert.equal(shouldDiscoverLoopbackMcp("MCP chat_send timed out"), false);
+    assert.equal(shouldDiscoverLoopbackMcp(MCP_NO_CHAT_SEND), false);
+    assert.equal(isMcpConnectFailure(MCP_NO_CHAT_SEND), false);
 
     let n = 0;
     const heartbeats: string[] = [];
@@ -293,7 +340,7 @@ describe("mcp chat backend", () => {
           run: async () => {
             n += 1;
             throw new Error(
-              "MCP is not reachable at http://127.0.0.1:8790/mcp. Start that program on that machine; Late will not start it.",
+              "MCP is not reachable at http://127.0.0.1:8788/mcp. Start that program on that machine; Late will not start it.",
             );
           },
           emit: (e) => {
@@ -307,16 +354,15 @@ describe("mcp chat backend", () => {
       (err: unknown) => {
         const msg = (err as Error).message;
         assert.match(msg, /^MCP unreachable/);
-        assert.match(msg, /Chat stays on MCP/);
-        assert.match(msg, /will not switch to the local vLLM helper/);
-        assert.match(msg, /:8000/);
-        assert.doesNotMatch(msg, /Continuing with Late's vLLM helper/);
+        assert.match(msg, /will not switch to local vLLM/);
+        assert.doesNotMatch(msg, /using local vLLM/);
+        assert.equal(shouldDiscoverLoopbackMcp(msg), true);
         return true;
       },
     );
     assert.equal(n, 3);
     assert.ok(heartbeats.some((m) => /MCP unreachable — retry/i.test(m)));
-    assert.ok(!heartbeats.some((m) => /Continuing with Late's vLLM helper/i.test(m)));
+    assert.ok(heartbeats.some((m) => /Paste the printed \/mcp URL/i.test(m)));
 
     n = 0;
     const text = await stayOnMcp({
@@ -345,6 +391,110 @@ describe("mcp chat backend", () => {
         }),
       /MCP chat_send timed out/,
     );
+
+    const empty = { messages: [], conversationId: "c1", emit: () => {}, signal: new AbortController().signal };
+    let localOff = 0;
+    await assert.rejects(
+      () =>
+        runMcpChatOrFallback(
+          empty,
+          {
+            mcpEnabled: false,
+            mcpChat: async () => {
+              throw new Error("MCP should not be called when off");
+            },
+            localChat: async () => {
+              localOff += 1;
+              return "from local helper on 8002";
+            },
+          },
+        ),
+      (err: unknown) => {
+        assert.match((err as Error).message, /MCP is off in Settings/);
+        assert.match((err as Error).message, /does not use Late's vLLM/);
+        assert.equal((err as Error).message, MCP_OFF_MESSAGE);
+        return true;
+      },
+    );
+    assert.equal(localOff, 0);
+
+    let localRefused = 0;
+    const refusedBeats: string[] = [];
+    await assert.rejects(
+      () =>
+        runMcpChatOrFallback(
+          { ...empty, emit: (e) => { if (e.type === "heartbeat") refusedBeats.push(e.message); } },
+          {
+            mcpEnabled: true,
+            mcpChat: async () => {
+              throw new Error("fetch failed: ECONNREFUSED 127.0.0.1:8788");
+            },
+            localChat: async () => {
+              localRefused += 1;
+              return "from Late vLLM helper";
+            },
+          },
+        ),
+      /ECONNREFUSED/,
+    );
+    assert.equal(localRefused, 0);
+    assert.ok(refusedBeats.includes(MCP_STAY_HEARTBEAT));
+
+    let localCalls = 0;
+    await assert.rejects(
+      () =>
+        runMcpChatOrFallback(empty, {
+          mcpEnabled: true,
+          mcpChat: async () => {
+            throw new Error("MCP HTTP 400: Bad Request: Mcp-Session-Id header is required");
+          },
+          localChat: async () => {
+            localCalls += 1;
+            return "should not run";
+          },
+        }),
+      /MCP HTTP 400/,
+    );
+    assert.equal(localCalls, 0);
+
+    const discovered = await runMcpChatOrFallback(
+      { ...empty, emit: () => {} },
+      {
+        mcpEnabled: true,
+        mcpChat: async () => {
+          throw new Error("fetch failed: ECONNREFUSED 127.0.0.1:8788");
+        },
+        discoverChat: async () => "from GUI /mcp",
+        localChat: async () => "should not run when discover works",
+      },
+    );
+    assert.equal(discovered, "from GUI /mcp");
+
+    let discoveredNoSend = 0;
+    let localNoSend = 0;
+    await assert.rejects(
+      () =>
+        runMcpChatOrFallback(empty, {
+          mcpEnabled: true,
+          mcpChat: async () => {
+            throw new Error(MCP_NO_CHAT_SEND);
+          },
+          discoverChat: async () => {
+            discoveredNoSend += 1;
+            return "should not assume sibling orchestrator";
+          },
+          localChat: async () => {
+            localNoSend += 1;
+            return "from Late vLLM helper";
+          },
+        }),
+      (err: unknown) => {
+        assert.match((err as Error).message, /no chat_send/);
+        return true;
+      },
+    );
+    assert.equal(discoveredNoSend, 0);
+    assert.equal(localNoSend, 0);
   });
 
   it("speaker skip/429 thread is not a fatal Agent-stopped JSON dump", () => {
@@ -406,6 +556,48 @@ describe("mcp chat backend", () => {
       mcpThreadPollIdle({ busy: true, thinking: [{ label: "Cursor cloud" }], speakers: got.speakers }),
       false,
     );
+
+    const streamDump = JSON.stringify({
+      id: "thr-stream",
+      messages: [
+        { role: "user", content: "hi", status: "finished" },
+        {
+          role: "assistant",
+          speaker: "cursor-local",
+          label: "Cursor local",
+          content: "Run stream is no longer available",
+          status: "error",
+        },
+        {
+          role: "assistant",
+          speaker: "vllm-local",
+          label: "Arc Gemma",
+          content: '{"tool":"propose_command","command":"show version"}',
+          status: "finished",
+        },
+      ],
+    });
+    const streamGot = extractMcpAssistantText(streamDump);
+    assert.equal(streamGot.speakers.find((s) => s.speaker === "cursor-local")?.skipped, true);
+    assert.doesNotMatch(mcpSafeErrorMessage(streamDump), /Agent stopped/);
+
+    const noneDump = JSON.stringify({
+      id: "thr-none",
+      messages: [
+        { role: "user", content: "hi", status: "finished" },
+        {
+          role: "assistant",
+          speaker: "cursor-cloud",
+          label: "Cursor cloud",
+          content: "none",
+          error: "none",
+          status: "error",
+        },
+      ],
+    });
+    const noneGot = extractMcpAssistantText(noneDump);
+    assert.match(noneGot.speakers[0]?.content ?? "", /failed \(no error detail\)/);
+    assert.doesNotMatch(noneGot.text, /\(ERROR\) none/i);
   });
 
   it("Cloud AI enabled does not route MCP Cursor to Late SDK", () => {

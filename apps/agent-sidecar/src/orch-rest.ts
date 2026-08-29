@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const TEMP_ANALYZE_PATH = "/api/temp-analyze";
-const GUI_ORIGIN = "http://127.0.0.1:8787";
 
 const PCAP_EXT = /\.(pcap|pcapng|cap)(?:\b|$)/i;
 
@@ -22,20 +21,17 @@ export function extractPcapPaths(text: string): string[] {
   return [...new Set(found)];
 }
 
+/** Late Settings MCP URL is the source of truth — do not assume :8787/:8790. */
 export function restOriginsFromMcpUrl(mcpUrl?: string): string[] {
   const out: string[] = [];
-  if (mcpUrl) {
-    try {
-      const u = new URL(mcpUrl);
-      if (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1") {
-        out.push(u.origin);
-      }
-    } catch {
-      /* ignore */
-    }
+  if (!mcpUrl) return out;
+  try {
+    const u = new URL(mcpUrl);
+    out.push(u.origin);
+  } catch {
+    /* ignore */
   }
-  out.push(GUI_ORIGIN);
-  return [...new Set(out)];
+  return out;
 }
 
 function orchestratorGuiTokenName(): string {

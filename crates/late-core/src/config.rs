@@ -241,11 +241,6 @@ pub fn validate_mcp_http_url(raw: &str) -> Result<()> {
     if u.host_str().unwrap_or("").is_empty() {
         return Err(LateError::Config("MCP address needs a host (IP or name)".into()));
     }
-    if url_host_is_loopback(t) && u.port() == Some(8787) {
-        return Err(LateError::Config(
-            "That address is the GUI on this computer, not MCP. Use http://127.0.0.1:8790/mcp after npm run mcp:http, or the folder".into(),
-        ));
-    }
     Ok(())
 }
 
@@ -336,14 +331,14 @@ log_dir = "/tmp/logs"
         let mut s = AppSettings::default();
         assert!(!s.mcp_enabled);
         s.mcp_enabled = true;
-        s.mcp_cwd = "/home/me/MCP".into();
+        s.mcp_cwd = "mcp-proj".into();
         s.mcp_command = String::new();
         s.mcp_args = String::new();
         s.mcp_url = "http://10.0.0.12:8790/mcp".into();
         let raw = toml::to_string_pretty(&s).unwrap();
         let back: AppSettings = toml::from_str(&raw).unwrap();
         assert!(back.mcp_enabled);
-        assert_eq!(back.mcp_cwd, "/home/me/MCP");
+        assert_eq!(back.mcp_cwd, "mcp-proj");
         assert_eq!(back.mcp_command, "");
         assert_eq!(back.mcp_args, "");
         assert_eq!(back.mcp_url, "http://10.0.0.12:8790/mcp");
@@ -400,8 +395,8 @@ log_dir = "/tmp/logs"
         assert!(validate_mcp_http_url("http://10.0.0.12:8790/mcp").is_ok());
         assert!(validate_mcp_http_url("http://127.0.0.1:8790/mcp").is_ok());
         assert!(validate_mcp_http_url("http://127.0.0.1:8790/MCP").is_ok());
-        assert!(validate_mcp_http_url("http://localhost:8787/MCP").is_err());
-        assert!(validate_mcp_http_url("http://127.0.0.1:8787/").is_err());
+        assert!(validate_mcp_http_url("http://localhost:8787/MCP").is_ok());
+        assert!(validate_mcp_http_url("http://127.0.0.1:8107/mcp").is_ok());
         assert!(validate_mcp_http_url("https://mcp.lab.internal/mcp").is_ok());
         assert!(validate_mcp_http_url("file:///tmp/mcp").is_err());
         assert!(validate_mcp_http_url("http://10.0.0.12:8790/mcp; rm -rf /").is_err());

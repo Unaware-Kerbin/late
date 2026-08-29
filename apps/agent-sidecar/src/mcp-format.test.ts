@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { classifyChatBaseSync } from "./chat-target.ts";
+import { chatEgressAllowed, classifyChatBaseSync } from "./chat-target.ts";
 import {
   mcpNeedsApprove,
   mcpToolName,
@@ -13,6 +14,9 @@ import {
   withStartVllmGpuArgs,
   stripMcpPrefix,
 } from "./mcp-format.ts";
+
+/** Operator-chosen folder. Never a machine-specific home path in source. */
+const MCP_CWD = join(tmpdir(), "mcp-proj");
 
 describe("mcp-format", () => {
   it("prefixes tool names for Late", () => {
@@ -39,7 +43,7 @@ describe("mcp-format", () => {
   });
 
   it("resolves tsx + src for an orchestrator folder", () => {
-    const cwd = "/home/me/MCP";
+    const cwd = MCP_CWD;
     const launch = resolveMcpLaunch(
       { enabled: true, cwd, command: "", args: "" },
       (p) =>
@@ -82,7 +86,7 @@ describe("mcp-format", () => {
   });
 
   it("prefers HTTP URL over folder when both are set", () => {
-    const cwd = "/home/me/MCP";
+    const cwd = MCP_CWD;
     const t = resolveMcpTarget(
       {
         enabled: true,
@@ -115,7 +119,7 @@ describe("mcp-format", () => {
     const t = resolveMcpTarget(
       {
         enabled: false,
-        cwd: "/home/me/MCP",
+        cwd: MCP_CWD,
         command: "",
         args: "",
         url: "http://127.0.0.1:8790/mcp",
@@ -125,7 +129,7 @@ describe("mcp-format", () => {
     );
     assert.deepEqual(t, { error: "MCP is off in Settings" });
     const launch = resolveMcpLaunch(
-      { enabled: false, cwd: "/home/me/MCP", command: "", args: "" },
+      { enabled: false, cwd: MCP_CWD, command: "", args: "" },
       () => true,
       join,
     );
@@ -133,7 +137,7 @@ describe("mcp-format", () => {
   });
 
   it("spawns the folder when the address is empty", () => {
-    const cwd = "/home/me/MCP";
+    const cwd = MCP_CWD;
     const t = resolveMcpTarget(
       { enabled: true, cwd, command: "", args: "", url: "" },
       (p) =>
@@ -162,25 +166,25 @@ describe("mcp-format", () => {
     assert.equal(typeof parsed, "string");
     if (typeof parsed !== "string") return;
     assert.equal(classifyChatBaseSync(parsed), "private");
+    assert.equal(chatEgressAllowed(classifyChatBaseSync(parsed), false), true);
     const loop = parseMcpHttpUrl("http://127.0.0.1:8790/mcp");
     assert.equal(typeof loop, "string");
     if (typeof loop !== "string") return;
     assert.equal(classifyChatBaseSync(loop), "loopback");
+    assert.equal(chatEgressAllowed(classifyChatBaseSync(loop), false), true);
   });
 
-  it("canonicalizes /MCP on 8790 and rejects the GUI on 8787", () => {
+  it("canonicalizes /MCP and accepts the GUI port when /mcp is the path", () => {
     const ok = parseMcpHttpUrl("http://127.0.0.1:8790/MCP");
     assert.equal(ok, "http://127.0.0.1:8790/mcp");
     const root = parseMcpHttpUrl("http://127.0.0.1:8790/");
     assert.equal(root, "http://127.0.0.1:8790/mcp");
     const gui = parseMcpHttpUrl("http://localhost:8787/MCP");
-    assert.ok(typeof gui === "object" && "error" in gui);
-    if (typeof gui === "object" && "error" in gui) {
-      assert.match(gui.error, /GUI on this computer, not MCP/);
-      assert.match(gui.error, /8790\/mcp/);
-    }
+    assert.equal(gui, "http://127.0.0.1:8787/mcp");
     const guiRoot = parseMcpHttpUrl("http://127.0.0.1:8787/");
-    assert.ok(typeof guiRoot === "object" && "error" in guiRoot);
+    assert.equal(guiRoot, "http://127.0.0.1:8787/mcp");
+    const custom = parseMcpHttpUrl("http://127.0.0.1:8107/mcp");
+    assert.equal(custom, "http://127.0.0.1:8107/mcp");
     assert.equal(parseMcpHttpUrl("http://localhost:8790/mcp"), "http://127.0.0.1:8790/mcp");
     assert.equal(parseMcpHttpUrl("http://[::1]:8790/mcp"), "http://127.0.0.1:8790/mcp");
   });
@@ -191,9 +195,7 @@ describe("mcp-format", () => {
     if (typeof parsed !== "string") return;
     const egress = classifyChatBaseSync(parsed);
     assert.equal(egress, "cloud");
-    const allowedOff = egress === "loopback" || egress === "private" || false;
-    const allowedOn = egress === "loopback" || egress === "private" || true;
-    assert.equal(allowedOff, false);
-    assert.equal(allowedOn, true);
+    assert.equal(chatEgressAllowed(egress, false), false);
+    assert.equal(chatEgressAllowed(egress, true), true);
   });
 });

@@ -111,4 +111,12 @@ test("status is MCP on when tools/list works; GUI 401 is not MCP down", () => {
     mcpStatusLine({ enabled: true, ok: false, message: "GUI logos unavailable (8787)" }),
     "GUI logos unavailable",
   );
+  assert.equal(
+    mcpStatusLine({ enabled: true, ok: false, message: "ECONNREFUSED 127.0.0.1:8787" }),
+    "MCP error",
+  );
+  assert.equal(
+    mcpStatusLine({ enabled: true, ok: false, message: "MCP HTTP 404 at http://127.0.0.1:8787/mcp" }),
+    "MCP error",
+  );
 });

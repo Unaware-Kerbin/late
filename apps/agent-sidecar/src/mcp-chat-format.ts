@@ -199,7 +199,7 @@ export type McpThinkingTurn = {
   startedAt?: number;
 };
 
-const SKIP_SPEAKER_RE = /timed out after \d+s|\b429\b|rate[- ]limit|RESOURCE_EXHAUSTED|quota exceeded|skipped so other speakers/i;
+const SKIP_SPEAKER_RE = /timed out after \d+s|\b429\b|rate[- ]limit|RESOURCE_EXHAUSTED|quota exceeded|skipped so other speakers|run stream is no longer available|Cursor not configured/i;
 
 export function looksLikeMcpThreadDump(raw: string): boolean {
   const t = raw.trim();
@@ -243,6 +243,7 @@ export function sanitizeMcpStopMessage(raw: string): string {
 
 function speakerSkipChip(label: string, content: string): string {
   const t = content.trim();
+  if (!t || /^(none|null|undefined)$/i.test(t)) return `${label}: failed (no error detail)`;
   const secs = t.match(/timed out after (\d+)s/i)?.[1];
   if (secs) return `${label}: timed out after ${secs}s — skipped`;
   if (/\b429\b/.test(t) || /rate[- ]limit|RESOURCE_EXHAUSTED|quota exceeded/i.test(t)) {
