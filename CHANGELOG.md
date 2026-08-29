@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-29
 
+**v0.1.8 installers.**
+
+- GitHub Release [v0.1.8](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.8) packs Linux from this `main` (Agent=MCP grant-dir, serialized Streamable HTTP RPCs, staging playbook drafts). File names are `Late-0.1.8-…`. Still unsigned. macOS and Windows installers are not rebuilt on this Linux computer.
+
 **v0.1.7 installers.**
 
 - GitHub Release [v0.1.7](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.7) packs Linux, macOS, and Windows from this `main` (Agent=MCP uses the advertised GUI `/mcp` URL, not Late vLLM; README points at [Agent Orchestrator](https://github.com/Unaware-Kerbin/agent-orchestrator)). File names are `Late-0.1.7-…`. Still unsigned.

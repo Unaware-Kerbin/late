@@ -1,6 +1,6 @@
 [package]
 name = "late-desktop"
-version = "0.1.7"
+version = "0.1.8"
 description = "Late — Local AI Terminal Emulator"
 authors = ["Late"]
 edition = "2021"
