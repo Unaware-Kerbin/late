@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-29
 
+**v0.1.9 installers.**
+
+- GitHub Release [v0.1.9](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.9) packs Linux from this `main` (MCP Staging fills VLAN bodies, Push uses a live SSH/serial session, investigation stays on `propose_command`, Settings permit list). File names are `Late-0.1.9-…`. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions.
+
 **v0.1.8 installers.**
 
 - GitHub Release [v0.1.8](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.8) packs Linux from this `main` (Agent=MCP grant-dir, serialized Streamable HTTP RPCs, staging playbook drafts). File names are `Late-0.1.8-…`. Still unsigned. macOS and Windows installers are not rebuilt on this Linux computer.
