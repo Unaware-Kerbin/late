@@ -4,14 +4,13 @@ import { BlockList, isIP } from "node:net";
 /** Where chat tokens may go. `cloud` is public internet / unknown. */
 export type ChatEgress = "loopback" | "private" | "cloud";
 
-/** Loopback and RFC1918 / extra hosts do not need Cloud AI. Public hosts do. */
+/** Loopback, RFC1918, ULA, and extra hosts do not need Cloud AI. Public, 169.254/16, and 0.0.0.0/8 do. */
 export function chatEgressAllowed(egress: ChatEgress, cloud: boolean): boolean {
   return egress === "loopback" || egress === "private" || cloud;
 }
 
 const LOOPBACK = new BlockList();
 LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
-LOOPBACK.addSubnet("0.0.0.0", 8, "ipv4");
 LOOPBACK.addAddress("::1", "ipv6");
 LOOPBACK.addSubnet("::ffff:127.0.0.0", 104, "ipv6");
 
@@ -19,13 +18,11 @@ const PRIVATE = new BlockList();
 PRIVATE.addSubnet("10.0.0.0", 8, "ipv4");
 PRIVATE.addSubnet("172.16.0.0", 12, "ipv4");
 PRIVATE.addSubnet("192.168.0.0", 16, "ipv4");
-PRIVATE.addSubnet("169.254.0.0", 16, "ipv4");
 PRIVATE.addSubnet("fc00::", 7, "ipv6");
 PRIVATE.addSubnet("fe80::", 10, "ipv6");
 PRIVATE.addSubnet("::ffff:10.0.0.0", 104, "ipv6");
 PRIVATE.addSubnet("::ffff:172.16.0.0", 108, "ipv6");
 PRIVATE.addSubnet("::ffff:192.168.0.0", 112, "ipv6");
-PRIVATE.addSubnet("::ffff:169.254.0.0", 112, "ipv6");
 
 const PRIVATE_SUFFIXES = [".local", ".internal", ".lan", ".home.arpa"] as const;
 

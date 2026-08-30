@@ -1,4 +1,5 @@
 import { daemon } from "./daemon.js";
+import { rememberGrantedMcpCwdFromTool, withUntrustedDeviceFence } from "./mcp-chat-format.js";
 import { decide, isAlwaysAllowed, rememberAlways, requestApproval } from "./approvals.js";
 import { callMcpTool, listMcpOpenAiTools } from "./mcp-client.js";
 import { mcpNeedsApprove } from "./mcp-format.js";
@@ -234,10 +235,14 @@ export async function liveSessionContext(): Promise<string> {
   try {
     sessions = await snapshotSessions();
   } catch (err) {
-    return `Live session list unavailable (${err instanceof Error ? err.message : String(err)}). You can still answer from the operator message. Retry list_open_sessions after the daemon is reachable.`;
+    return withUntrustedDeviceFence(
+      `Live session list unavailable (${err instanceof Error ? err.message : String(err)}). You can still answer from the operator message. Retry list_open_sessions after the daemon is reachable.`,
+    );
   }
   if (!sessions.length) {
-    return "No sessions are open (SSH, serial, API, pcap, or local PTY). Ask the operator to connect a device. Do not invent session ids. Do not ask them to paste configs.";
+    return withUntrustedDeviceFence(
+      "No sessions are open (SSH, serial, API, pcap, or local PTY). Ask the operator to connect a device. Do not invent session ids. Do not ask them to paste configs.",
+    );
   }
   const names = sessions
     .map((s) => `${s.name} (${s.kind}${s.vendor ? `, ${s.vendor}` : ""})`)
@@ -370,8 +375,8 @@ export function mcpSystemNote(tools: OpenAiTool[]): string {
   if (!extra.length) return "";
   return [
     `You also have ${extra.length} MCP tools (names start with mcp_).`,
-    "list_/get_/recommend_ and vllm_status run immediately.",
-    "start, stop, download, dispatch, chat_send, and write-directory grant changes wait for the operator to click Approve.",
+    "Named status and list tools (list_agents, chat_list, *_status, and similar) run immediately.",
+    "Every other MCP tool waits for the operator to click Approve.",
     "Device CLI still uses propose_command. Do not ask for API keys.",
   ].join(" ");
 }
@@ -458,6 +463,7 @@ async function proposeMcp(name: string, args: Record<string, unknown>, ctx: Tool
   const decision = await awaitGate(ctx, pending, (p) => p.detail.mcp === raw);
   if (!decision.allow) return { executed: false, reason: "operator denied" };
   const output = await callMcpTool(name, args);
+  rememberGrantedMcpCwdFromTool(name, args);
   return { executed: true, output };
 }
 

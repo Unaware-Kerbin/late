@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import { chatEgressAllowed, classifyChatBaseSync } from "./chat-target.ts";
 import {
   mcpNeedsApprove,
+  mcpStdioEnv,
   mcpToolName,
   mcpToOpenAiTool,
   parseMcpHttpUrl,
@@ -25,17 +26,33 @@ describe("mcp-format", () => {
     assert.equal(stripMcpPrefix("mcp_start_vllm"), "start_vllm");
   });
 
-  it("gates writes and starts, not lists", () => {
+  it("gates writes and starts, not named status/list tools", () => {
     assert.equal(mcpNeedsApprove("list_agents"), false);
     assert.equal(mcpNeedsApprove("mcp_list_hardware"), false);
     assert.equal(mcpNeedsApprove("vllm_status"), false);
+    assert.equal(mcpNeedsApprove("ollama_status"), false);
+    assert.equal(mcpNeedsApprove("chat_get"), false);
     assert.equal(mcpNeedsApprove("get_run"), false);
     assert.equal(mcpNeedsApprove("start_vllm"), true);
     assert.equal(mcpNeedsApprove("chat_send"), true);
     assert.equal(mcpNeedsApprove("dispatch"), true);
+    assert.equal(mcpNeedsApprove("follow_up"), true);
     assert.equal(mcpNeedsApprove("download_local_model"), true);
     assert.equal(mcpNeedsApprove("add_allowed_dir"), true);
     assert.equal(mcpNeedsApprove("chat_delete"), true);
+    assert.equal(mcpNeedsApprove("get_secrets"), true);
+    assert.equal(mcpNeedsApprove("get_env"), true);
+    assert.equal(mcpNeedsApprove("list_passwords"), true);
+    assert.equal(mcpNeedsApprove("list_keys"), true);
+    assert.equal(mcpNeedsApprove("recommend_exploit"), true);
+    assert.equal(mcpNeedsApprove("list_allowed_dirs"), false);
+    assert.equal(mcpNeedsApprove("list_local_models"), false);
+    assert.equal(mcpNeedsApprove("recommend_local_models"), false);
+    assert.equal(mcpNeedsApprove("list_runs"), false);
+    assert.equal(mcpNeedsApprove("chat_list"), false);
+    assert.equal(mcpNeedsApprove("llamacpp_status"), false);
+    assert.equal(mcpNeedsApprove("stop_vllm"), true);
+    assert.equal(mcpNeedsApprove("chat_approve"), true);
   });
 
   it("rejects shell characters in args", () => {
@@ -59,6 +76,53 @@ describe("mcp-format", () => {
     assert.deepEqual(launch.args, [join(cwd, "src", "index.ts")]);
     assert.equal(launch.env.WORKSPACE_CWD, cwd);
     assert.equal(launch.env.AGENT_ORCHESTRATOR_CONFIG, join(cwd, "agents.config.yaml"));
+  });
+
+  it("does not copy Late RPC or provider keys into MCP stdio env", () => {
+    const got = mcpStdioEnv(
+      {
+        PATH: "/usr/bin",
+        HOME: "/home/operator",
+        LATE_RPC_TOKEN: "rpc-token",
+        LATE_DAEMON_HTTP: "http://127.0.0.1:7420",
+        LATE_DAEMON_WS: "ws://127.0.0.1:7420/ws",
+        CURSOR_API_KEY: "cursor-key",
+        ANTHROPIC_API_KEY: "ant-key",
+        OPENAI_API_KEY: "oai-key",
+      },
+      { WORKSPACE_CWD: MCP_CWD, LATE_RPC_TOKEN: "should-not-stick" },
+    );
+    assert.equal(got.PATH, "/usr/bin");
+    assert.equal(got.HOME, "/home/operator");
+    assert.equal(got.WORKSPACE_CWD, MCP_CWD);
+    assert.equal(got.LATE_RPC_TOKEN, undefined);
+    assert.equal(got.LATE_DAEMON_HTTP, undefined);
+    assert.equal(got.LATE_DAEMON_WS, undefined);
+    assert.equal(got.CURSOR_API_KEY, undefined);
+    assert.equal(got.ANTHROPIC_API_KEY, undefined);
+    assert.equal(got.OPENAI_API_KEY, undefined);
+  });
+
+  it("keeps PATH HOME USER LANG NODE_PATH so the MCP child can find node", () => {
+    const got = mcpStdioEnv(
+      {
+        PATH: "/usr/bin:/usr/local/bin",
+        HOME: "/home/operator",
+        USER: "operator",
+        LANG: "en_US.UTF-8",
+        NODE_PATH: "/usr/lib/node_modules",
+        XDG_CONFIG_HOME: "/home/operator/.config",
+        CURSOR_API_KEY: "drop-me",
+      },
+      { WORKSPACE_CWD: MCP_CWD },
+    );
+    assert.equal(got.PATH, "/usr/bin:/usr/local/bin");
+    assert.equal(got.HOME, "/home/operator");
+    assert.equal(got.USER, "operator");
+    assert.equal(got.LANG, "en_US.UTF-8");
+    assert.equal(got.NODE_PATH, "/usr/lib/node_modules");
+    assert.equal(got.XDG_CONFIG_HOME, "/home/operator/.config");
+    assert.equal(got.CURSOR_API_KEY, undefined);
   });
 
   it("maps MCP schema onto OpenAI tools", () => {
@@ -198,5 +262,9 @@ describe("mcp-format", () => {
     assert.equal(egress, "cloud");
     assert.equal(chatEgressAllowed(egress, false), false);
     assert.equal(chatEgressAllowed(egress, true), true);
+    const loop = parseMcpHttpUrl("http://127.0.0.1:8790/mcp");
+    assert.equal(typeof loop, "string");
+    if (typeof loop !== "string") return;
+    assert.equal(chatEgressAllowed(classifyChatBaseSync(loop), false), true);
   });
 });

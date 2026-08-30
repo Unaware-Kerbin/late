@@ -285,7 +285,7 @@ export async function probeNativeTarget(kind: NativeKind, baseOverride?: string)
       const ok = status < 400 || models.length > 0;
       const message = ok
         ? `Gemini online · ${list.length} model${list.length === 1 ? "" : "s"} · ${where}`
-        : `Gemini at ${base} returned HTTP ${status}. Save the Gemini key, or point at a Vertex / generateContent proxy.`;
+        : `Gemini at ${base} returned HTTP ${status}. Save the Gemini API key, or point at a generateContent-compatible URL (API key, not Vertex OAuth).`;
       auditEvent("chat.probe", { kind, egress, ok });
       return { ok, kind, base, egress, models: list, message };
     }

@@ -41,6 +41,10 @@ fn walk(dir: &Path, hits: &mut Vec<String>) {
             walk(&path, hits);
             continue;
         }
+        // Tests may name get_secrets / /secret so they can prove those stay gated.
+        if name.contains(".test.") {
+            continue;
+        }
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
         if !matches!(ext, "ts" | "js" | "mjs" | "cjs" | "json" | "tsx") {
             continue;
@@ -80,10 +84,11 @@ fn walk(dir: &Path, hits: &mut Vec<String>) {
                 && (lower.contains("provider-keys")
                     || lower.contains("sidecar.token")
                     || lower.contains("providers.set")
-                    || lower.contains("providers.status"))
+                    || lower.contains("providers.status")
+                    || lower.contains("inference.download"))
             {
                 hits.push(format!(
-                    "{}:{}: agent tools must not touch provider credentials",
+                    "{}:{}: agent tools must not touch provider credentials or inference.download",
                     path.display(),
                     i + 1
                 ));

@@ -292,6 +292,12 @@ async function defaultModel(kind: CompatKind, base: string): Promise<string> {
   return models[0] ?? "local";
 }
 
+/** Gemma/vLLM without --enable-auto-tool-choice rejects tool_choice=auto. Chat still works. */
+export function vllmRejectsAutoToolChoice(status: number, body: string): boolean {
+  if (status !== 400) return false;
+  return /enable-auto-tool-choice|tool-call-parser/i.test(body);
+}
+
 async function chatCompletions(
   kind: CompatKind,
   label: string,
@@ -306,25 +312,36 @@ async function chatCompletions(
     "Content-Type": "application/json",
     ...(await bearerFor(kind, base)),
   };
-  let r: Response;
-  try {
-    r = await fetchStayOnBox(`${base}/chat/completions`, {
+  const payload = {
+    model,
+    messages,
+    tools,
+    tool_choice: "auto" as const,
+    temperature: 0.2,
+    stream: false,
+  };
+  const post = (body: unknown) =>
+    fetchStayOnBox(`${base}/chat/completions`, {
       method: "POST",
       headers,
       signal: linked,
-      body: JSON.stringify({
-        model,
-        messages,
-        tools,
-        tool_choice: "auto",
-        temperature: 0.2,
-        stream: false,
-      }),
+      body: JSON.stringify(body),
     });
+  let r: Response;
+  try {
+    r = await post(payload);
   } catch (err) {
     throw describeFetchError(err, label, base);
   }
-  const text = await r.text();
+  let text = await r.text();
+  if (!r.ok && vllmRejectsAutoToolChoice(r.status, text)) {
+    try {
+      r = await post({ model, messages, temperature: 0.2, stream: false });
+    } catch (err) {
+      throw describeFetchError(err, label, base);
+    }
+    text = await r.text();
+  }
   let json: { choices?: { message: ChatMessage }[]; error?: unknown };
   try {
     json = JSON.parse(text) as typeof json;

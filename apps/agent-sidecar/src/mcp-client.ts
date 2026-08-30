@@ -2,11 +2,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { classifyChatBase, parseExtraHosts } from "./chat-target.js";
+import { chatEgressAllowed, classifyChatBase, parseExtraHosts } from "./chat-target.js";
 import { daemon } from "./daemon.js";
 import { firstReachableMcpUrl, mcpDiscoverCandidates } from "./mcp-discover.js";
 import {
   MCP_GUI_AGENTS,
+  mcpStdioEnv,
   mcpToOpenAiTool,
   parseMcpHttpUrl,
   resolveMcpTarget,
@@ -165,8 +166,12 @@ async function assertMcpHttp(url: string, s: Record<string, unknown>): Promise<v
   if (typeof parsed !== "string") throw new Error(parsed.error);
   const extra = parseExtraHosts(s.private_inference_hosts ?? s.privateInferenceHosts);
   const egress = await classifyChatBase(parsed, extra);
-  void egress;
-  return;
+  const cloud = settingFlag(s, "cloud_chat_enabled", "cloudChatEnabled");
+  if (!chatEgressAllowed(egress, cloud)) {
+    throw new Error(
+      "That MCP address is on the public internet. Turn on Cloud AI in Settings, or use a loopback / private URL.",
+    );
+  }
 }
 
 const enqueueMcpRpc = createRpcQueue();
@@ -225,7 +230,7 @@ async function ensureSession(overrideUrl?: string, force = false): Promise<Live>
   closeMcp();
   const child = spawn(target.command, target.args, {
     cwd: target.cwd,
-    env: { ...process.env, ...target.env },
+    env: mcpStdioEnv(process.env, target.env),
     stdio: ["pipe", "pipe", "pipe"],
   });
   const sess: StdioSession = { kind: "stdio", key, child, pending: new Map(), nextId: 1 };

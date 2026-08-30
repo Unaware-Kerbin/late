@@ -6,11 +6,28 @@ export type McpToolDef = {
   inputSchema?: Record<string, unknown>;
 };
 
-/** List/get/status-style tools run without Late Approve. Writes and starts still wait. */
+/**
+ * Read-only / status tools Late runs without Approve.
+ * Unknown names wait — do not treat get_/list_/recommend_ prefixes as safe.
+ */
+const MCP_APPROVE_FREE = new Set([
+  "list_agents",
+  "chat_list",
+  "chat_get",
+  "list_runs",
+  "get_run",
+  "list_allowed_dirs",
+  "list_hardware",
+  "list_local_models",
+  "recommend_local_models",
+  "vllm_status",
+  "ollama_status",
+  "llamacpp_status",
+]);
+
 export function mcpNeedsApprove(rawName: string): boolean {
   const n = stripMcpPrefix(rawName).toLowerCase();
-  if (n === "vllm_status" || n === "chat_list") return false;
-  return !/^(list_|get_|recommend_)/.test(n);
+  return !MCP_APPROVE_FREE.has(n);
 }
 
 export function mcpToolName(rawName: string): string {
@@ -283,4 +300,39 @@ export function resolveMcpLaunch(
   const env: Record<string, string> = { WORKSPACE_CWD: cwd };
   if (exists(yaml)) env.AGENT_ORCHESTRATOR_CONFIG = yaml;
   return { command, args, cwd, env };
+}
+
+/** Late RPC / API key names. MCP stdio must not inherit these from the sidecar. */
+const MCP_STDIO_DROP = [
+  "LATE_RPC_TOKEN",
+  "LATE_SIDECAR_TOKEN",
+  "LATE_DAEMON_HTTP",
+  "LATE_DAEMON_WS",
+  "CURSOR_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "OPENAI_API_KEY",
+  "GROQ_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+/**
+ * Copy PATH/HOME/etc. for MCP stdio. Drop Late RPC and provider keys so the child
+ * cannot call the daemon or reuse Cloud AI credentials.
+ */
+export function mcpStdioEnv(
+  parent: NodeJS.Dict<string>,
+  extra: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(parent)) {
+    if (v === undefined) continue;
+    if (MCP_STDIO_DROP.includes(k)) continue;
+    env[k] = v;
+  }
+  Object.assign(env, extra);
+  for (const k of MCP_STDIO_DROP) delete env[k];
+  return env;
 }

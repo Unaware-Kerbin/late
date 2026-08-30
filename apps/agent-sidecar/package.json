@@ -8,7 +8,7 @@
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx --test src/chat-target.test.ts src/native-loop.test.ts src/mcp-format.test.ts src/mcp-http.test.ts src/mcp-discover.test.ts src/mcp-loop.test.ts src/mcp-transport.test.ts src/mcp-grant-dir.test.ts src/mcp-rpc-queue.test.ts src/tools.test.ts"
+    "test": "tsx --test src/chat-target.test.ts src/native-loop.test.ts src/mcp-format.test.ts src/mcp-http.test.ts src/mcp-discover.test.ts src/mcp-loop.test.ts src/mcp-transport.test.ts src/mcp-grant-dir.test.ts src/mcp-rpc-queue.test.ts src/tools.test.ts src/orch-rest.test.ts src/openai-loop.test.ts"
   },
   "dependencies": {
     "ws": "^8.18.3"

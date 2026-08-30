@@ -1408,7 +1408,7 @@ export function ChatPane() {
           {backend === "anthropic"
             ? "Anthropic key and base URL are in Settings. Public api.anthropic.com needs Cloud AI; a LAN proxy does not."
             : backend === "gemini"
-              ? "Gemini key and base URL are in Settings. Public generativelanguage.googleapis.com needs Cloud AI; Vertex/private generateContent does not."
+              ? "Gemini key and base URL are in Settings. Public generativelanguage.googleapis.com needs Cloud AI; a private generateContent URL does not. Gemini is API-key generateContent, not Vertex OAuth."
               : "Azure key, resource URL, and deployment are in Settings. Public *.openai.azure.com needs Cloud AI unless DNS is only private."}{" "}
           <button className="linkish" type="button" onClick={() => setState({ keysOpen: true })}>API keys</button>
         </p>
@@ -1610,7 +1610,7 @@ function WeightsPanel(props: {
     <div className="chat-models-body">
       <p className="hint" style={{ margin: "0 0 8px" }}>
         {props.networkServer
-          ? `${props.sidecarHint ? `${props.sidecarHint} ` : ""}Pull / Start / Download only manage a process on this computer, so they are disabled while the URL is not loopback.`
+          ? `${props.sidecarHint ? `${props.sidecarHint} ` : ""}Pull / Start / Download only manage a process on this computer, so they stay hidden while the URL is not loopback. Pick Local to use this computer.`
           : props.sidecarHint ||
             (llama
               ? "Download a GGUF from Hugging Face into ~/.local/share/late/models/gguf/. Late does not install llama.cpp. Start needs llama-server on PATH, or run it yourself on 127.0.0.1:8080."
@@ -1624,13 +1624,15 @@ function WeightsPanel(props: {
         {props.gpu.models.length ? ` · ${props.gpu.models.join(", ")}` : ""}
       </div>
       <div className="meta" style={{ marginBottom: 8 }}>{props.gpu.detail}</div>
+      {!props.networkServer && (
       <UseAllGpusRow
         settings={props.settings}
         gpu={props.gpu}
         engine={props.engine}
-        disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || props.networkServer}
+        disabled={props.gpuBusy || props.gpu.running || props.gpu.starting}
         onChange={props.onUseAllGpus}
       />
+      )}
       {(props.gpu.localModels ?? []).length > 0 && (
         <div className="model-list">
           <span className="meta">Catalog for your computer</span>
@@ -1644,11 +1646,11 @@ function WeightsPanel(props: {
               >
                 {m.complete ? "ready" : "get"} · {catalogFitLabel(m)} · {m.id}
               </button>
-              {!m.complete && (
+              {!m.complete && !props.networkServer && (
                 <button
                   type="button"
                   className="ghost dl"
-                  disabled={props.gpuBusy || props.gpu.downloading || props.networkServer}
+                  disabled={props.gpuBusy || props.gpu.downloading}
                   onClick={() => props.onFetch(m.id)}
                 >
                   {llama ? "Download" : "Pull"}
@@ -1695,8 +1697,13 @@ function WeightsPanel(props: {
       </label>
       <p className="meta" style={{ margin: "0 0 8px" }}>
         {(props.gpu.localModels ?? []).find((m) => m.id === props.serveModel)?.note
-          || (llama ? "Pick a GGUF, or download one below." : "Pick a pulled model, or Pull one below.")}
+          || (props.networkServer
+            ? "Chat uses the saved server. Start / Pull / Download stay on this computer."
+            : llama
+              ? "Pick a GGUF, or download one below."
+              : "Pick a pulled model, or Pull one below.")}
       </p>
+      {!props.networkServer && (
       <div className="row" style={{ marginBottom: 8 }}>
         <input
           value={props.downloadId}
@@ -1705,21 +1712,24 @@ function WeightsPanel(props: {
         />
         <button
           className="ghost"
-          disabled={props.gpuBusy || props.gpu.downloading || !props.downloadId.trim() || props.networkServer}
+          disabled={props.gpuBusy || props.gpu.downloading || !props.downloadId.trim()}
           onClick={props.onPull}
         >
           {llama ? "Download" : "Pull"}
         </button>
       </div>
+      )}
       {llama && (
         <div className="row">
+          {!props.networkServer && (
           <button
             className="primary"
-            disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || !props.serveModel.trim() || props.networkServer}
+            disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || !props.serveModel.trim()}
             onClick={props.onStart}
           >
             Start {props.serveModel ? props.serveModel.split("/").pop() : "llama-server"}
           </button>
+          )}
           <button
             className="ghost"
             disabled={props.gpuBusy || (!props.gpu.lateOwned && !props.gpu.starting)}

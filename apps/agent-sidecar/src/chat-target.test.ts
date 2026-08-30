@@ -15,12 +15,11 @@ test("loopback names and IPs", () => {
   assert.equal(classifyHostname("127.0.0.2"), "loopback");
 });
 
-test("RFC1918, link-local, ULA", () => {
+test("RFC1918, ULA, IPv6 link-local", () => {
   assert.equal(classifyHostname("10.1.2.3"), "private");
   assert.equal(classifyHostname("192.168.0.5"), "private");
   assert.equal(classifyHostname("172.16.9.1"), "private");
   assert.equal(classifyHostname("172.31.255.1"), "private");
-  assert.equal(classifyHostname("169.254.1.1"), "private");
   assert.equal(classifyHostname("fd12:3456:789a::1"), "private");
   assert.equal(classifyHostname("fe80::1"), "private");
 });
@@ -31,6 +30,10 @@ test("public IPs stay cloud", () => {
   assert.equal(classifyHostname("172.15.0.1"), "cloud");
   assert.equal(classifyHostname("172.32.0.1"), "cloud");
   assert.equal(classifyHostname("100.64.0.1"), "cloud");
+  assert.equal(classifyHostname("169.254.1.1"), "cloud");
+  assert.equal(classifyHostname("169.254.169.254"), "cloud");
+  assert.equal(classifyHostname("0.0.0.0"), "cloud");
+  assert.equal(classifyHostname("0.0.0.1"), "cloud");
 });
 
 test("private DNS suffixes", () => {

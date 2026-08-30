@@ -121,6 +121,29 @@ export async function releaseTempPcap(path: string, ctx: OrchRestCtx): Promise<v
   ).catch(() => undefined);
 }
 
+const LOGO_PATH = /^\/api\/backends\/[A-Za-z][A-Za-z0-9_-]{0,63}\/logo$/;
+
+export function isOrchestratorLogoPath(pathname: string): boolean {
+  try {
+    return LOGO_PATH.test(decodeURIComponent(pathname));
+  } catch {
+    return false;
+  }
+}
+
+/** Bearer only for loopback orchestrator `/api/backends/<id>/logo`. */
+export function isOrchestratorLogoUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:") return false;
+    const host = u.hostname.toLowerCase();
+    if (host !== "127.0.0.1" && host !== "localhost") return false;
+    return isOrchestratorLogoPath(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchLogoDataUrl(
   logoUrl: string,
   token: string,
@@ -134,12 +157,14 @@ export async function fetchLogoDataUrl(
   return undefined;
 }
 
-function logoUrlCandidates(logoUrl: string, origins: string[]): string[] {
+export function logoUrlCandidates(logoUrl: string, origins: string[]): string[] {
   const out: string[] = [];
   const push = (u: string) => {
-    if (u && !out.includes(u)) out.push(u);
+    if (u && isOrchestratorLogoUrl(u) && !out.includes(u)) out.push(u);
   };
   if (logoUrl.startsWith("/")) {
+    const pathOnly = logoUrl.split("?")[0] ?? logoUrl;
+    if (!isOrchestratorLogoPath(pathOnly)) return out;
     for (const origin of origins) push(`${origin.replace(/\/+$/, "")}${logoUrl}`);
     return out;
   }
@@ -157,13 +182,13 @@ function logoUrlCandidates(logoUrl: string, origins: string[]): string[] {
       }
     }
   } catch {
-    /* keep original only */
+    /* keep original only if it was a logo URL */
   }
   return out;
 }
 
 async function fetchOneLogo(logoUrl: string, token: string): Promise<string | undefined> {
-  if (!logoUrl.startsWith("http://127.0.0.1:") && !logoUrl.startsWith("http://localhost:")) {
+  if (!isOrchestratorLogoUrl(logoUrl)) {
     return undefined;
   }
   try {

@@ -88,6 +88,10 @@ export { parseMcpCatalogAgents } from "./mcp-format.js";
 export { extractPcapPaths } from "./orch-rest.js";
 
 const MCP_CHAT_ROUND = new Set(["chat_send", "dispatch"]);
+/** Staging write is the answer. Another chat_send would re-echo the same JSON until the round cap. */
+export function mcpLateToolEndsTurn(name: string): boolean {
+  return name === "propose_staged_artifact";
+}
 const threads = new Map<string, { threadId: string }>();
 
 function clip(s: string, n = 4000): string {
@@ -429,6 +433,7 @@ export async function runMcpChat(opts: {
 
       const name = executeName(flushed.parsed);
       const result = clip(await executeTool(name, JSON.stringify(flushed.parsed.args), ctx));
+      if (mcpLateToolEndsTurn(flushed.parsed.name)) return assistantText;
       deviceBlock = `BEGIN UNTRUSTED DEVICE OUTPUT\n${result}\nEND UNTRUSTED DEVICE OUTPUT`;
       extra = MCP_CHAT_ROUND.has(flushed.parsed.name)
         ? "A previous MCP chat_send/dispatch is waiting on Late Approve. Do not invent another."

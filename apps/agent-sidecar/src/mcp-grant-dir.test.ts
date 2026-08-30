@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { cancelAll, decide, listPending } from "./approvals.ts";
-import { grantedMcpCwd, mcpChatSendArgs, setGrantedMcpCwd } from "./mcp-chat-format.ts";
+import {
+  grantedMcpCwd,
+  mcpChatSendArgs,
+  rememberGrantedMcpCwdFromTool,
+  setGrantedMcpCwd,
+} from "./mcp-chat-format.ts";
 import { mcpNeedsApprove } from "./mcp-format.ts";
 import {
   GRANT_DIR_HOST_NOTE,
@@ -11,6 +16,18 @@ import {
 } from "./mcp-grant-dir.ts";
 
 describe("mcp grant-dir", () => {
+  it("Approve on add_allowed_dir via MCP tool sets cwd for the next chat_send", () => {
+    setGrantedMcpCwd(undefined);
+    rememberGrantedMcpCwdFromTool("mcp_add_allowed_dir", { path: "/tmp/mcp-from-tool" });
+    assert.equal(grantedMcpCwd(), "/tmp/mcp-from-tool");
+    assert.equal(mcpChatSendArgs("implement README").cwd, "/tmp/mcp-from-tool");
+    rememberGrantedMcpCwdFromTool("chat_send", { message: "nope" });
+    assert.equal(grantedMcpCwd(), "/tmp/mcp-from-tool");
+    rememberGrantedMcpCwdFromTool("add_allowed_dir", { path: "  " });
+    assert.equal(grantedMcpCwd(), "/tmp/mcp-from-tool");
+    setGrantedMcpCwd(undefined);
+  });
+
   it("add_allowed_dir and chat_delete stay behind existing Approve", () => {
     assert.equal(mcpNeedsApprove("add_allowed_dir"), true);
     assert.equal(mcpNeedsApprove("mcp_add_allowed_dir"), true);

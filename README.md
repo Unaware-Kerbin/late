@@ -94,7 +94,11 @@ If the box asks for a secret, Settings → API keys → **Custom OpenAI-compatib
 
 **MCP as the agent.** Optional. A free open-source MCP server you can use is [Agent Orchestrator](https://github.com/Unaware-Kerbin/agent-orchestrator) (localhost GUI that also serves `/mcp`). Start it in that repo (`npm run gui`). In Late pick **MCP** and paste the `/mcp` URL it printed — **same port as its web UI**, not always 8790. The HTML page is not MCP. Or leave the address empty: Late looks for the URL that program wrote (`mcp.gui.url`). Chat stays on MCP; it does not switch to Late’s local vLLM on `:8000`. Late still waits for **Approve**. Late will not start that program and will not send API keys into it. Any Streamable HTTP `/mcp` server works the same way. Late still chats when MCP is off.
 
+Device scrollback is wrapped as **BEGIN UNTRUSTED DEVICE OUTPUT** … **END UNTRUSTED DEVICE OUTPUT** (both fences, always) so that program cannot treat switch text as instructions.
+
 ![Pick vLLM Local or MCP on your computer](docs/assets/late-helper-backends.webp)
+
+![MCP wrap BEGIN and END on your computer](docs/assets/late-mcp-wrap.webp)
 
 ## Staging and Push
 
