@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-30
 
+**v0.1.10 installers.**
+
+- GitHub Release [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10) packs Linux from this `main` (digest-pinned Check so the updater verifies the Unaware-Kerbin SHA-256, wrap isolation fail-closed, README packet-capture and helper clips). File names are `Late-0.1.10-…`. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions.
+
 **Updates (GitHub).**
 
 - Settings → **Check for updates** (optional check when Late starts) looks at GitHub releases for Late and Agent Orchestrator. Asks whether to update Late, Orchestrator, or both. Confirm before download. macOS / Windows installers are called out as unsigned. Copy says **your computer**. Does not need Cloud AI. Sidecar stays on 127.0.0.1.
