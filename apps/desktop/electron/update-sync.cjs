@@ -2,8 +2,10 @@
 
 const fs = require("node:fs");
 const http = require("node:https");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
+const { pipeline } = require("node:stream/promises");
 
 const REPOS = {
   late: "Unaware-Kerbin/late",
@@ -11,21 +13,161 @@ const REPOS = {
 };
 const MAX_ASSET_BYTES = 400 * 1024 * 1024;
 const MAX_RELEASE_JSON = 1_500_000;
-const GITHUB_DOWNLOAD_PATH = /^\/Unaware-Kerbin\/(late|agent-orchestrator)\/releases\/download\//;
-const GITHUB_API_PATH = /^\/repos\/Unaware-Kerbin\/(late|agent-orchestrator)\/releases\/latest$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const GITHUB_CDN_PATH = /^\/github-production-release-asset(?:-[0-9a-f]+)?\//i;
 
-function allowedDownloadHost(url) {
+function httpsNoUserinfo(u) {
+  if (u.protocol !== "https:") return false;
+  if (u.username || u.password) return false;
+  if (u.port && u.port !== "443") return false;
+  return true;
+}
+
+function pathSegments(pathname) {
+  return pathname.split("/").filter((s) => s !== "");
+}
+
+function githubDownloadSegments(u) {
+  if (u.hostname.toLowerCase() !== "github.com") return null;
+  const parts = pathSegments(u.pathname).map((s) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  });
+  if (parts.length !== 6) return null;
+  if (parts[0] !== "Unaware-Kerbin") return null;
+  if (parts[1] !== "late" && parts[1] !== "agent-orchestrator") return null;
+  if (parts[2] !== "releases" || parts[3] !== "download") return null;
+  const tag = parts[4];
+  const file = parts[5];
+  if (!tag || tag === "." || tag === ".." || tag.includes("..")) return null;
+  if (!file || file === "." || file === ".." || file.includes("\0")) return null;
+  return { repo: parts[1], tag, file };
+}
+
+function isGithubReleaseCdn(u) {
+  const host = u.hostname.toLowerCase();
+  if (host !== "objects.githubusercontent.com" && host !== "release-assets.githubusercontent.com") return false;
+  return GITHUB_CDN_PATH.test(u.pathname);
+}
+
+function contentDispositionFileName(value) {
+  const text = String(value || "");
+  const star = /filename\*\s*=\s*(?:UTF-8''|utf-8'')([^;]+)/i.exec(text);
+  let raw = null;
+  if (star) {
+    try {
+      raw = decodeURIComponent(star[1].trim().replace(/^"+|"+$/g, ""));
+    } catch {
+      raw = null;
+    }
+  } else {
+    const quoted = /filename\s*=\s*"([^"]+)"/i.exec(text);
+    const bare = /filename\s*=\s*([^;]+)/i.exec(text);
+    raw = (quoted?.[1] ?? bare?.[1] ?? "").trim() || null;
+  }
+  if (!raw) return null;
+  const base = raw.replaceAll("\\", "/").split("/").pop() ?? "";
+  if (!base || base === "." || base === ".." || base.includes("\0")) return null;
+  return base;
+}
+
+function cdnDeclaredFileName(u) {
+  for (const key of ["response-content-disposition", "rscd", "filename"]) {
+    const v = u.searchParams.get(key);
+    if (!v) continue;
+    const n =
+      key === "filename"
+        ? contentDispositionFileName(`filename=${v}`) || v.replaceAll("\\", "/").split("/").pop() || null
+        : contentDispositionFileName(v);
+    if (n) return n;
+  }
+  return null;
+}
+
+function allowedDownloadHost(url, expectedFileName, opts) {
   try {
     const u = new URL(url);
-    if (u.protocol !== "https:") return false;
-    if (u.username || u.password) return false;
+    if (!httpsNoUserinfo(u)) return false;
     const host = u.hostname.toLowerCase();
-    if (host === "api.github.com") return GITHUB_API_PATH.test(u.pathname);
-    if (host === "github.com") return GITHUB_DOWNLOAD_PATH.test(u.pathname);
-    return host === "objects.githubusercontent.com" || host === "release-assets.githubusercontent.com";
+    const hop = (opts && opts.hop) || "any";
+    if (host === "api.github.com") {
+      if (hop === "cdn" || hop === "first") return false;
+      return /^\/repos\/Unaware-Kerbin\/(late|agent-orchestrator)\/releases\/latest$/.test(u.pathname);
+    }
+    if (host === "github.com") {
+      if (hop === "cdn") return false;
+      const segs = githubDownloadSegments(u);
+      if (!segs) return false;
+      if (expectedFileName && segs.file !== expectedFileName) return false;
+      return true;
+    }
+    if (hop === "first") return false;
+    if (!isGithubReleaseCdn(u)) return false;
+    if (!expectedFileName) return hop !== "cdn" || Boolean(opts && opts.digestPinned);
+    const declared = cdnDeclaredFileName(u);
+    if (declared) return declared === expectedFileName;
+    return hop === "cdn" ? Boolean(opts && opts.digestPinned) : true;
   } catch {
     return false;
   }
+}
+
+function allowedFirstDownloadUrl(url, expectedFileName) {
+  return allowedDownloadHost(url, expectedFileName, { hop: "first" });
+}
+
+function allowedCdnRedirectUrl(url, expectedFileName, digestPinned) {
+  return allowedDownloadHost(url, expectedFileName, { hop: "cdn", digestPinned });
+}
+
+function parseAssetDigest(digest, sha256) {
+  const fromField = (value) => {
+    if (value == null || value === "") return null;
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const m = /^(?:sha256:)?([0-9a-fA-F]{64})$/.exec(trimmed);
+    if (!m) return undefined;
+    const hex = m[1].toLowerCase();
+    return SHA256_HEX.test(hex) ? hex : undefined;
+  };
+  const primary = fromField(digest);
+  if (primary) return primary;
+  if (primary === undefined) throw new Error("Release file digest is not a SHA-256 pin.");
+  const secondary = fromField(sha256);
+  if (secondary) return secondary;
+  if (secondary === undefined) throw new Error("Release file digest is not a SHA-256 pin.");
+  return null;
+}
+
+function digestHex(pin) {
+  if (!pin) return null;
+  const m = /^sha256:([0-9a-f]{64})$/.exec(pin);
+  return m ? m[1] : null;
+}
+
+function sha256HexMatches(actualHex, expectedHex) {
+  if (!SHA256_HEX.test(actualHex) || !SHA256_HEX.test(expectedHex)) return false;
+  if (actualHex.length !== expectedHex.length) return false;
+  let diff = 0;
+  for (let i = 0; i < actualHex.length; i++) {
+    diff |= actualHex.charCodeAt(i) ^ expectedHex.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function officialDownloadUrl(app, tag, name) {
+  const repo = REPOS[app];
+  const tagSeg = String(tag || "").trim();
+  const file = String(name || "").trim();
+  if (!tagSeg || tagSeg === "." || tagSeg === ".." || tagSeg.includes("/") || tagSeg.includes("\\") || tagSeg.includes("\0") || tagSeg.includes("..")) {
+    return null;
+  }
+  if (!file || file === "." || file === ".." || file.includes("/") || file.includes("\\") || file.includes("\0")) return null;
+  return `https://github.com/${repo}/releases/download/${tagSeg}/${file}`;
 }
 
 function safeAssetFileName(name) {
@@ -178,7 +320,26 @@ function githubGet(url) {
   });
 }
 
-function downloadTo(url, dest, redirects = 5) {
+function verifyFileDigest(dest, pin) {
+  const expected = digestHex(pin);
+  if (!expected) return Promise.reject(new Error("Release file digest is not a SHA-256 pin. I will not keep it."));
+  const hash = crypto.createHash("sha256");
+  return pipeline(fs.createReadStream(dest), hash).then(() => {
+    const actual = hash.digest("hex");
+    if (!sha256HexMatches(actual, expected)) {
+      try {
+        fs.unlinkSync(dest);
+      } catch {
+        /* ignore */
+      }
+      throw new Error("Downloaded file did not match the GitHub SHA-256 digest. I will not keep it.");
+    }
+  });
+}
+
+function downloadTo(url, dest, expected) {
+  const fileName = (expected && expected.fileName) || path.basename(new URL(url).pathname);
+  const digestPinned = Boolean(digestHex(expected && expected.digest));
   return new Promise((resolve, reject) => {
     let first;
     try {
@@ -187,7 +348,7 @@ function downloadTo(url, dest, redirects = 5) {
       reject(err);
       return;
     }
-    if (first.hostname.toLowerCase() !== "github.com" || !allowedDownloadHost(url)) {
+    if (first.hostname.toLowerCase() !== "github.com" || !allowedFirstDownloadUrl(url, fileName)) {
       reject(new Error("Download must start at github.com/Unaware-Kerbin/…/releases/download/."));
       return;
     }
@@ -202,8 +363,13 @@ function downloadTo(url, dest, redirects = 5) {
       }
       reject(err instanceof Error ? err : new Error(String(err)));
     };
-    const go = (current, left) => {
-      if (!allowedDownloadHost(current)) {
+    const go = (current, left, hop) => {
+      if (hop === 0) {
+        if (!allowedFirstDownloadUrl(current, fileName)) {
+          fail(new Error("Download must start at github.com/Unaware-Kerbin/…/releases/download/."));
+          return;
+        }
+      } else if (!allowedCdnRedirectUrl(current, fileName, digestPinned)) {
         fail(new Error("Refusing redirect off GitHub https."));
         return;
       }
@@ -216,17 +382,27 @@ function downloadTo(url, dest, redirects = 5) {
             res.resume();
             let next;
             try {
-              next = new URL(loc, current).href;
+              next = new URL(loc, current);
             } catch {
               fail(new Error("GitHub redirect had no next address."));
               return;
             }
-            go(next, left - 1);
+            if (next.protocol !== "https:") {
+              fail(new Error("Refusing redirect off GitHub https."));
+              return;
+            }
+            go(next.href, left - 1, hop + 1);
             return;
           }
           if (res.statusCode !== 200) {
             res.resume();
             fail(new Error(`Download failed HTTP ${res.statusCode}`));
+            return;
+          }
+          const headerName = contentDispositionFileName(res.headers["content-disposition"] || "");
+          if (headerName && headerName !== fileName) {
+            res.resume();
+            fail(new Error("Download was not the chosen GitHub release file."));
             return;
           }
           res.on("data", (chunk) => {
@@ -237,7 +413,15 @@ function downloadTo(url, dest, redirects = 5) {
             }
           });
           res.pipe(file);
-          file.on("finish", () => file.close(() => resolve()));
+          file.on("finish", () => {
+            file.close(() => {
+              if (!digestHex(expected && expected.digest)) {
+                fail(new Error("GitHub did not publish a SHA-256 digest. I will not keep it."));
+                return;
+              }
+              verifyFileDigest(dest, expected.digest).then(resolve, fail);
+            });
+          });
           file.on("error", fail);
         },
       );
@@ -247,7 +431,7 @@ function downloadTo(url, dest, redirects = 5) {
         fail(new Error("Download timed out"));
       });
     };
-    go(url, redirects);
+    go(url, 5, 0);
   });
 }
 
@@ -286,19 +470,34 @@ function pickAsset(app, release, platform, arch, prefer) {
     }
   }
   if (!best) return null;
-  return { name: best.name, url: best.browser_download_url };
+  const tag = typeof release?.tag_name === "string" ? release.tag_name : "";
+  const official = officialDownloadUrl(app, tag, best.name);
+  if (!official) return null;
+  try {
+    const api = new URL(best.browser_download_url);
+    const off = new URL(official);
+    if (api.protocol !== "https:" || api.username || api.password) return null;
+    if (api.hostname.toLowerCase() !== "github.com") return null;
+    if (decodeURIComponent(api.pathname) !== decodeURIComponent(off.pathname)) return null;
+  } catch {
+    return null;
+  }
+  let digest = null;
+  try {
+    const hex = parseAssetDigest(best.digest, best.sha256);
+    digest = hex ? `sha256:${hex}` : null;
+  } catch {
+    return null;
+  }
+  return { name: best.name, url: official, digest };
 }
 
 async function applyOne(app, asset) {
-  const dest = path.join(cacheDir(), safeAssetFileName(asset.name));
-  await downloadTo(asset.url, dest);
-  if (app === "late" && dest.toLowerCase().endsWith(".appimage")) {
-    try {
-      fs.chmodSync(dest, 0o755);
-    } catch {
-      /* ignore */
-    }
+  if (!digestHex(asset && asset.digest)) {
+    throw new Error("GitHub did not publish a SHA-256 digest. I will not download it.");
   }
+  const dest = path.join(cacheDir(), safeAssetFileName(asset.name));
+  await downloadTo(asset.url, dest, { fileName: asset.name, digest: asset.digest });
   const unsigned =
     process.platform === "darwin" || process.platform === "win32"
       ? " macOS and Windows installers are unsigned — right-click Open / More info → Run anyway."
@@ -408,7 +607,7 @@ async function applyConfirmed(opts) {
       });
       continue;
     }
-    if (!allowedDownloadHost(asset.url)) {
+    if (!allowedFirstDownloadUrl(asset.url, asset.name)) {
       steps.push({ app, ok: false, message: "Refusing download: URL is not GitHub https." });
       continue;
     }
@@ -426,5 +625,10 @@ module.exports = {
   applyConfirmed,
   gatherContext,
   allowedDownloadHost,
+  allowedFirstDownloadUrl,
+  allowedCdnRedirectUrl,
+  parseAssetDigest,
+  sha256HexMatches,
+  verifyFileDigest,
   usableProductVersion,
 };
