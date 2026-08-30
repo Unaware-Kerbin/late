@@ -6,11 +6,19 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 **v0.1.10 installers.**
 
-- GitHub Release [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10) packs Linux from this `main` (digest-pinned Check so the updater verifies the Unaware-Kerbin SHA-256, wrap isolation fail-closed, README packet-capture and helper clips). File names are `Late-0.1.10-…`. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions.
+- GitHub Release [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10) packs Linux from this `main`. File names are `Late-0.1.10-…`. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions (no Apple notarization or Windows Authenticode). First time on a Mac: right-click Late → Open. On Windows, if SmartScreen appears: More info → Run anyway.
 
-**Updates (GitHub).**
+**Digest-pinned Check for updates.**
 
-- Settings → **Check for updates** (optional check when Late starts) looks at GitHub releases for Late and Agent Orchestrator. Asks whether to update Late, Orchestrator, or both. Confirm before download. macOS / Windows installers are called out as unsigned. Copy says **your computer**. Does not need Cloud AI. Sidecar stays on 127.0.0.1.
+- Settings → **Check for updates** (optional check when Late starts) looks at GitHub releases for Late and Agent Orchestrator. Download is pinned to the official Unaware-Kerbin asset and verified against the published SHA-256 so a redirect or swapped file cannot land. Asks whether to update Late, Orchestrator, or both. Confirm before download. macOS / Windows installers are called out as unsigned. Copy says **your computer**. Does not need Cloud AI. Sidecar stays on 127.0.0.1.
+
+**Wrap BEGIN+END, MCP Approve deny-by-default.**
+
+- Agent=MCP wrap always has BEGIN and END around device output. Missing END fails closed (no route). Stdio env stays closed. Extra MCP tools still wait for **Approve**; deny-by-default (Linux has no always-allow). Send is the one `chat_send` of the Late-built prompt.
+
+**README clips on your computer.**
+
+- README shows packet capture (Live on this computer), **Wireshark** opening the saved `.pcap`, **Ask agent** for header analysis, Staging drafts, and operator-only **Push**. Helper, dual-gate Approve, and Check for updates clips were recaptured from this computer.
 
 ## 2026-08-29
 
