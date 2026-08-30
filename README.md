@@ -71,7 +71,7 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter).
 2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: install [Ollama](https://ollama.com), pick **Ollama**, click **Local**, **Pull** a model (try `gemma4:e4b`).
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
-4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. The helper can query headers, not payloads.
+4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. **Ask agent** (or a `.pcap` path you type) can analyze headers. **More** → **Wireshark** opens the file in Wireshark.
 5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
 6. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
 
@@ -109,13 +109,17 @@ Device scrollback is wrapped as **BEGIN UNTRUSTED DEVICE OUTPUT** … **END UNTR
 
 ## Packet capture
 
-**Packet capture** (Tools) looks at traffic on **your computer**. Pick an interface (loopback is fine), click **Live**, then **Stop**. Late lists headers (who, protocol, length) — not payload bytes. **Ask agent** can query that open capture. Saved files live in `~/.local/share/late/pcap`. You can also open a `.pcap` you already have. Linux uses host `tcpdump` / dumpcap.
+**Packet capture** (Tools) looks at traffic on **your computer**. Pick an interface (loopback is fine), click **Live**, then **Stop**. Late lists headers (who, protocol, length) — not payload bytes. Saved files live in `~/.local/share/late/pcap`. You can also open a `.pcap` you already have. Linux uses host `tcpdump` / dumpcap.
 
-![Live packet capture on your computer](docs/assets/late-pcap.webp)
+![Live packet capture on your computer](docs/assets/late-pcap.jpg)
 
-To view the same file in Wireshark on **your computer**, click **More**, then **Wireshark**. Late just opens that `.pcap` in the Wireshark app you already installed. If Wireshark is not on this computer, the button is still there — install Wireshark first.
+**Wireshark.** Click **More**, then **Wireshark**. Late opens that same `.pcap` in the Wireshark app on **your computer**. If Wireshark is not installed here, the button is still there — install Wireshark first.
 
-![Open a capture in Wireshark on your computer](docs/assets/late-wireshark.webp)
+![Open a capture in Wireshark on your computer](docs/assets/late-wireshark.jpg)
+
+**The helper can analyze a capture.** Click **Ask agent** on an open capture, or type a `.pcap` path in chat (a path you typed, on **your computer**). The helper reads headers — not payload bytes. Extra MCP tools still wait for **Approve**.
+
+![Helper analyzes a capture on your computer](docs/assets/late-pcap-analyze.jpg)
 
 ## Approve
 
