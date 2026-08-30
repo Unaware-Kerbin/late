@@ -71,8 +71,9 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter).
 2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: install [Ollama](https://ollama.com), pick **Ollama**, click **Local**, **Pull** a model (try `gemma4:e4b`).
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
-4. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
-5. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
+4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. The helper can query headers, not payloads.
+5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
+6. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
 
 ## The helper
 
@@ -105,6 +106,12 @@ Device scrollback is wrapped as **BEGIN UNTRUSTED DEVICE OUTPUT** … **END UNTR
 **Staging** (Tools) is a scratch pad on **your computer**. Write a CLI draft (or Ansible / Netmiko / Salt / Chef). **Push CLI** types it into an SSH or serial session you already opened. You pick that session in **Push session** (the inventory device can show the OS). Click **Push** to confirm — Enter does not confirm. The helper cannot Push.
 
 ![Push CLI asks you to confirm](docs/assets/late-staging-push.webp)
+
+## Packet capture
+
+**Packet capture** (Tools) looks at traffic on **your computer**. Pick an interface (loopback is fine), click **Live**, then **Stop**. Late lists headers (who, protocol, length) — not payload bytes. **Ask agent** can query that open capture. Saved files live in `~/.local/share/late/pcap`. You can also open a `.pcap` you already have. Linux uses host `tcpdump` / dumpcap.
+
+![Live packet capture on your computer](docs/assets/late-pcap.webp)
 
 ## Approve
 
