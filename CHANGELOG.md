@@ -2,6 +2,12 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-30
+
+**Updates (GitHub).**
+
+- Settings → **Check for updates** (optional check when Late starts) looks at GitHub releases for Late and Agent Orchestrator. Asks whether to update Late, Orchestrator, or both. Confirm before download. macOS / Windows installers are called out as unsigned. Copy says **your computer**. Does not need Cloud AI. Sidecar stays on 127.0.0.1.
+
 ## 2026-08-29
 
 **v0.1.9 installers.**

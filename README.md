@@ -94,6 +94,50 @@ If the box asks for a secret, Settings → API keys → **Custom OpenAI-compatib
 
 **MCP as the agent.** Optional. A free open-source MCP server you can use is [Agent Orchestrator](https://github.com/Unaware-Kerbin/agent-orchestrator) (localhost GUI that also serves `/mcp`). Start it in that repo (`npm run gui`). In Late pick **MCP** and paste the `/mcp` URL it printed — **same port as its web UI**, not always 8790. The HTML page is not MCP. Or leave the address empty: Late looks for the URL that program wrote (`mcp.gui.url`). Chat stays on MCP; it does not switch to Late’s local vLLM on `:8000`. Late still waits for **Approve**. Late will not start that program and will not send API keys into it. Any Streamable HTTP `/mcp` server works the same way. Late still chats when MCP is off.
 
+![Pick vLLM Local or MCP on your computer](docs/assets/late-helper-backends.webp)
+
+## Staging and Push
+
+**Staging** (Tools) is a scratch pad on **your computer**. Write a CLI draft (or Ansible / Netmiko / Salt / Chef). **Push CLI** types it into an SSH or serial session you already opened. You pick that session in **Push session** (the inventory device can show the OS). Click **Push** to confirm — Enter does not confirm. The helper cannot Push.
+
+![Push CLI asks you to confirm](docs/assets/late-staging-push.webp)
+
+## Approve
+
+A helper can *suggest* a command. Late still waits. On a network OS, the vendor **permit list** runs first, then you click **Approve**. Linux has no permit list — every command needs an explicit click. Enter does not Approve.
+
+![Approve a proposed command](docs/assets/late-approve.webp)
+
+## Permit list
+
+Settings → **Permit list** is the device-CLI YAML on **your computer** (show / ping / …). It is **not** the MCP grant-folder list. Linux has no permit list.
+
+![Permit list for AOS-CX on your computer](docs/assets/late-permit-list.webp)
+
+## Grant a folder (MCP)
+
+With Agent = **MCP**, drop a folder onto Late (the window on your computer — not a browser tab). Late asks you to **Approve** before granting that path on the MCP host. The same path must already exist there. Late does not copy trees. Typed `mcp_cwd` in Settings is the fallback.
+
+![Drop a folder to grant it on the MCP host](docs/assets/late-folder-grant.webp)
+
+## Local Start and GPUs
+
+**Local** means this computer. **Start** / **Pull** / **Download** only work for Local. If this computer has more than one GPU, **Use all GPUs on this computer** is on by default (uncheck to use one card). Ollama already uses every GPU it sees. This is several cards in one box, not a cluster.
+
+![Use all GPUs on your computer](docs/assets/late-gpus.webp)
+
+## Updates
+
+Settings → **Check for updates** looks at GitHub for Late and Agent Orchestrator. You pick Late, Orchestrator, or both. Confirm before any download. Does not need Cloud AI. Sidecar stays on `127.0.0.1`.
+
+![Check for updates, then confirm](docs/assets/late-updates.webp)
+
+## Drafts on your computer
+
+Saved Staging files stay on **your computer**. Open one from **Drafts on your computer**. Save is not Push.
+
+![Drafts stay on your computer](docs/assets/late-drafts.webp)
+
 ## Help
 
 - Stuck or a bug: [GitHub Issues](https://github.com/Unaware-Kerbin/late/issues). Say your OS and what you expected. Do not paste passwords, keys, or `sidecar.token`.

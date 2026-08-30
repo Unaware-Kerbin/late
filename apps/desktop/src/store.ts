@@ -111,6 +111,7 @@ export type AppState = {
   chatH: number;
   chatModelsH: number;
   providerStatus: Record<string, boolean>;
+  updatePrompt: import("./lib/updateSync").UpdateCheck | null;
 };
 
 function freshPane(): PaneState {
@@ -171,6 +172,7 @@ function bootstrap(): AppState {
     })(),
     termHighlights: loadTermHighlights(),
     providerStatus: {},
+    updatePrompt: null,
   };
 }
 
@@ -1463,6 +1465,36 @@ rpc.onClosed((sessionId, reason) => {
   }
   markDisconnected(sessionId, reason);
 });
+
+export async function checkForUpdates(opts?: { reason?: "manual" | "startup" }): Promise<boolean> {
+  const check = window.lateRuntime?.checkUpdates;
+  if (!check) {
+    if (opts?.reason !== "startup") toast("info", "Check for updates needs the Late window on your computer.");
+    return false;
+  }
+  try {
+    const { checkFromFetchBoth } = await import("./lib/updateSync");
+    const raw = await check(getState().settings?.mcp_cwd ?? "");
+    if (!raw || typeof raw !== "object") throw new Error("Update check returned nothing.");
+    const platform = raw.platform === "darwin" || raw.platform === "win32" ? raw.platform : "linux";
+    const snap = checkFromFetchBoth({
+      lateLocal: String(raw.lateLocal ?? ""),
+      orchLocal: String(raw.orchLocal ?? ""),
+      platform,
+      arch: raw.arch === "arm64" ? "arm64" : "x64",
+      prefer: raw.prefer === "deb" || raw.prefer === "appimage" ? raw.prefer : "auto",
+      lateRelease: raw.lateRelease ?? null,
+      orchRelease: raw.orchRelease ?? null,
+      lateError: raw.lateError ?? null,
+      orchError: raw.orchError ?? null,
+    });
+    if (snap.anyNewer || opts?.reason === "manual") setState({ updatePrompt: snap });
+    return true;
+  } catch (err) {
+    if (opts?.reason !== "startup") toast("error", errText(err));
+    return false;
+  }
+}
 
 export function boot() {
   applyAppearance();

@@ -308,6 +308,18 @@ function installAppMenu() {
     { role: "editMenu" },
     viewMenu,
     { role: "windowMenu" },
+    {
+      label: "Help",
+      submenu: [
+        {
+          label: "Check for updates",
+          click: () => {
+            const win = BrowserWindow.getAllWindows()[0];
+            if (win && !win.isDestroyed()) win.webContents.send("late:update-menu-check");
+          },
+        },
+      ],
+    },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -384,6 +396,19 @@ app.whenReady().then(async () => {
     } catch {
       return false;
     }
+  });
+  const update = require("./update.cjs");
+  ipcMain.handle("late:update-meta", (event) => {
+    if (!ipcAllowed(event)) return null;
+    return update.updateMeta();
+  });
+  ipcMain.handle("late:update-check", async (event, mcpCwd) => {
+    if (!ipcAllowed(event)) return { lateError: "blocked", orchError: "blocked" };
+    return update.checkUpdates(typeof mcpCwd === "string" ? mcpCwd : "");
+  });
+  ipcMain.handle("late:update-apply", async (event, payload) => {
+    if (!ipcAllowed(event)) return { ok: false, steps: [], error: "blocked" };
+    return update.applyUpdates(payload && typeof payload === "object" ? payload : {});
   });
   installAppMenu();
   await startBackend();

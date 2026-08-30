@@ -7,6 +7,7 @@ import {
   boot,
   bumpTermFont,
   bumpUiScale,
+  checkForUpdates,
   closeTab,
   getState,
   newTab,
@@ -17,6 +18,7 @@ import {
   openStagePane,
   useApp,
 } from "./store";
+import { loadUpdateCheckOnStart } from "./lib/updatePrefs";
 import type { PaneState, SplitNode, SplitPlacement, TabState } from "./types";
 
 const SPLIT_CHOICES: { place: SplitPlacement; label: string; hint: string }[] = [
@@ -59,6 +61,12 @@ export function App() {
 
   useEffect(() => {
     boot();
+    const startup = window.setTimeout(() => {
+      if (loadUpdateCheckOnStart()) void checkForUpdates({ reason: "startup" });
+    }, 4000);
+    const offMenu = window.lateRuntime?.onUpdateMenuCheck?.(() => {
+      void checkForUpdates({ reason: "manual" });
+    });
     const onKey = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       if (meta && e.key.toLowerCase() === "k") {
@@ -122,6 +130,8 @@ export function App() {
     window.addEventListener("keydown", onKey);
     window.addEventListener("wheel", onWheel, { passive: false });
     return () => {
+      window.clearTimeout(startup);
+      offMenu?.();
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("wheel", onWheel);
     };

@@ -24,6 +24,7 @@ import {
   openPcapPane,
   openStagePane,
   openSession,
+  checkForUpdates,
   saveSettings,
   saveProviderKey,
   clearProviderKey,
@@ -67,6 +68,8 @@ import {
   type DeviceKind,
   type Vendor,
 } from "../types";
+import { loadUpdateCheckOnStart, persistUpdateCheckOnStart } from "../lib/updatePrefs";
+import { applyTargetFromChoice, type AppUpdateStatus, type UpdateCheck } from "../lib/updateSync";
 
 function trap(e: KeyboardEvent) {
   if (e.key === "Escape") {
@@ -96,6 +99,7 @@ export function Modals() {
   const captureOpen = useApp((s) => s.captureOpen);
   const authOpen = useApp((s) => s.authOpen);
   const deviceEditor = useApp((s) => s.deviceEditor);
+  const updatePrompt = useApp((s) => s.updatePrompt);
   return (
     <>
       {hostKey && <HostKeyModal />}
@@ -108,6 +112,7 @@ export function Modals() {
       {captureOpen && <CaptureModal />}
       {authOpen && <AuthModal />}
       {deviceEditor && <DeviceModal key={deviceEditor.id} device={deviceEditor} />}
+      {updatePrompt && <UpdateModal snapshot={updatePrompt} />}
     </>
   );
 }
@@ -308,6 +313,7 @@ function Palette() {
     { id: "split-u", label: "Split up", run: () => splitFocused("up") },
     { id: "split-d", label: "Split down", run: () => splitFocused("down") },
     { id: "import", label: "Import inventory", run: () => setState({ importOpen: true }) },
+    { id: "updates", label: "Check for updates", run: () => void checkForUpdates({ reason: "manual" }) },
     { id: "settings", label: "Settings", run: () => setState({ settingsOpen: true }) },
     { id: "highlights", label: "Keyword highlights (up / down colors)", run: () => setState({ settingsOpen: true }) },
     { id: "keys", label: "API keys", run: () => setState({ keysOpen: true }) },
@@ -503,6 +509,190 @@ function InferenceUrlRow(props: {
   );
 }
 
+function productLine(p: AppUpdateStatus): string {
+  const local = p.localVersion || "unknown";
+  const remote = p.remoteVersion ? `GitHub ${p.remoteVersion}` : "no GitHub release";
+  if (p.newer) return `${local} on your computer → ${remote}`;
+  return `${local} on your computer · ${remote}`;
+}
+
+function UpdateSettingsSection() {
+  const settings = useApp((s) => s.settings);
+  const [onStart, setOnStart] = useState(() => loadUpdateCheckOnStart());
+  const [busy, setBusy] = useState(false);
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    void window.lateRuntime?.updateMeta?.().then((m) => {
+      if (m?.lateVersion) setVersion(m.lateVersion);
+    });
+  }, []);
+  return (
+    <div className="setting-switch">
+      <h3 className="hint" style={{ margin: 0 }}>Updates</h3>
+      <p className="hint" style={{ margin: 0 }}>
+        Late {version || "…"} on your computer. Checks GitHub for Late and Agent Orchestrator.
+        Does not need Cloud AI. Sidecar stays on 127.0.0.1. Confirm before any download.
+      </p>
+      <label className="setting-switch-row">
+        <span className="setting-switch-copy">
+          <strong>Check when Late starts</strong>
+          <span>Optional. Asks only if something newer is on GitHub. Does not install by itself.</span>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          aria-checked={onStart}
+          aria-label="Check for updates when Late starts"
+          checked={onStart}
+          onChange={(e) => {
+            const next = e.target.checked;
+            setOnStart(next);
+            persistUpdateCheckOnStart(next);
+          }}
+        />
+      </label>
+      <div className="url-check">
+        <button
+          type="button"
+          className="primary"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void checkForUpdates({ reason: "manual" }).finally(() => setBusy(false));
+          }}
+        >
+          {busy ? "Checking…" : "Check for updates"}
+        </button>
+      </div>
+      {settings?.mcp_cwd ? (
+        <p className="hint" style={{ margin: 0 }}>
+          Orchestrator folder from Settings: <code>{settings.mcp_cwd}</code>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function UpdateModal({ snapshot }: { snapshot: UpdateCheck }) {
+  const [phase, setPhase] = useState<"choose" | "confirm">("choose");
+  const [which, setWhich] = useState<"late" | "orchestrator" | "both">("both");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const late = snapshot.late;
+  const orch = snapshot.orchestrator;
+  const unsigned = snapshot.unsignedNote;
+
+  function close() {
+    if (busy) return;
+    setState({ updatePrompt: null });
+  }
+
+  function ask(next: "late" | "orchestrator" | "both") {
+    setWhich(next);
+    setPhase("confirm");
+    setResult(null);
+  }
+
+  async function confirmDownload() {
+    if (busy) return;
+    const apply = window.lateRuntime?.applyUpdates;
+    if (!apply) {
+      setResult("Download needs the Late window on your computer.");
+      return;
+    }
+    const targets = applyTargetFromChoice(which, snapshot);
+    if (!targets.length) {
+      setResult("That copy on your computer is already current. Nothing was downloaded.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const out = await apply({
+        confirmed: true,
+        which,
+        mcpCwd: getState().settings?.mcp_cwd ?? "",
+      });
+      const steps = Array.isArray(out.steps) ? out.steps : [];
+      const text = out.error || steps.map((s) => s.message).join(" ") || "Done.";
+      setResult(text);
+      if (out.ok) toast("ok", "Saved on your computer.");
+      else toast("error", text);
+    } catch (err) {
+      setResult(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const names =
+    which === "both" ? "Late and Agent Orchestrator" : which === "late" ? "Late" : "Agent Orchestrator";
+
+  return (
+    <div className="modal-root update-modal" onMouseDown={close}>
+      <div className="modal" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="update-title">
+        <h2 id="update-title">{phase === "confirm" ? "Download on your computer?" : "Updates"}</h2>
+        {phase === "choose" ? (
+          <>
+            <p>
+              GitHub releases for Late and Agent Orchestrator. Nothing downloads until you confirm.
+              This check does not need Cloud AI.
+            </p>
+            <div className="update-products">
+              <div className={late.newer ? "kind-card active" : "kind-card"}>
+                <strong>{late.label}</strong>
+                <small>{productLine(late)}</small>
+                {late.error ? <small className="hint warn">{late.error}</small> : null}
+              </div>
+              <div className={orch.newer ? "kind-card active" : "kind-card"}>
+                <strong>{orch.label}</strong>
+                <small>{productLine(orch)}</small>
+                {orch.error ? <small className="hint warn">{orch.error}</small> : null}
+              </div>
+            </div>
+            {!snapshot.anyNewer ? (
+              <p className="hint">Late and Orchestrator on your computer match GitHub. You can still pick Late, Orchestrator, or both.</p>
+            ) : null}
+            {snapshot.unsignedNote ? <p className="hint warn">{snapshot.unsignedNote}</p> : null}
+            <div className="actions update-actions">
+              <button type="button" className="ghost" onClick={close}>
+                Not now
+              </button>
+              <button type="button" className="ghost" onClick={() => ask("late")}>
+                Update Late
+              </button>
+              <button type="button" className="ghost" onClick={() => ask("orchestrator")}>
+                Update Orchestrator
+              </button>
+              <button type="button" className="primary" onClick={() => ask("both")}>
+                Update both
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p>
+              Download {names} from GitHub onto your computer? Late uses the AppImage / .deb / .dmg / .exe
+              already on the release. Orchestrator uses the portable archive.
+            </p>
+            {unsigned ? <p className="hint warn">{unsigned} This is on your computer.</p> : null}
+            {result ? <p className={/fail|error|blocked|Refusing/i.test(result) ? "hint warn" : "hint"}>{result}</p> : null}
+            <div className="actions">
+              <button type="button" className="ghost" disabled={busy} onClick={() => (result ? close() : setPhase("choose"))}>
+                {result ? "Close" : "Back"}
+              </button>
+              {!result ? (
+                <button type="button" className="primary" disabled={busy} onClick={() => void confirmDownload()}>
+                  {busy ? "Downloading…" : "Download"}
+                </button>
+              ) : null}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SettingsModal() {
   const settings = useApp((s) => s.settings);
   const uiScale = useApp((s) => s.uiScale);
@@ -607,6 +797,7 @@ function SettingsModal() {
               : "Off. Cursor and public APIs are blocked. Loopback and private-network URLs still work."}
           </p>
         </div>
+        <UpdateSettingsSection />
         <h3 className="hint" style={{ marginTop: 4 }}>Helper server</h3>
         <p className="hint">
           This computer (<code>127.0.0.1</code>) or another machine on your homelab / airgapped LAN.

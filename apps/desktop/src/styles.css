@@ -743,6 +743,16 @@ textarea { min-height: 88px; font-family: var(--mono); }
   overscroll-behavior: contain;
 }
 .modal-root.hostkey { z-index: 80; }
+.modal-root.update-modal { z-index: 110; }
+.update-products {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.update-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 .modal {
   width: min(560px, calc(100vw - 32px));

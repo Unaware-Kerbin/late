@@ -11,6 +11,19 @@ contextBridge.exposeInMainWorld("lateRuntime", {
       return "";
     }
   },
+  updateMeta: () => ipcRenderer.invoke("late:update-meta"),
+  checkUpdates: (mcpCwd) => ipcRenderer.invoke("late:update-check", typeof mcpCwd === "string" ? mcpCwd : ""),
+  applyUpdates: (payload) => ipcRenderer.invoke("late:update-apply", payload),
+  onUpdateStartup: (cb) => {
+    const handler = (_e, payload) => cb(payload);
+    ipcRenderer.on("late:update-startup", handler);
+    return () => ipcRenderer.removeListener("late:update-startup", handler);
+  },
+  onUpdateMenuCheck: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("late:update-menu-check", handler);
+    return () => ipcRenderer.removeListener("late:update-menu-check", handler);
+  },
   isDirectory: (p) => {
     if (typeof p !== "string" || !p.trim()) return Promise.resolve(false);
     if (typeof webUtils.isDirectory === "function") {
