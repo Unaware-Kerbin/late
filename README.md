@@ -113,6 +113,10 @@ Device scrollback is wrapped as **BEGIN UNTRUSTED DEVICE OUTPUT** … **END UNTR
 
 ![Live packet capture on your computer](docs/assets/late-pcap.webp)
 
+To view the same file in Wireshark on **your computer**, click **More**, then **Wireshark**. Late just opens that `.pcap` in the Wireshark app you already installed. If Wireshark is not on this computer, the button is still there — install Wireshark first.
+
+![Open a capture in Wireshark on your computer](docs/assets/late-wireshark.webp)
+
 ## Approve
 
 A helper can *suggest* a command. Late still waits. On a network OS, the vendor **permit list** runs first, then you click **Approve**. Linux has no permit list — every command needs an explicit click. Enter does not Approve.
