@@ -4,6 +4,10 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-31
 
+**GitHub packs every Linux package plus Windows zip.**
+
+- **Build installers** now runs on `main` (workflow artifacts) as well as `v*` tags (GitHub Release). Linux CI installs zstd, rpm, bsdtar, and fakeroot so `.deb`, `.rpm`, `.pacman`, and AppImage can all land. Windows also writes `Late-…-win-x64.zip`. Mac remains unsigned and needs macos-latest for the Mach-O `late-daemon` (no osxcross SDK on this Linux computer). See [release/README.md](release/README.md) for the real filenames. Do not commit the binaries.
+
 **Windows installer includes late-daemon.exe.**
 
 - Packaged Late on Windows starts `late-daemon.exe` from extraResources on `127.0.0.1:7420` (Electron will not `cargo run`). `scripts/pack.sh --win` on Windows CI builds it natively; from Linux it cross-compiles when mingw or cargo-xwin is available. macOS CI (`pack.sh --mac` on Darwin) builds `late-daemon` the same way. This Linux computer has no Apple SDK, so a Mac zip packed here still lacks the Mach-O daemon until macos-latest runs. Linux `.deb` / AppImage hashes unchanged.

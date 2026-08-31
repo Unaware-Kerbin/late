@@ -1988,6 +1988,9 @@ mod tests {
 
     #[test]
     fn bundled_bin_wins_over_path() {
+        // Same lock as stage PATH fakes. A second mutex here raced CI:
+        // ansible-playbook vanished from PATH mid-plan_push.
+        let _path = crate::stage::TEST_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bundle = tempfile::tempdir().unwrap();
         let path_dir = tempfile::tempdir().unwrap();

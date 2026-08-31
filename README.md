@@ -326,7 +326,7 @@ cd apps/desktop && npx tauri dev
 
 ### Build installers
 
-GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (workflow **Build installers**). Finished files are on the Release for that tag, not in the **ci** job log. Pack on that OS, or from Linux:
+GitHub Actions **Build installers** packs Linux, macOS, and Windows on `main` (workflow artifacts) and on a `v*` tag (GitHub Release). Finished files are not in the **ci** job log. Names are listed in [release/README.md](release/README.md). Pack on that OS, or from Linux:
 
 ```bash
 npm install

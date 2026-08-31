@@ -387,7 +387,21 @@ mkdir -p "$RELEASE"
 
 zip_dir() {
   local src="$1" dest="$2"
-  (cd "$(dirname "$src")" && zip -qr "$dest" "$(basename "$src")")
+  if command -v zip >/dev/null 2>&1; then
+    (cd "$(dirname "$src")" && zip -qr "$dest" "$(basename "$src")")
+    return
+  fi
+  # windows-latest Git Bash often has no zip(1); Python is on the runner.
+  python3 - "$src" "$dest" <<'PY'
+import os, sys, zipfile
+src, dest = sys.argv[1], sys.argv[2]
+base = os.path.dirname(src)
+with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, _dirs, files in os.walk(src):
+        for name in files:
+            path = os.path.join(root, name)
+            z.write(path, os.path.relpath(path, base))
+PY
 }
 
 if [[ "$PACK_OS" == win ]]; then
