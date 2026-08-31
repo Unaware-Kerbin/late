@@ -20,6 +20,10 @@ models/
 dist/
 apps/desktop/release/
 apps/desktop/resources/bin/
+apps/desktop/resources/lib/
+apps/desktop/resources/docker/
+apps/desktop/resources-win/
+apps/desktop/resources-mac/
 apps/desktop/resources/sidecar.cjs
 *.exe
 *.dmg

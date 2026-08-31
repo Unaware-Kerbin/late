@@ -12,28 +12,72 @@ files:
   - electron/preload.cjs
   - electron/update.cjs
   - electron/update-sync.cjs
+# Shared JS/policies. Engine bins stay per-OS so a --win/--mac pack on Linux
+# cannot overwrite apps/desktop/resources/bin (Linux ollama). Packaged dest is
+# still resources/bin so LATE_BUNDLE_BIN keeps working.
 extraResources:
-  - from: resources/bin
-    to: bin
   - from: resources/sidecar.cjs
     to: sidecar.cjs
   - from: ../../policies
     to: policies
 linux:
+  extraResources:
+    - from: resources/bin
+      to: bin
+    - from: resources/lib
+      to: lib
+    - from: resources/docker
+      to: docker
   target:
     - AppImage
     - deb
+    - rpm
+    - pacman
   category: Network
   maintainer: Late contributors <noreply@users.noreply.github.com>
   icon: src-tauri/icons
+deb:
+  afterInstall: ../../installer/linux/after-install.sh
+  fpm:
+    # Suggests, not Recommends: default apt Install-Recommends would pull docker.io as root before postinst.
+    - --deb-suggests=docker.io
+    # File (not a directory): Debian control templates so postinst can ask late/install-docker (Default: false).
+    - --deb-templates=../../installer/linux/templates
+rpm:
+  afterInstall: ../../installer/linux/after-install-rpm.sh
+  fpm:
+    # Weak extra (not Requires, not Recommends). dnf does not auto-install Suggests.
+    - "--rpm-tag=Suggests: docker"
+pacman:
+  afterInstall: ../../installer/linux/after-install-rpm.sh
+  fpm:
+    # fpm 1.17 template reads :pacman_opt_depends (typo) so this may not appear in .PKGINFO.
+    # Still not a hard depend. Docker stays optional for vLLM on your computer.
+    - --pacman-optional-depends
+    - docker
 mac:
+  extraResources:
+    - from: resources-mac/bin
+      to: bin
+    - from: resources-mac/lib
+      to: lib
+    - from: resources-mac/docker
+      to: docker
   target:
     - dmg
     - zip
   category: public.app-category.developer-tools
   identity: null
+  gatekeeperAssess: false
   icon: src-tauri/icons/icon.png
 win:
+  extraResources:
+    - from: resources-win/bin
+      to: bin
+    - from: resources-win/lib
+      to: lib
+    - from: resources-win/docker
+      to: docker
   target:
     - nsis
     - portable

@@ -45,6 +45,7 @@ import {
   saveDeviceWithLogin,
   upsertDevice,
   useApp,
+  inferenceStatus,
 } from "../store";
 import { rpc } from "../lib/rpc";
 import {
@@ -113,7 +114,90 @@ export function Modals() {
       {authOpen && <AuthModal />}
       {deviceEditor && <DeviceModal key={deviceEditor.id} device={deviceEditor} />}
       {updatePrompt && <UpdateModal snapshot={updatePrompt} />}
+      <DockerFirstRunModal />
     </>
+  );
+}
+
+function DockerFirstRunModal() {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("late.dockerPrompt.v1")) return;
+    } catch {
+      return;
+    }
+    void inferenceStatus("vllm")
+      .then((s) => {
+        if (s.dockerAvailable) return;
+        setOpen(true);
+      })
+      .catch(() => {
+        /* daemon not up yet */
+      });
+  }, []);
+  function dismiss() {
+    try {
+      localStorage.setItem("late.dockerPrompt.v1", "1");
+    } catch {
+      /* ignore */
+    }
+    setOpen(false);
+  }
+  if (!open) return null;
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+  const win = /Windows/i.test(ua);
+  const mac = /Mac OS X|Macintosh/i.test(ua);
+  return (
+    <div className="modal-root docker-first-run" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="docker-first-run-title">
+        <h2 id="docker-first-run-title">Install Docker to use vLLM on this computer?</h2>
+        <p>
+          Ollama and llama.cpp are included. Model weights are not — use Pull or Download. vLLM Start
+          needs Docker so it can pull an image on first use. You can skip this and still use Late.
+        </p>
+        {win || mac ? (
+          <p className="hint">
+            This does not install Docker silently. Open the{" "}
+            <a href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">
+              Docker Desktop
+            </a>{" "}
+            download (unsigned Late already disclosed).
+          </p>
+        ) : (
+          <p className="hint">
+            Example on Ubuntu / Debian: <code>sudo apt install docker.io</code> then{" "}
+            <code>sudo usermod -aG docker $USER</code> and log out. See{" "}
+            <a href="https://docs.docker.com/engine/install/" target="_blank" rel="noreferrer">
+              Docker Engine install
+            </a>
+            .
+          </p>
+        )}
+        <div className="actions">
+          <button type="button" className="ghost" onClick={dismiss}>
+            Skip
+          </button>
+          {(win || mac) && (
+            <a
+              className="primary"
+              href="https://www.docker.com/products/docker-desktop/"
+              target="_blank"
+              rel="noreferrer"
+              onClick={dismiss}
+              style={{ display: "inline-flex", alignItems: "center", textDecoration: "none" }}
+            >
+              Open Docker Desktop download
+            </a>
+          )}
+          {!(win || mac) && (
+            <button type="button" className="primary" onClick={dismiss}>
+              I’ll install Docker myself
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -671,7 +755,7 @@ function UpdateModal({ snapshot }: { snapshot: UpdateCheck }) {
         ) : (
           <>
             <p>
-              Download {names} from GitHub onto your computer? Late uses the AppImage / .deb / .dmg / .exe
+              Download {names} from GitHub onto your computer? Late uses the AppImage / .deb / .rpm / .zip / .exe
               already on the release. Orchestrator uses the portable archive.
             </p>
             {unsigned ? <p className="hint warn">{unsigned} This is on your computer.</p> : null}
@@ -819,7 +903,7 @@ function SettingsModal() {
         <label>vLLM model<input value={model} onChange={(e) => setModel(e.target.value)} /></label>
         <p className="hint">
           Default <code>http://127.0.0.1:8000/v1</code>. Example on the LAN: <code>http://10.0.0.12:8000/v1</code>.
-          NVIDIA, AMD, and Intel GPUs all work if the vLLM you run uses them. Late does not bundle a GPU runtime.
+          NVIDIA, AMD, and Intel GPUs all work if the vLLM you run uses them. Late does not bake a vLLM image into the installer; Start needs Docker so it can pull on first use.
         </p>
         <InferenceUrlRow
           label="llama.cpp base URL"
@@ -831,7 +915,7 @@ function SettingsModal() {
         />
         <label>llama.cpp model (optional)<input value={llamaCppModel} onChange={(e) => setLlamaCppModel(e.target.value)} placeholder="first listed model" /></label>
         <p className="hint">
-          llama.cpp is not bundled. Download GGUF from Hugging Face in the Agent pane, then Start if <code>llama-server</code> is on PATH, or run it yourself on <code>127.0.0.1:8080</code>.
+          llama.cpp is bundled (Vulkan on Linux/Windows, Metal on Mac). Download GGUF from Hugging Face in the Agent pane, then Start. You can still run your own <code>llama-server</code> on <code>127.0.0.1:8080</code>.
           On another machine use <code>--host 0.0.0.0</code>. Gated Hub repos need <code>HF_TOKEN</code> (or <code>HUGGING_FACE_HUB_TOKEN</code>) in the environment.
         </p>
         <InferenceUrlRow
@@ -844,8 +928,8 @@ function SettingsModal() {
         />
         <label>Ollama model (optional)<input value={ollamaModel} onChange={(e) => setOllamaModel(e.target.value)} placeholder="first pulled model" /></label>
         <p className="hint">
-          Ollama is not bundled. Install from <a href="https://ollama.com" target="_blank" rel="noreferrer">ollama.com</a>
-          and start it.           On another machine set <code>OLLAMA_HOST=0.0.0.0</code>. Pull library names or Hugging Face ids from the Agent pane only when the URL is this computer.
+          Ollama is bundled. Click Start in the Agent pane to run <code>ollama serve</code> on loopback, then Pull. You can still use an Ollama you already started.
+          On another machine set <code>OLLAMA_HOST=0.0.0.0</code>. Pull library names or Hugging Face ids from the Agent pane only when the URL is this computer.
         </p>
         <h3 className="hint" style={{ marginTop: 12 }}>Anthropic, Gemini, Azure</h3>
         <p className="hint">

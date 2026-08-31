@@ -2,6 +2,24 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-08-31
+
+**Windows installer includes late-daemon.exe.**
+
+- Packaged Late on Windows starts `late-daemon.exe` from extraResources on `127.0.0.1:7420` (Electron will not `cargo run`). `scripts/pack.sh --win` on Windows CI builds it natively; from Linux it cross-compiles when mingw or cargo-xwin is available. macOS CI (`pack.sh --mac` on Darwin) builds `late-daemon` the same way. This Linux computer has no Apple SDK, so a Mac zip packed here still lacks the Mach-O daemon until macos-latest runs. Linux `.deb` / AppImage hashes unchanged.
+
+**Ollama and llama.cpp in the app; Docker optional for vLLM.**
+
+- Installers include Ollama and `llama-server` (Vulkan on Linux/Windows, Metal on Apple silicon; Intel Mac is CPU/BLAS). Apple silicon packs Ollama `mlx_metal_v3`/`v4` under `lib/ollama` (CUDA/ROCm still stripped). Pull / Download still fetch weights. vLLM is not baked in. The Linux `.deb` ships a Debian templates file so apt can ask whether to install Docker on your computer (default no) so Start can `docker pull`. The `.deb` Suggests `docker.io` (optional, not automatic — not Recommends). The `.rpm` Suggests `docker` (not Requires). Arch `.pacman` lists Docker as an optional depend. No Docker → vLLM Start stays hidden. Loopback only.
+
+**README installer pictures.**
+
+- README lists `Late-…-mac-arm64.zip` (`Late.app` inside), not a `.dmg`. Diagrams cover installer contents, Local vs Add server, and optional Docker. Short how-tos for sidecar `:7430`, daemon `:7420`, MCP as Agent, and Approve.
+
+**Linux packages besides .deb and AppImage.**
+
+- Fedora / RHEL / Rocky / Alma / openSUSE: `.rpm`. Arch: `.pacman` (AppImage still works). Same Ollama + llama-server bundle as the Linux amd64 `.deb`. Snap / Flatpak / Alpine `.apk` are not shipped.
+
 ## 2026-08-30
 
 **v0.1.10 installers.**

@@ -1,0 +1,7 @@
+Template: late/install-docker
+Type: boolean
+Default: false
+Description: Install Docker to use vLLM on your computer?
+ Late includes Ollama and llama.cpp. vLLM is optional. Start needs Docker
+ so it can pull an image on first use. Model weights are not in this package.
+ You can skip this and still use Late, Ollama, and llama.cpp on your computer.

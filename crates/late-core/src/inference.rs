@@ -50,6 +50,9 @@ pub struct InferenceStatus {
     pub late_owned: bool,
     #[serde(default)]
     pub gpu_launch: Option<crate::hardware::GpuLaunchPlan>,
+    /// Docker CLI + engine reachable (needed for vLLM Start / Download).
+    #[serde(default)]
+    pub docker_available: bool,
 }
 
 #[derive(Default)]
@@ -67,20 +70,69 @@ fn job() -> &'static Mutex<Job> {
     JOB.get_or_init(|| Mutex::new(Job::default()))
 }
 
-fn repo_root() -> Result<PathBuf> {
+fn compose_candidate(root: &Path) -> bool {
+    root.join("docker/compose.yml").is_file()
+}
+
+fn bundled_resources_root() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("LATE_ROOT") {
         let p = PathBuf::from(p);
-        if p.join("docker/compose.yml").is_file() {
-            return Ok(p);
+        if compose_candidate(&p) {
+            return Some(p);
         }
     }
+    if let Ok(p) = std::env::var("LATE_BUNDLE_BIN") {
+        let p = PathBuf::from(p);
+        if let Some(parent) = p.parent() {
+            if compose_candidate(parent) {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            if let Some(res) = bin_dir.parent() {
+                if compose_candidate(res) {
+                    return Some(res.to_path_buf());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn repo_root() -> Result<PathBuf> {
+    if let Some(p) = bundled_resources_root() {
+        return Ok(p);
+    }
     let here = std::env::current_dir()?;
-    if here.join("docker/compose.yml").is_file() {
+    if compose_candidate(&here) {
         return Ok(here);
     }
     Err(LateError::Message(
-        "cannot find docker/compose.yml; start Late from the repo or set LATE_ROOT".into(),
+        "cannot find docker/compose.yml; Late packages it in resources/docker, or set LATE_ROOT".into(),
     ))
+}
+
+/// Docker CLI is on PATH and the engine answers `docker info`.
+pub fn docker_available() -> bool {
+    match Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(out) => {
+            out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
+        }
+        Err(_) => false,
+    }
+}
+
+/// vLLM Start/Download: Intel compose path and Docker both required.
+pub fn vllm_start_allowed(allow_intel_compose: bool, docker_ok: bool) -> bool {
+    allow_intel_compose && docker_ok
 }
 
 fn compose_file() -> Result<PathBuf> {
@@ -194,6 +246,7 @@ pub fn status_with(use_all_gpus: bool) -> InferenceStatus {
     };
     let allow_intel_compose =
         force_intel_compose() || crate::hardware::allow_intel_xpu_compose(&gpu.vendor);
+    let docker_ok = docker_available();
     InferenceStatus {
         running,
         starting,
@@ -208,6 +261,7 @@ pub fn status_with(use_all_gpus: bool) -> InferenceStatus {
         allow_intel_compose,
         late_owned: false,
         gpu_launch: Some(gpu_launch),
+        docker_available: docker_ok,
     }
 }
 
@@ -535,6 +589,9 @@ fn require_intel_compose(gpu: &crate::hardware::GpuProfile) -> Result<()> {
 }
 
 fn idle_inference_detail(gpu: &crate::hardware::GpuProfile) -> String {
+    if !docker_available() {
+        return "Install Docker to use vLLM on this computer. Ollama and llama.cpp are included and do not need Docker.".into();
+    }
     if crate::hardware::allow_intel_xpu_compose(&gpu.vendor) {
         return "optional Intel XPU compose is not running on 127.0.0.1:8000. Point local vLLM at that URL, or Start below if this machine has a discrete Intel GPU.".into();
     }
@@ -556,6 +613,11 @@ pub fn start_with(model: &str, use_all_gpus: bool) -> Result<InferenceStatus> {
         model.to_string()
     };
     validate_model(&model)?;
+    if !docker_available() {
+        return Err(LateError::Message(
+            "Install Docker to use vLLM on this computer. Ollama and llama.cpp are included and do not need Docker.".into(),
+        ));
+    }
     let gpu = crate::hardware::probe();
     require_intel_compose(&gpu)?;
     let serving = crate::hardware::serving_profile(&gpu, use_all_gpus);
@@ -723,6 +785,11 @@ pub fn stop() -> Result<InferenceStatus> {
 /// The cache directory is often root-owned, so this uses the vLLM image as root.
 pub fn download(model: &str) -> Result<InferenceStatus> {
     validate_model(model)?;
+    if !docker_available() {
+        return Err(LateError::Message(
+            "Install Docker to use vLLM on this computer. Ollama and llama.cpp are included and do not need Docker.".into(),
+        ));
+    }
     require_intel_compose(&crate::hardware::probe())?;
     {
         let mut j = job().lock().unwrap_or_else(|e| e.into_inner());
@@ -833,5 +900,12 @@ mod tests {
         assert!(!snapshot_complete(tmp.path()));
         fs::write(snap.join("model.safetensors"), b"x").unwrap();
         assert!(snapshot_complete(tmp.path()));
+    }
+
+    #[test]
+    fn vllm_start_hidden_without_docker() {
+        assert!(!vllm_start_allowed(true, false));
+        assert!(!vllm_start_allowed(false, true));
+        assert!(vllm_start_allowed(true, true));
     }
 }

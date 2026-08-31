@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
+import { vllmDockerHint, vllmStartVisible } from "../lib/inferenceUi";
 import { isProposalDismissed } from "../lib/approvals-ui";
 import {
   sidecarHealth,
@@ -105,6 +106,7 @@ function idleGpu(): ReturnType<typeof fromStatus> {
     allowIntelCompose: false,
     lateOwned: false,
     gpuLaunch: undefined,
+    dockerAvailable: false,
   };
 }
 
@@ -120,6 +122,7 @@ function fromStatus(s: InferenceStatus) {
     allowIntelCompose: Boolean(s.allowIntelCompose),
     lateOwned: Boolean(s.lateOwned),
     gpuLaunch: s.gpuLaunch,
+    dockerAvailable: Boolean(s.dockerAvailable),
   };
 }
 
@@ -620,6 +623,7 @@ export function ChatPane() {
     allowIntelCompose: false,
     lateOwned: false,
     gpuLaunch: undefined,
+    dockerAvailable: false,
   });
   const [gpuBusy, setGpuBusy] = useState(false);
   const [serveModel, setServeModel] = useState(() => {
@@ -1078,6 +1082,18 @@ export function ChatPane() {
   }
 
   const intelCompose = gpu.allowIntelCompose;
+  const vllmEgress = targetOf(models, "local")?.egress;
+  const vllmOffComputer = vllmEgress === "private" || vllmEgress === "cloud";
+  const showVllmStart = vllmStartVisible({
+    allowIntelCompose: intelCompose,
+    dockerAvailable: gpu.dockerAvailable,
+    networkServer: vllmOffComputer,
+  });
+  const dockerHint = vllmDockerHint({
+    dockerAvailable: gpu.dockerAvailable,
+    allowIntelCompose: intelCompose,
+    networkServer: vllmOffComputer,
+  });
 
   return (
     <aside
@@ -1226,9 +1242,11 @@ export function ChatPane() {
         <p className="hint" style={{ margin: "0 0 8px" }}>
           {targetOf(models, "local")?.egress && targetOf(models, "local")?.egress !== "loopback"
             ? "Chat uses the saved vLLM server (another machine). Start/Download on this pane only manage a server on this computer — they stay hidden while the URL is not loopback. Pick Local to use this computer."
+            : dockerHint
+            ? dockerHint
             : intelCompose
             ? "Optional Intel XPU Docker helpers. NVIDIA and AMD should use Ollama, llama.cpp, or a CUDA/ROCm server on loopback instead of Start."
-            : "Start/Download stay hidden unless your computer has a discrete Intel GPU (or LATE_VLLM_FORCE=1). NVIDIA, AMD, and CPU users: pick llama.cpp or Ollama, or point vLLM at a server you started."}
+            : "Start/Download stay hidden unless your computer has a discrete Intel GPU and Docker (or LATE_VLLM_FORCE=1). NVIDIA, AMD, and CPU users: pick llama.cpp or Ollama, or point vLLM at a server you started."}
         </p>
         <div className="row" style={{ marginBottom: 8 }}>
           <span className="meta" style={{ flex: 1 }}>Models</span>
@@ -1248,7 +1266,7 @@ export function ChatPane() {
           disabled={gpuBusy || gpu.running || gpu.starting}
           onChange={(next) => void setUseAllGpus(next)}
         />
-        {intelCompose && targetOf(models, "local")?.egress !== "private" && targetOf(models, "local")?.egress !== "cloud" && (
+        {showVllmStart && (
         <>
         {(gpu.localModels ?? []).length > 0 && (
           <div className="model-list">
@@ -1430,6 +1448,14 @@ export function ChatPane() {
           onDownloadId={setDownloadId}
           onFetch={(id) => void fetchModel(id, backend)}
           onStart={() => {
+            if (backend === "ollama") {
+              setGpuBusy(true);
+              void startInference("serve", "ollama")
+                .then((s) => setGpu(fromStatus(s)))
+                .catch((e: unknown) => setGpu((g) => ({ ...g, detail: e instanceof Error ? e.message : String(e) })))
+                .finally(() => setGpuBusy(false));
+              return;
+            }
             const id = serveModel.trim();
             if (!id) {
               setGpu((g) => ({ ...g, detail: "pick a GGUF above, then Start" }));
@@ -1443,7 +1469,7 @@ export function ChatPane() {
           }}
           onStop={() => {
             setGpuBusy(true);
-            void stopInference("llamacpp")
+            void stopInference(backend === "ollama" ? "ollama" : "llamacpp")
               .then((s) => setGpu(fromStatus(s)))
               .catch((e: unknown) => setGpu((g) => ({ ...g, detail: e instanceof Error ? e.message : String(e) })))
               .finally(() => setGpuBusy(false));
@@ -1613,8 +1639,8 @@ function WeightsPanel(props: {
           ? `${props.sidecarHint ? `${props.sidecarHint} ` : ""}Pull / Start / Download only manage a process on this computer, so they stay hidden while the URL is not loopback. Pick Local to use this computer.`
           : props.sidecarHint ||
             (llama
-              ? "Download a GGUF from Hugging Face into ~/.local/share/late/models/gguf/. Late does not install llama.cpp. Start needs llama-server on PATH, or run it yourself on 127.0.0.1:8080."
-              : "Pull talks to Ollama on loopback (library names like gemma4:e4b or qwen3:8b, or Hugging Face ids like google/gemma-4-E4B-it-qat-q4_0-gguf). Late does not install Ollama.")}
+              ? "Download a GGUF from Hugging Face into ~/.local/share/late/models/gguf/. Start runs the bundled llama-server on 127.0.0.1:8080 (Vulkan on Linux/Windows, Metal on Mac)."
+              : "Pull talks to Ollama on loopback (library names like gemma4:e4b or qwen3:8b, or Hugging Face ids like google/gemma-4-E4B-it-qat-q4_0-gguf). Start runs bundled ollama serve on 127.0.0.1:11434 if it is not already up.")}
       </p>
       <div className="row" style={{ marginBottom: 8 }}>
         <span className="meta" style={{ flex: 1 }}>{llama ? "GGUF" : "Ollama models"}</span>
@@ -1719,17 +1745,22 @@ function WeightsPanel(props: {
         </button>
       </div>
       )}
-      {llama && (
+      {!props.networkServer && (
         <div className="row">
-          {!props.networkServer && (
           <button
             className="primary"
-            disabled={props.gpuBusy || props.gpu.running || props.gpu.starting || !props.serveModel.trim()}
+            disabled={
+              props.gpuBusy ||
+              props.gpu.running ||
+              props.gpu.starting ||
+              (llama && !props.serveModel.trim())
+            }
             onClick={props.onStart}
           >
-            Start {props.serveModel ? props.serveModel.split("/").pop() : "llama-server"}
+            {llama
+              ? `Start ${props.serveModel ? props.serveModel.split("/").pop() : "llama-server"}`
+              : "Start Ollama"}
           </button>
-          )}
           <button
             className="ghost"
             disabled={props.gpuBusy || (!props.gpu.lateOwned && !props.gpu.starting)}

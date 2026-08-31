@@ -8,7 +8,7 @@ use crate::confine::confine_under_roots;
 use crate::error::{LateError, Result};
 use crate::fsutil::{mkdir_private, write_private};
 use crate::hardware::GpuProfile;
-use crate::inference::{validate_model, InferenceStatus, LocalModel};
+use crate::inference::{self, validate_model, InferenceStatus, LocalModel};
 use reqwest::redirect::{Attempt, Policy};
 use serde::Deserialize;
 use std::fs::{self, OpenOptions};
@@ -269,10 +269,7 @@ pub fn start(engine: Engine, model: &str, settings: &AppSettings) -> Result<Infe
     match engine {
         Engine::Vllm => crate::inference::start_with(model, settings.use_all_gpus),
         Engine::LlamaCpp => start_llama_server(model, settings),
-        Engine::Ollama => Err(LateError::Message(
-            "Ollama is already the server. Use Pull to fetch a model, then pick it in the model list."
-                .into(),
-        )),
+        Engine::Ollama => start_ollama_serve(settings),
     }
 }
 
@@ -280,9 +277,7 @@ pub fn stop(engine: Engine) -> Result<InferenceStatus> {
     match engine {
         Engine::Vllm => crate::inference::stop(),
         Engine::LlamaCpp => stop_llama_server(),
-        Engine::Ollama => Err(LateError::Message(
-            "Stop does not shut down Ollama. Quit the Ollama app if you want it off.".into(),
-        )),
+        Engine::Ollama => stop_ollama_serve(),
     }
 }
 
@@ -328,7 +323,7 @@ fn llama_status(settings: &AppSettings) -> InferenceStatus {
     }
     let owned = owned_llama_running();
     let running = serving || owned || starting;
-    let bin = find_in_path("llama-server").or_else(|| find_in_path("llama-cpp-server"));
+    let bin = find_engine_bin("llama-server").or_else(|| find_engine_bin("llama-cpp-server"));
     let detail = if let Some(err) = last_error {
         err
     } else if downloading {
@@ -356,9 +351,9 @@ fn llama_status(settings: &AppSettings) -> InferenceStatus {
     } else if owned {
         "llama-server is up; model still loading".into()
     } else if bin.is_none() {
-        "Download GGUF here, then install llama.cpp so `llama-server` is on PATH, or run it yourself on 127.0.0.1:8080.".into()
+        "Download a GGUF, then Start. Late includes llama-server (Vulkan on Linux/Windows, Metal on Mac), or run it yourself on 127.0.0.1:8080.".into()
     } else {
-        "llama.cpp idle. Download a GGUF from Hugging Face, then Start (needs llama-server on PATH).".into()
+        "llama.cpp idle. Download a GGUF from Hugging Face, then Start.".into()
     };
     InferenceStatus {
         running,
@@ -374,17 +369,34 @@ fn llama_status(settings: &AppSettings) -> InferenceStatus {
         allow_intel_compose: false,
         late_owned: owned || starting || child_live,
         gpu_launch: Some(gpu_launch),
+        docker_available: inference::docker_available(),
     }
 }
 
 fn ollama_status(settings: &AppSettings) -> InferenceStatus {
-    let (downloading, download_id, last_error, progress) = {
-        let j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+    let (downloading, download_id, last_error, progress, starting, child_live) = {
+        let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(child) = j.child.as_mut() {
+            if let Ok(Some(st)) = child.try_wait() {
+                j.child = None;
+                let _ = fs::remove_file(ollama_pid_file());
+                if !st.success() {
+                    j.last_error = Some(format!(
+                        "ollama serve exited {} — {}",
+                        st.code().unwrap_or(-1),
+                        tail_log(&ollama_serve_log()).unwrap_or_else(|| "see logs/ollama-serve.log".into())
+                    ));
+                }
+                j.starting = false;
+            }
+        }
         (
             j.downloading,
             j.download_id.clone(),
             j.last_error.clone(),
             j.progress.clone(),
+            j.starting,
+            j.child.is_some(),
         )
     };
     let gpu = crate::hardware::probe();
@@ -394,7 +406,7 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
         Err(e) => {
             return InferenceStatus {
                 running: false,
-                starting: false,
+                starting,
                 downloading,
                 models: vec![],
                 local_models: list_ollama_models(&gpu, &[]),
@@ -404,8 +416,9 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
                 gpu,
                 detail: e.to_string(),
                 allow_intel_compose: false,
-                late_owned: false,
+                late_owned: child_live || owned_ollama_running(),
                 gpu_launch: Some(gpu_launch),
+                docker_available: inference::docker_available(),
             };
         }
     };
@@ -413,6 +426,12 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
     let models = pulled.clone();
     let local_models = list_ollama_models(&gpu, &pulled);
     let reachable = ollama_reachable(&native);
+    if reachable {
+        let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+        j.starting = false;
+    }
+    let owned = owned_ollama_running();
+    let bin = find_engine_bin("ollama");
     let detail = if let Some(err) = last_error {
         err
     } else if downloading {
@@ -423,18 +442,26 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
                 tail_log(&ollama_log()).unwrap_or_else(|| "starting…".into())
             )
         })
+    } else if starting && !reachable {
+        format!("starting ollama serve on {native}")
     } else if !reachable {
-        format!(
-            "Ollama is not running at {native}. Install from https://ollama.com and start it, then Pull. Late does not install Ollama."
-        )
+        if bin.is_some() {
+            format!(
+                "Ollama is not running at {native}. Click Start to run bundled ollama serve on loopback, then Pull."
+            )
+        } else {
+            format!(
+                "Ollama is not running at {native}. Late includes Ollama when packed; until then install from https://ollama.com, then Start or Pull."
+            )
+        }
     } else if models.is_empty() {
         format!("Ollama is running at {native} with no models. Pull a library name (gemma4:e4b, qwen3:8b) or a Hugging Face id (google/gemma-4-E4B-it-qat-q4_0-gguf).")
     } else {
         format!("Ollama at {native} · {}", models.join(", "))
     };
     InferenceStatus {
-        running: reachable,
-        starting: false,
+        running: reachable || owned || starting || child_live,
+        starting: starting && !reachable,
         downloading,
         models,
         local_models,
@@ -444,8 +471,9 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
         gpu,
         detail,
         allow_intel_compose: false,
-        late_owned: false,
+        late_owned: owned || starting || child_live,
         gpu_launch: Some(gpu_launch),
+        docker_available: inference::docker_available(),
     }
 }
 
@@ -501,6 +529,15 @@ fn start_gguf_download(model: &str) -> Result<InferenceStatus> {
 fn start_ollama_pull(model: &str, settings: &AppSettings) -> Result<InferenceStatus> {
     let name = ollama_pull_name(model)?;
     let root = ollama_native_root(&settings.ollama_base_url)?;
+    if !ollama_reachable(&root) {
+        let _ = start_ollama_serve(settings)?;
+        for _ in 0..40 {
+            if ollama_reachable(&root) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     {
         let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
         if j.downloading {
@@ -540,11 +577,11 @@ fn start_ollama_pull(model: &str, settings: &AppSettings) -> Result<InferenceSta
 
 fn start_llama_server(model: &str, settings: &AppSettings) -> Result<InferenceStatus> {
     let bind = loopback_bind(&settings.llama_cpp_base_url)?;
-    let bin = find_in_path("llama-server")
-        .or_else(|| find_in_path("llama-cpp-server"))
+    let bin = find_engine_bin("llama-server")
+        .or_else(|| find_engine_bin("llama-cpp-server"))
         .ok_or_else(|| {
             LateError::Message(
-                "llama-server is not on PATH. Late does not install llama.cpp. Download still saved the GGUF under ~/.local/share/late/models/gguf/ — run llama-server yourself, or install llama.cpp and click Start."
+                "llama-server is missing. Late packs it in resources/bin when you install from Releases. Download still saved the GGUF under ~/.local/share/late/models/gguf/ — run llama-server yourself on 127.0.0.1:8080, or click Start after a packed install."
                     .into(),
             )
         })?;
@@ -565,6 +602,7 @@ fn start_llama_server(model: &str, settings: &AppSettings) -> Result<InferenceSt
     let log = OpenOptions::new().create(true).append(true).open(&log_path);
     let gpu = crate::hardware::probe();
     let mut cmd = Command::new(&bin);
+    apply_bundled_lib_env(&mut cmd, &bin);
     cmd.arg("-m")
         .arg(&weights)
         .arg("--host")
@@ -631,6 +669,100 @@ fn stop_llama_server() -> Result<InferenceStatus> {
     let _ = fs::remove_file(llama_pid_file());
     drop(j);
     Ok(llama_status(&load_settings_or_default()))
+}
+
+fn ollama_pid_file() -> PathBuf {
+    paths().data.join("models").join("ollama-serve.pid")
+}
+
+fn ollama_serve_log() -> PathBuf {
+    paths().data.join("logs").join("ollama-serve.log")
+}
+
+fn start_ollama_serve(settings: &AppSettings) -> Result<InferenceStatus> {
+    let bind = loopback_bind(&settings.ollama_base_url)?;
+    let native = ollama_native_root(&settings.ollama_base_url)?;
+    if ollama_reachable(&native) {
+        return Ok(ollama_status(settings));
+    }
+    let bin = find_engine_bin("ollama").ok_or_else(|| {
+        LateError::Message(
+            "ollama is missing. Late packs it in resources/bin when you install from Releases. Until then install from https://ollama.com and click Start."
+                .into(),
+        )
+    })?;
+    {
+        let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+        if j.child.is_some() || owned_ollama_running() {
+            return Ok(ollama_status(settings));
+        }
+        j.starting = true;
+        j.last_error = None;
+    }
+    let log_path = ollama_serve_log();
+    if let Some(parent) = log_path.parent() {
+        let _ = mkdir_private(parent);
+    }
+    let log = OpenOptions::new().create(true).append(true).open(&log_path);
+    let host = format!("127.0.0.1:{}", bind.port());
+    let mut cmd = Command::new(&bin);
+    apply_bundled_lib_env(&mut cmd, &bin);
+    cmd.arg("serve");
+    cmd.env("OLLAMA_HOST", &host);
+    cmd.stdin(Stdio::null());
+    match log {
+        Ok(f) => {
+            let err = f.try_clone().ok();
+            cmd.stdout(Stdio::from(f));
+            if let Some(e) = err {
+                cmd.stderr(Stdio::from(e));
+            } else {
+                cmd.stderr(Stdio::piped());
+            }
+        }
+        Err(_) => {
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+        }
+    }
+    match cmd.spawn() {
+        Ok(child) => {
+            let _ = write_owned_pid_at(&ollama_pid_file(), child.id(), ollama_comm_ok, "ollama");
+            let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+            j.child = Some(child);
+            j.starting = true;
+        }
+        Err(e) => {
+            let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+            j.starting = false;
+            j.last_error = Some(format!("could not start ollama serve: {e}"));
+            return Err(LateError::Message(format!(
+                "could not start ollama serve: {e}"
+            )));
+        }
+    }
+    Ok(ollama_status(settings))
+}
+
+fn stop_ollama_serve() -> Result<InferenceStatus> {
+    let mut j = ollama_job().lock().unwrap_or_else(|e| e.into_inner());
+    j.starting = false;
+    if let Some(mut child) = j.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if let Some(pid) = read_owned_pid_at(&ollama_pid_file()).and_then(|rec| {
+        if rec.matches_live_with(ollama_comm_ok) {
+            Some(rec.pid)
+        } else {
+            None
+        }
+    }) {
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+    }
+    let _ = fs::remove_file(ollama_pid_file());
+    drop(j);
+    Ok(ollama_status(&load_settings_or_default()))
 }
 
 fn load_settings_or_default() -> AppSettings {
@@ -1525,17 +1657,25 @@ struct OwnedPid {
 
 impl OwnedPid {
     fn matches_live(&self) -> bool {
+        self.matches_live_with(llama_comm_ok)
+    }
+
+    fn matches_live_with(&self, ok: fn(&str) -> bool) -> bool {
         if self.pid == 0 || self.starttime == 0 {
             return false;
         }
         proc_starttime(self.pid) == Some(self.starttime)
             && proc_comm(self.pid).is_some_and(|c| c == self.comm)
-            && llama_comm_ok(&self.comm)
+            && ok(&self.comm)
     }
 }
 
 fn llama_comm_ok(comm: &str) -> bool {
     comm == "llama-server" || comm == "llama-cpp-server" || comm == "llama-cpp-serve"
+}
+
+fn ollama_comm_ok(comm: &str) -> bool {
+    comm == "ollama" || comm == "ollama.exe"
 }
 
 fn proc_comm(pid: u32) -> Option<String> {
@@ -1555,27 +1695,36 @@ fn proc_starttime(pid: u32) -> Option<u64> {
 }
 
 fn write_owned_pid(pid: u32) -> Result<()> {
-    let comm = proc_comm(pid).unwrap_or_else(|| "llama-server".into());
-    if !llama_comm_ok(&comm) {
-        return Err(LateError::Message(
-            "refusing to record a pid that is not llama-server".into(),
-        ));
+    write_owned_pid_at(&llama_pid_file(), pid, llama_comm_ok, "llama-server")
+}
+
+fn write_owned_pid_at(
+    path: &Path,
+    pid: u32,
+    ok: fn(&str) -> bool,
+    fallback_comm: &str,
+) -> Result<()> {
+    let comm = proc_comm(pid).unwrap_or_else(|| fallback_comm.into());
+    if !ok(&comm) {
+        return Err(LateError::Message(format!(
+            "refusing to record a pid that is not {fallback_comm}"
+        )));
     }
     let starttime = proc_starttime(pid).unwrap_or(0);
     if starttime == 0 {
-        return Err(LateError::Message(
-            "could not read llama-server starttime; Stop will only kill the child we spawned"
-                .into(),
-        ));
+        return Err(LateError::Message(format!(
+            "could not read {fallback_comm} starttime; Stop will only kill the child we spawned"
+        )));
     }
-    write_private(
-        &llama_pid_file(),
-        format!("pid={pid}\nstarttime={starttime}\ncomm={comm}\n"),
-    )
+    write_private(path, format!("pid={pid}\nstarttime={starttime}\ncomm={comm}\n"))
 }
 
 fn read_owned_pid() -> Option<OwnedPid> {
-    let raw = fs::read_to_string(llama_pid_file()).ok()?;
+    read_owned_pid_at(&llama_pid_file())
+}
+
+fn read_owned_pid_at(path: &Path) -> Option<OwnedPid> {
+    let raw = fs::read_to_string(path).ok()?;
     let mut pid = None;
     let mut starttime = None;
     let mut comm = None;
@@ -1599,6 +1748,10 @@ fn owned_llama_running() -> bool {
     read_owned_pid().is_some_and(|rec| rec.matches_live())
 }
 
+fn owned_ollama_running() -> bool {
+    read_owned_pid_at(&ollama_pid_file()).is_some_and(|rec| rec.matches_live_with(ollama_comm_ok))
+}
+
 fn redact_secrets(s: &str) -> String {
     let mut out = s.to_string();
     for key in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"] {
@@ -1614,12 +1767,81 @@ fn redact_secrets(s: &str) -> String {
 fn find_in_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
-        let p = dir.join(name);
-        if p.is_file() {
-            return Some(p);
+        for candidate in engine_bin_names(name) {
+            let p = dir.join(candidate);
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
     None
+}
+
+fn engine_bin_names(name: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        if name.to_ascii_lowercase().ends_with(".exe") {
+            vec![name.to_string()]
+        } else {
+            vec![format!("{name}.exe"), name.to_string()]
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        vec![name.to_string()]
+    }
+}
+
+fn bundled_bin_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("LATE_BUNDLE_BIN") {
+        let p = PathBuf::from(p);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.is_dir() {
+                return Some(dir.to_path_buf());
+            }
+        }
+    }
+    None
+}
+
+/// Bundled `resources/bin` (or `LATE_BUNDLE_BIN`) first, then PATH.
+fn find_engine_bin(name: &str) -> Option<PathBuf> {
+    if let Some(dir) = bundled_bin_dir() {
+        for candidate in engine_bin_names(name) {
+            let p = dir.join(&candidate);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    find_in_path(name)
+}
+
+fn apply_bundled_lib_env(cmd: &mut Command, bin: &Path) {
+    let Some(dir) = bin.parent() else {
+        return;
+    };
+    let lib = dir.parent().unwrap_or(dir).join("lib");
+    let ollama_lib = lib.join("ollama");
+    let extras = [dir.to_path_buf(), lib, ollama_lib];
+    #[cfg(windows)]
+    let key = "PATH";
+    #[cfg(target_os = "macos")]
+    let key = "DYLD_LIBRARY_PATH";
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let key = "LD_LIBRARY_PATH";
+    let mut parts: Vec<PathBuf> = extras.into_iter().collect();
+    if let Some(cur) = std::env::var_os(key) {
+        parts.extend(std::env::split_paths(&cur));
+    }
+    if let Ok(joined) = std::env::join_paths(parts) {
+        cmd.env(key, joined);
+    }
 }
 
 fn tail_log(path: &Path) -> Option<String> {
@@ -1763,6 +1985,43 @@ mod tests {
         );
         assert!(loopback_bind("http://10.0.0.5:8080/v1").is_err());
     }
+
+    #[test]
+    fn bundled_bin_wins_over_path() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let bundle = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let bundled = bundle.path().join("llama-server");
+        let on_path = path_dir.path().join("llama-server");
+        std::fs::write(&bundled, b"bundled").unwrap();
+        std::fs::write(&on_path, b"path").unwrap();
+        let old_bundle = std::env::var_os("LATE_BUNDLE_BIN");
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("LATE_BUNDLE_BIN", bundle.path());
+        std::env::set_var("PATH", path_dir.path());
+        let found = find_engine_bin("llama-server");
+        if let Some(v) = old_bundle {
+            std::env::set_var("LATE_BUNDLE_BIN", v);
+        } else {
+            std::env::remove_var("LATE_BUNDLE_BIN");
+        }
+        if let Some(v) = old_path {
+            std::env::set_var("PATH", v);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        assert_eq!(found.as_deref(), Some(bundled.as_path()));
+    }
+
+    #[test]
+    fn ollama_serve_host_is_loopback() {
+        let addr = loopback_bind("http://127.0.0.1:11434/v1").unwrap();
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+        assert_eq!(addr.port(), 11434);
+        assert!(loopback_bind("http://0.0.0.0:11434/v1").is_err());
+    }
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn catalogs_include_gemma_and_stay_sfw() {

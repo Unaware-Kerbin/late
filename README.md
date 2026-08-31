@@ -18,17 +18,53 @@ That is the whole idea.
 
 ![Watch how Late works](docs/assets/late-demo.webp)
 
+## What’s in the installer
+
+Ollama and llama-server come with Late. **Weights do not** — click **Pull** or **Download** after **Start**. vLLM is optional Docker. Start / Stop stay on **your computer** (`127.0.0.1`). **Add server** does not replace **Local**.
+
+| What you get | Picture |
+|---|---|
+| What is packed vs pulled | ![Installer includes Ollama and llama-server; weights are not in the file](docs/images/installer-flow.png) |
+| Local vs Add server | ![Local is this computer; Add server saves an extra URL](docs/images/local-vs-add-server.png) |
+| Docker only for vLLM | ![Ollama and llama.cpp need no Docker; vLLM Start hides without it](docs/images/docker-optional.png) |
+
+Windows NSIS has **no** Docker checkbox. First-run can open the Docker Desktop download — **Skip** is fine. Linux `.deb` can ask (default **no**). No Docker → vLLM **Start** stays hidden. Late does not start inference on another host.
+
+### Four steps
+
+| 1 | 2 | 3 | 4 |
+|---|---|---|---|
+| [![Install](docs/images/01-install.png)](docs/images/01-install.png) | [![Local Start](docs/images/02-start-local.png)](docs/images/02-start-local.png) | [![Add server](docs/images/03-add-server.png)](docs/images/03-add-server.png) | [![Approve](docs/images/04-approve.png)](docs/images/04-approve.png) |
+
+```mermaid
+sequenceDiagram
+  actor You
+  participant Late
+  participant Local as Local 127.0.0.1
+  You->>Late: Agent → Ollama → Local → Start
+  Late->>Local: ollama serve
+  You->>Late: Pull a model (weights are not in the installer)
+  You->>Late: Send
+  Late-->>You: propose a command
+  You->>Late: Approve
+  Note over Late: Extra start_vllm / MCP dispatch still wait for Approve
+```
+
 ## Install
 
-The easy way: download a ready-made app from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10)). Pick the file that matches your computer:
+Download from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10)). Pick the file for **your computer**:
 
 | Your computer | File | What you do |
 |---|---|---|
-| Windows | `Late-…-win-x64.exe` | Double-click. If Windows warns you, choose **More info** → **Run anyway**. |
-| Mac (Apple chip, macOS 13+) | `Late-…-mac-arm64.dmg` | Open it. Drag Late into Applications. First time: **right-click** Late → **Open**. |
-| Linux | `Late-…AppImage` or `Late-….deb` | AppImage: make it executable, then double-click. Ubuntu/Debian: install the `.deb`. |
+| Windows | `Late-…-win-x64.exe` or `Late-…-win-x64.zip` | Double-click the `.exe`, or unzip. If Windows warns you, **More info** → **Run anyway**. NSIS does **not** install Docker. |
+| Mac (Apple silicon, macOS 13+) | `Late-…-mac-arm64.zip` | Unzip. Open `Late.app`. First time: **right-click** → **Open**. Unsigned. This is **not** a `.dmg`. Metal/MLX is in this pack. |
+| Mac (Intel) | `Late-…-mac-x64.zip` | Same unzip + `Late.app`. llama.cpp is CPU/BLAS. `late-daemon` needs a Mac or GitHub `macos-latest` pack. |
+| Linux (Debian / Ubuntu / Mint) | `Late-….deb` | Install the `.deb`. Apt may ask for Docker (default **no**). |
+| Linux (Fedora / RHEL / Rocky / Alma / openSUSE) | `Late-….rpm` | `dnf` / `zypper` / `rpm -i`. Docker is Suggests, not Required. |
+| Linux (Arch) | `Late-….pacman` | `sudo pacman -U`. AppImage also works. |
+| Linux (any) | `Late-…AppImage` | Make it executable, then double-click. |
 
-The number in the file name is the app version. It can be older than the GitHub tag. These files are unsigned. SSH still uses the `ssh` program already on your computer.
+Example Mac name: `Late-0.1.10-mac-arm64.zip`. The number is the app version (it can be older than the GitHub tag). These files are unsigned. SSH still uses the `ssh` program already on your computer.
 
 If Releases has no app files yet, [build it yourself](#install-from-source).
 
@@ -69,11 +105,25 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 ## After it opens
 
 1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter).
-2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: install [Ollama](https://ollama.com), pick **Ollama**, click **Local**, **Pull** a model (try `gemma4:e4b`).
+2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: pick **Ollama**, click **Local**, **Start** if needed, then **Pull** a model (try `gemma4:e4b`).
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
 4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. **Ask agent** (or a `.pcap` path you type) can analyze headers. **More** → **Wireshark** opens the file in Wireshark.
 5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
 6. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
+
+## On your computer (short how-tos)
+
+All of this stays on loopback. Cloud AI is Cursor and public internet APIs only. A GPU on your LAN is not Cloud AI.
+
+| Do this | How | Picture |
+|---|---|---|
+| Chat | Right-hand **Agent** pane. Pick Ollama / llama.cpp / vLLM / MCP. **Local** = this computer. Type, **Send**. | ![Helper backends on your computer](docs/assets/late-helper-backends.webp) |
+| Approve device CLI | The helper *suggests*. You click **Approve**. Enter does not send. Linux has no always-allow. | ![Approve a proposed command](docs/assets/late-approve.webp) |
+| MCP as Agent | First menu **MCP**. Paste the printed `/mcp` URL (same port as that program’s web UI). Empty URL = folder; Late also reads `mcp.gui.url` if Settings has a stale port. Send is one `chat_send` of Late’s isolated prompt. Extra `start_*` wait for **Approve**. Do **not** put this in Cursor `mcpServers`. | ![MCP wrap BEGIN and END](docs/assets/late-mcp-wrap.webp) |
+| Use all GPUs | Local Start only. Default on when this computer has more than one GPU. Uncheck to stay on one card. Ollama already uses every GPU it sees. | ![Use all GPUs on your computer](docs/assets/late-gpus.webp) |
+| Sidecar + daemon | Chat/Approve is sidecar `127.0.0.1:7430`. SSH/serial/pcap is daemon `127.0.0.1:7420`. Status bar says online. Do not bind them on the LAN. | ![Loopback ports](docs/images/loopback-ports.png) |
+
+**Add server** saves one extra URL. It does not replace **Local**. Start / Pull / Download hide when the URL is not this computer.
 
 ## The helper
 
@@ -81,7 +131,7 @@ The helper is the chat pane on the right. It can *suggest* commands. You still c
 
 Think of it as a brain in a box. You pick which box.
 
-**This computer.** In the Agent pane, pick **Ollama**, **vLLM**, or **llama.cpp**. The next menu says **Local**. That means the box on *this* desk. You start the program here (Ollama is the easy one). Late **Start** / **Pull** / **Download** only work for Local. If this computer has more than one GPU, **Use all GPUs on this computer** is on by default (uncheck to use one card). Ollama already uses every GPU it sees.
+**This computer.** In the Agent pane, pick **Ollama**, **vLLM**, or **llama.cpp**. The next menu says **Local**. That means the box on *this* desk. Ollama and llama.cpp come with the app — **Start** / **Pull** / **Download** only work for Local. vLLM Start needs Docker (optional). If this computer has more than one GPU, **Use all GPUs on this computer** is on by default (uncheck to use one card). Ollama already uses every GPU it sees.
 
 **Another computer at home or in the lab.** You start the brain on *that* machine yourself (SSH into it if you want). Then in Late: same engine (vLLM / llama.cpp / Ollama) → open the menu under **Local** → **Add server**. Type the address, like `http://10.0.0.12:8000/v1`. Click **Check**, then **Save**. Next time that address is a row in the menu. Click **Local** to come home. Late will not press the power button on the other box for you.
 
@@ -217,7 +267,7 @@ Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encry
 
 ### Isolation CI
 
-The **ci** workflow on each push is Rust tests, isolation greps, and advisory scans. It does **not** attach `.exe` / `.dmg` / AppImage files. Those come from **Build installers** on a `v*` tag and show up under [Releases](https://github.com/Unaware-Kerbin/late/releases).
+The **ci** workflow on each push is Rust tests, isolation greps, and advisory scans. It does **not** attach `.exe` / `.zip` / AppImage files. Those come from **Build installers** on a `v*` tag and show up under [Releases](https://github.com/Unaware-Kerbin/late/releases).
 
 `scripts/isolation-check.sh` and `cargo run -p isolation-check` grep `apps/agent-sidecar` so it must not contain `keyring`, `russh`, or `secrets.json` vault code, and must not call `stage.push` / `stage.plan` or file-transfer RPCs (`sftp.upload`, `scp.download`, and similar). That grep does not mean the sidecar never reads `sidecar.token` — it does, for auth. CI also runs `cargo audit` and `npm audit --omit=dev` as non-blocking advisory scans (`continue-on-error`).
 
@@ -276,26 +326,30 @@ cd apps/desktop && npx tauri dev
 
 ### Build installers
 
-GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (workflow **Build installers**). Finished files are on the Release for that tag, not in the **ci** job log. Pack each OS on a computer running that OS:
+GitHub Actions packages Linux, macOS, and Windows when a `v*` tag is pushed (workflow **Build installers**). Finished files are on the Release for that tag, not in the **ci** job log. Pack on that OS, or from Linux:
 
 ```bash
 npm install
-./scripts/pack.sh
+./scripts/pack.sh --linux
+./scripts/pack.sh --win
+./scripts/pack.sh --mac
 ```
+
+`--win` / `--mac` put Ollama, llama-server, and `late-daemon` in `resources-win` / `resources-mac` so this computer’s Linux `resources/bin` stays put. Windows from Linux cross-compiles `late-daemon.exe` when mingw-w64 or cargo-xwin is on the PATH (GitHub `windows-latest` runs `cargo build -p late-daemon --release`). The Mac artifact is `Late-…-mac-arm64.zip` (`Late.app` inside), unsigned; `late-daemon` for Apple silicon is built on the macOS runner (no osxcross SDK on Linux). Windows NSIS needs Wine and has **no** Docker checkbox. Linux `--linux` builds AppImage, `.deb`, `.rpm`, and `.pacman`. If this version’s `.deb` and AppImage are already in `apps/desktop/release/`, pack adds rpm/pacman beside them (`PACK_LINUX_ALL=1` rebuilds every Linux target). Docker is Suggests / optional on `.deb` / `.rpm` / pacman, not Required. Snap and Flatpak are not built (store login). Alpine `.apk` is skipped (Electron is glibc).
 
 Artifacts land in `apps/desktop/release/`.
 
 ### Local inference (any GPU)
 
-Late does not bundle CUDA, ROCm, oneAPI, Ollama, llama.cpp, or model weights. The agent talks to a local vLLM (or llama.cpp / Ollama) on loopback. NVIDIA, AMD, and Intel are all fine if the server you run uses that GPU.
+Late packs Ollama and llama-server (Vulkan/Metal) into the installer. It does not bundle CUDA, ROCm, oneAPI, vLLM images, or model weights. vLLM Start needs Docker so it can pull on first use. The agent talks to a local server on loopback. NVIDIA, AMD, and Intel are all fine if the server you run uses that GPU.
 
 See `docker/README.md` for the full matrix. Short version:
 
 | Agent pane | Default URL | Typical runtime |
 |---|---|---|
-| Ollama | `http://127.0.0.1:11434/v1` | Ollama (install yourself; Pull from the Agent pane) |
-| llama.cpp | `http://127.0.0.1:8080/v1` | `llama-server` (CUDA, Vulkan, Metal, ROCm, or CPU) |
-| vLLM | `http://127.0.0.1:8000/v1` | vLLM on NVIDIA, AMD, or Intel |
+| Ollama | `http://127.0.0.1:11434/v1` | Bundled `ollama serve` (Pull from the Agent pane) |
+| llama.cpp | `http://127.0.0.1:8080/v1` | Bundled `llama-server` (Vulkan/Metal) |
+| vLLM | `http://127.0.0.1:8000/v1` | Docker image pull on first Start (optional) |
 
 `docker/compose.yml` is an **optional Intel XPU** vLLM example only. NVIDIA/AMD users should not start from that file.
 
@@ -327,11 +381,11 @@ Anthropic is `POST /v1/messages`. Gemini is `:generateContent`. Azure is deploym
 
 ### Ollama (optional — easiest local AI)
 
-Late does not install Ollama. On [ollama.com](https://ollama.com), download the installer for your OS, open it, and wait until Ollama is running (it stays in the background). In Late’s Agent pane choose **Ollama**, keep **Local**, then **Pull** a name such as `gemma3:4b` or `qwen3:8b`. A Hugging Face id also works (`google/gemma-3-4b-it-qat-q4_0-gguf`; Late sends it as `hf.co/…`). Pull only talks to Ollama on this computer. Another machine: **Add server**. Default API: `http://127.0.0.1:11434/v1`.
+Late includes Ollama. In the Agent pane choose **Ollama**, keep **Local**, click **Start** if it is not already running, then **Pull** a name such as `gemma3:4b` or `qwen3:8b`. A Hugging Face id also works (`google/gemma-3-4b-it-qat-q4_0-gguf`; Late sends it as `hf.co/…`). Pull only talks to Ollama on this computer. Another machine: **Add server**. Default API: `http://127.0.0.1:11434/v1`.
 
 ### llama.cpp (optional)
 
-Late does not install llama.cpp. Build or install [llama.cpp](https://github.com/ggml-org/llama.cpp) with the backend you want (CUDA, Vulkan, Metal, ROCm, or CPU). In the Agent pane choose **llama.cpp**, **Download** a GGUF Hugging Face id (for example `Qwen/Qwen3-8B-GGUF`, `google/gemma-3-4b-it-qat-q4_0-gguf`, or `…:Q4_K_M`). Files land in `~/.local/share/late/models/gguf/` (not the Intel vLLM Docker cache). **Start** runs `llama-server` on loopback if it is on `PATH`; otherwise run it yourself. With more than one GPU, Start adds `-ngl 99 -sm layer` so layers are shared (uncheck **Use all GPUs** to stay on one card):
+Late includes `llama-server` (Vulkan on Linux/Windows, Metal on Apple silicon; Intel Mac is CPU/BLAS from the official zip). In the Agent pane choose **llama.cpp**, **Download** a GGUF Hugging Face id (for example `Qwen/Qwen3-8B-GGUF`, `google/gemma-3-4b-it-qat-q4_0-gguf`, or `…:Q4_K_M`). Files land in `~/.local/share/late/models/gguf/` (not the Intel vLLM Docker cache). **Start** runs bundled `llama-server` on loopback. With more than one GPU, Start adds `-ngl 99 -sm layer` so layers are shared (uncheck **Use all GPUs** to stay on one card):
 
 ```bash
 llama-server -m ~/.local/share/late/models/gguf/Qwen--Qwen3-8B-GGUF/*.gguf --port 8080 --host 127.0.0.1

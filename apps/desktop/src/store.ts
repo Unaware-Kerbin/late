@@ -1006,6 +1006,7 @@ export type InferenceStatus = {
   allowIntelCompose?: boolean;
   lateOwned?: boolean;
   gpuLaunch?: GpuLaunchPlan;
+  dockerAvailable?: boolean;
 };
 
 export async function inferenceStatus(engine?: string): Promise<InferenceStatus> {
@@ -1014,7 +1015,7 @@ export async function inferenceStatus(engine?: string): Promise<InferenceStatus>
 
 export async function startInference(model?: string, engine?: string): Promise<InferenceStatus> {
   const id = (model ?? "").trim();
-  if (!id) {
+  if (!id && engine !== "ollama") {
     throw new Error(
       engine === "llamacpp"
         ? "pick a GGUF above, then Start"
@@ -1025,17 +1026,19 @@ export async function startInference(model?: string, engine?: string): Promise<I
     "info",
     engine === "llamacpp"
       ? `starting llama-server with ${id}`
-      : `starting ${id} — first load can take several minutes`,
+      : engine === "ollama"
+        ? "starting ollama serve on 127.0.0.1"
+        : `starting ${id} — first load can take several minutes`,
   );
   return rpc.call<InferenceStatus>("inference.start", {
-    model: id,
-    serveModel: id,
+    model: id || "serve",
+    serveModel: id || "serve",
     engine: engine || "vllm",
   });
 }
 
 export async function stopInference(engine?: string): Promise<InferenceStatus> {
-  toast("info", engine === "llamacpp" ? "stopping llama-server" : "stopping local inference");
+  toast("info", engine === "llamacpp" ? "stopping llama-server" : engine === "ollama" ? "stopping ollama serve" : "stopping local inference");
   return rpc.call<InferenceStatus>("inference.stop", engine ? { engine } : {});
 }
 

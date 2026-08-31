@@ -35,18 +35,31 @@ jobs:
           cache: npm
       - name: Linux packages
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev libfuse2
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev libfuse2 zstd rpm libarchive-tools
       - run: npm ci
       - name: Package
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: bash scripts/pack.sh ${{ matrix.args }}
+      - name: Confirm packed daemon
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.args }}" in
+            *--win*) test -f apps/desktop/resources-win/bin/late-daemon.exe ;;
+            *--mac*) test -f apps/desktop/resources-mac/bin/late-daemon ;;
+            *--linux*) test -f apps/desktop/resources/bin/late-daemon ;;
+            *) echo "late: unknown pack args ${{ matrix.args }}" >&2; exit 1 ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
           name: late-${{ matrix.os }}
           path: |
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.deb
+            apps/desktop/release/*.rpm
+            apps/desktop/release/*.pacman
+            apps/desktop/release/*.pkg.tar.*
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.exe
@@ -74,5 +87,5 @@ jobs:
 
             - **macOS:** right-click Late → Open the first time.
             - **Windows:** if SmartScreen appears, More info → Run anyway.
-            - **Linux:** AppImage (make it executable) or `.deb`.
+            - **Linux:** AppImage (any distro; make it executable), `.deb` (Debian/Ubuntu/Mint), `.rpm` (Fedora/RHEL/Rocky/Alma/openSUSE), or `.pacman` (Arch). Docker is optional (Suggests, not Required).
 

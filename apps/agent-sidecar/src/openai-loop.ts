@@ -96,7 +96,7 @@ function ollamaHelp(base: string, kind: "offline" | "empty"): string {
   if (remote) {
     return `Nothing answered at ${root}. On that machine bind Ollama to the LAN (OLLAMA_HOST=0.0.0.0) and allow the port. Chat needs OpenAI /v1.`;
   }
-  return `Ollama is not running at ${root}. Install from https://ollama.com and start it, then Pull a model from the Agent pane. Late does not install Ollama.`;
+  return `Ollama is not running at ${root}. Click Start in the Agent pane (bundled ollama serve on loopback), then Pull a model.`;
 }
 
 function llamaCppHelp(base: string, kind: "offline" | "empty" | "loading" | "auth"): string {
@@ -113,7 +113,7 @@ function llamaCppHelp(base: string, kind: "offline" | "empty" | "loading" | "aut
   if (classifyChatBaseSync(base) !== "loopback") {
     return `llama.cpp is not reachable at ${root}. Start llama-server on that machine with --host 0.0.0.0 (or your LAN IP). Late Start only binds loopback on this computer.`;
   }
-  return `llama.cpp (llama-server) is not running at ${root}. Download a GGUF from the Agent pane and Start, or run \`llama-server -m /path/to/model.gguf --port 8080 --host 127.0.0.1\`. Late does not install llama.cpp.`;
+  return `llama.cpp (llama-server) is not running at ${root}. Download a GGUF from the Agent pane and Start, or run \`llama-server -m /path/to/model.gguf --port 8080 --host 127.0.0.1\`.`;
 }
 
 function compatLabel(kind: string): string {

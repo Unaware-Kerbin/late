@@ -169,6 +169,10 @@ async function startBackend() {
     const policies = resource("policies");
     const env = {};
     if (fs.existsSync(policies)) env.LATE_POLICIES_DIR = policies;
+    const bundleBin = resource("bin");
+    if (fs.existsSync(bundleBin)) env.LATE_BUNDLE_BIN = bundleBin;
+    const lateRoot = app.isPackaged ? process.resourcesPath : repoRoot();
+    if (fs.existsSync(path.join(lateRoot, "docker", "compose.yml"))) env.LATE_ROOT = lateRoot;
     if (daemonBin) {
       console.log("late: starting daemon", daemonBin);
       startChild(daemonBin, ["--bind", "127.0.0.1:7420"], env, "late-daemon.log");

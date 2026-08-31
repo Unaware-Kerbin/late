@@ -744,6 +744,7 @@ textarea { min-height: 88px; font-family: var(--mono); }
 }
 .modal-root.hostkey { z-index: 80; }
 .modal-root.update-modal { z-index: 110; }
+.modal-root.docker-first-run { z-index: 105; }
 .update-products {
   display: grid;
   gap: 8px;
