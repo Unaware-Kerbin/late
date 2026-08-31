@@ -6,7 +6,7 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 **GitHub packs every Linux package plus Windows zip.**
 
-- **Build installers** now runs on `main` (workflow artifacts) as well as `v*` tags (GitHub Release). Linux CI installs zstd, rpm, bsdtar, and fakeroot so `.deb`, `.rpm`, `.pacman`, and AppImage can all land. Windows also writes `Late-…-win-x64.zip`. Mac remains unsigned and needs macos-latest for the Mach-O `late-daemon` (no osxcross SDK on this Linux computer). See [release/README.md](release/README.md) for the real filenames. Do not commit the binaries.
+- **Build installers** now runs on `main` (workflow artifacts) as well as `v*` tags (GitHub Release). Linux CI installs zstd, rpm, bsdtar, and fakeroot so `.deb`, `.rpm`, `.pacman`, and AppImage can all land. Windows also writes `Late-…-win-x64.zip`. Mac remains unsigned and needs macos-latest for the Mach-O `late-daemon` (no osxcross SDK on this Linux computer). See [release/README.md](release/README.md) for the real filenames. Do not commit the binaries. `pack.sh` reads `package.json` with a path Node on Windows Git Bash can open (`./apps/desktop/…`, not `/d/a/late/…`).
 
 **Windows installer includes late-daemon.exe.**
 

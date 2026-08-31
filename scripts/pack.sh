@@ -114,8 +114,9 @@ fi
 
 BIN_DIR="$RES_DIR/bin"
 mkdir -p "$BIN_DIR" "$RES_DIR/lib" "$RES_DIR/docker"
-TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
-VERSION="$(node -p "require('$ROOT/apps/desktop/package.json').version")"
+# Relative paths so native Node/cargo on Windows Git Bash see ./apps not /d/a/late/...
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+VERSION="$(node -p "require('./apps/desktop/package.json').version")"
 
 # Stage late-daemon for this pack OS only. Never copy this computer's ELF into
 # resources-win / resources-mac. Loopback bind stays 127.0.0.1 (see late-daemon).
@@ -310,11 +311,11 @@ else
 fi
 
 echo "late: bundle sidecar"
-mkdir -p "$ROOT/apps/desktop/resources"
-npx --yes esbuild "$ROOT/apps/agent-sidecar/src/index.ts" \
+mkdir -p apps/desktop/resources
+npx --yes esbuild apps/agent-sidecar/src/index.ts \
   --bundle --platform=node --format=cjs \
   --external:@cursor/sdk \
-  --outfile="$ROOT/apps/desktop/resources/sidecar.cjs"
+  --outfile=apps/desktop/resources/sidecar.cjs
 
 echo "late: vite UI"
 npm run build -w late-desktop

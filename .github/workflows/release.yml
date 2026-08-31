@@ -40,6 +40,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y pkg-config libudev-dev libfuse2 zstd rpm libarchive-tools fakeroot xz-utils zip
       - run: npm ci
       - name: Package
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           PACK_LINUX_ALL: "1"
