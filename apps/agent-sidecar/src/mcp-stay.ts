@@ -46,7 +46,8 @@ export function isMcpConnectFailure(message: string): boolean {
 }
 
 /**
- * True when Agent=MCP should try another loopback /mcp (not Late vLLM).
+ * True when Agent=MCP should try another /mcp (not Late vLLM). A pasted private URL
+ * is not replaced by this computer's 8787/8790 — discovery filters that.
  * Live HTTP 4xx/5xx stay on this MCP URL.
  */
 export function shouldDiscoverLoopbackMcp(message: string): boolean {

@@ -14,6 +14,12 @@ function loopbackMcp(port: number): string {
   return `http://127.0.0.1:${port}/mcp`;
 }
 
+/** Loopback or RFC1918 / ULA / .internal MCP. Public hosts stay out of discovery (Cloud AI gate is on the probe). */
+function mcpDiscoverable(url: string): boolean {
+  const egress = classifyChatBaseSync(url);
+  return egress === "loopback" || egress === "private";
+}
+
 function portFromEnv(raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number(raw);
@@ -26,13 +32,13 @@ function xdgOrchestratorDir(env: NodeJS.Dict<string>, home: string): string {
   return xdg ? join(xdg, "agent-orchestrator") : join(home, ".config", "agent-orchestrator");
 }
 
-/** First line of an advertised mcp.url file, if it is loopback Streamable HTTP. */
+/** First line of an advertised mcp.url file, if it is loopback or private Streamable HTTP. */
 export function parseAdvertisedMcpUrl(raw: string): string | undefined {
   const line = raw.trim().split(/\n/)[0]?.trim() ?? "";
   if (!line) return undefined;
   const parsed = parseMcpHttpUrl(line);
   if (typeof parsed !== "string") return undefined;
-  if (classifyChatBaseSync(parsed) !== "loopback") return undefined;
+  if (!mcpDiscoverable(parsed)) return undefined;
   return parsed;
 }
 
@@ -62,9 +68,10 @@ function addAdvertisedDir(
 }
 
 /**
- * Loopback `/mcp` URLs to try when the Settings address is down.
- * Settings URL, then the URL the orchestrator wrote when it bound (not a hardcoded port),
- * then GUI port env / default, then dedicated mcp:http.
+ * `/mcp` URLs to try when the Settings address is down.
+ * Settings URL (loopback or private LAN), then the URL the orchestrator wrote when it bound,
+ * then — only for empty/loopback Settings — GUI port env / default and dedicated mcp:http on this computer.
+ * A pasted RFC1918 URL is never replaced by 127.0.0.1:8787/8790.
  */
 export function mcpDiscoverCandidates(opts?: {
   settingsUrl?: string;
@@ -79,11 +86,18 @@ export function mcpDiscoverCandidates(opts?: {
   const readFile = opts?.readFile ?? ((p: string) => readFileSync(p, "utf8"));
   const exists = opts?.exists ?? existsSync;
   const out: string[] = [];
+  let settingsParsed: string | undefined;
+  if (opts?.settingsUrl?.trim()) {
+    const parsed = parseMcpHttpUrl(opts.settingsUrl.trim());
+    if (typeof parsed === "string" && mcpDiscoverable(parsed)) settingsParsed = parsed;
+  }
+  const settingsPrivate = settingsParsed ? classifyChatBaseSync(settingsParsed) === "private" : false;
   const add = (raw: string | undefined) => {
     if (!raw?.trim()) return;
     const parsed = parseMcpHttpUrl(raw.trim());
     if (typeof parsed !== "string") return;
-    if (classifyChatBaseSync(parsed) !== "loopback") return;
+    if (!mcpDiscoverable(parsed)) return;
+    if (settingsPrivate && classifyChatBaseSync(parsed) === "loopback") return;
     if (!out.includes(parsed)) out.push(parsed);
   };
   add(opts?.settingsUrl);
@@ -91,8 +105,10 @@ export function mcpDiscoverCandidates(opts?: {
   if (cwd) addAdvertisedDir(join(cwd, ".orchestrator"), add, readFile, exists);
   addAdvertisedDir(env.AGENT_ORCHESTRATOR_STATE_DIR?.trim(), add, readFile, exists);
   addAdvertisedDir(xdgOrchestratorDir(env, home), add, readFile, exists);
-  add(loopbackMcp(portFromEnv(env.AGENT_ORCHESTRATOR_GUI_PORT, DEFAULT_GUI_PORT)));
-  add(loopbackMcp(portFromEnv(env.AGENT_ORCHESTRATOR_MCP_PORT, DEFAULT_MCP_PORT)));
+  if (!settingsPrivate) {
+    add(loopbackMcp(portFromEnv(env.AGENT_ORCHESTRATOR_GUI_PORT, DEFAULT_GUI_PORT)));
+    add(loopbackMcp(portFromEnv(env.AGENT_ORCHESTRATOR_MCP_PORT, DEFAULT_MCP_PORT)));
+  }
   return out;
 }
 
@@ -107,7 +123,7 @@ export async function firstReachableMcpUrl(
       const probed = await probe(url);
       if (probed.ok) return url;
     } catch {
-      /* try the next loopback /mcp */
+      /* try the next /mcp */
     }
   }
   return undefined;

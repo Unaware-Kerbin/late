@@ -18,6 +18,7 @@ test("loopback names and IPs", () => {
 test("RFC1918, ULA, IPv6 link-local", () => {
   assert.equal(classifyHostname("10.1.2.3"), "private");
   assert.equal(classifyHostname("192.168.0.5"), "private");
+  assert.equal(classifyHostname("192.168.2.139"), "private");
   assert.equal(classifyHostname("172.16.9.1"), "private");
   assert.equal(classifyHostname("172.31.255.1"), "private");
   assert.equal(classifyHostname("fd12:3456:789a::1"), "private");
@@ -78,4 +79,5 @@ test("Cloud AI gate: loopback/private MCP stay off; public MCP needs Cloud AI", 
   assert.equal(chatEgressAllowed(publicMcp, false), false);
   assert.equal(chatEgressAllowed(classifyChatBaseSync("http://127.0.0.1:8787/mcp"), false), true);
   assert.equal(chatEgressAllowed(classifyChatBaseSync("http://10.0.0.12:8790/mcp"), false), true);
+  assert.equal(chatEgressAllowed(classifyChatBaseSync("http://192.168.2.139:8790/mcp"), false), true);
 });

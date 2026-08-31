@@ -232,6 +232,12 @@ describe("mcp-format", () => {
     if (typeof parsed !== "string") return;
     assert.equal(classifyChatBaseSync(parsed), "private");
     assert.equal(chatEgressAllowed(classifyChatBaseSync(parsed), false), true);
+    const lan = parseMcpHttpUrl("http://192.168.2.139:8790/mcp");
+    assert.equal(typeof lan, "string");
+    if (typeof lan === "string") {
+      assert.equal(classifyChatBaseSync(lan), "private");
+      assert.equal(chatEgressAllowed(classifyChatBaseSync(lan), false), true);
+    }
     const loop = parseMcpHttpUrl("http://127.0.0.1:8790/mcp");
     assert.equal(typeof loop, "string");
     if (typeof loop !== "string") return;

@@ -43,9 +43,15 @@ describe("mcp discover", () => {
     assert.ok(got.includes("http://127.0.0.1:8107/mcp"));
     assert.ok(got.includes("http://127.0.0.1:8798/mcp"));
     assert.ok(!got.includes("http://127.0.0.1:8787/mcp"));
-    const lan = isolated({ settingsUrl: "http://10.0.0.12:8790/mcp", env: {} });
-    assert.ok(!lan.includes("http://10.0.0.12:8790/mcp"));
-    assert.ok(lan.includes("http://127.0.0.1:8787/mcp"));
+  });
+
+  it("keeps a pasted RFC1918 MCP URL and does not replace it with this computer's 8787/8790", () => {
+    const lan = isolated({ settingsUrl: "http://192.168.2.139:8790/mcp", env: {} });
+    assert.deepEqual(lan, ["http://192.168.2.139:8790/mcp"]);
+    assert.ok(!lan.includes("http://127.0.0.1:8787/mcp"));
+    assert.ok(!lan.includes("http://127.0.0.1:8790/mcp"));
+    const ten = isolated({ settingsUrl: "http://10.0.0.12:8790/mcp", env: {} });
+    assert.deepEqual(ten, ["http://10.0.0.12:8790/mcp"]);
   });
 
   it("reads GUI advertise before dedicated mcp:http so last-writer mcp.url cannot hide the GUI port", () => {
@@ -96,10 +102,45 @@ describe("mcp discover", () => {
     assert.ok(got.includes("http://127.0.0.1:8790/mcp"));
   });
 
-  it("parseAdvertisedMcpUrl keeps loopback /mcp only", () => {
+  it("parseAdvertisedMcpUrl keeps loopback and private /mcp, drops public", () => {
     assert.equal(parseAdvertisedMcpUrl("http://127.0.0.1:8120/mcp\n"), "http://127.0.0.1:8120/mcp");
-    assert.equal(parseAdvertisedMcpUrl("http://10.0.0.12:8790/mcp"), undefined);
+    assert.equal(parseAdvertisedMcpUrl("http://192.168.2.139:8790/mcp"), "http://192.168.2.139:8790/mcp");
+    assert.equal(parseAdvertisedMcpUrl("http://10.0.0.12:8790/mcp"), "http://10.0.0.12:8790/mcp");
+    assert.equal(parseAdvertisedMcpUrl("https://mcp.example.com/mcp"), undefined);
     assert.equal(parseAdvertisedMcpUrl("not a url"), undefined);
+  });
+
+  it("does not let a stale loopback advertise override a pasted LAN Settings URL", () => {
+    const files: Record<string, string> = {
+      [join("/tmp/xdg", "agent-orchestrator", "mcp.gui.url")]: "http://127.0.0.1:8790/mcp\n",
+    };
+    const got = isolated({
+      settingsUrl: "http://192.168.2.139:8790/mcp",
+      env: { XDG_CONFIG_HOME: "/tmp/xdg" },
+      exists: (p) => p in files,
+      readFile: (p) => files[p] ?? "",
+    });
+    assert.deepEqual(got, ["http://192.168.2.139:8790/mcp"]);
+  });
+
+  it("empty Settings still tries this computer's default /mcp and a private advertise", () => {
+    const files: Record<string, string> = {
+      [join("/tmp/xdg", "agent-orchestrator", "mcp.gui.url")]: "http://192.168.2.139:8790/mcp\n",
+    };
+    const got = isolated({
+      env: { XDG_CONFIG_HOME: "/tmp/xdg" },
+      exists: (p) => p in files,
+      readFile: (p) => files[p] ?? "",
+    });
+    assert.equal(got[0], "http://192.168.2.139:8790/mcp");
+    assert.ok(got.includes("http://127.0.0.1:8787/mcp"));
+    assert.ok(got.includes("http://127.0.0.1:8790/mcp"));
+  });
+
+  it("drops a public MCP host from discovery", () => {
+    const got = isolated({ settingsUrl: "https://mcp.example.com/mcp", env: {} });
+    assert.ok(!got.includes("https://mcp.example.com/mcp"));
+    assert.ok(got.includes("http://127.0.0.1:8787/mcp"));
   });
 
   it("firstReachable skips the dead Settings URL and returns GUI /mcp", async () => {

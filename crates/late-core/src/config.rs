@@ -393,6 +393,7 @@ log_dir = "/tmp/logs"
     fn mcp_http_url_accepts_http_and_rejects_file_and_shell() {
         assert!(validate_mcp_http_url("").is_ok());
         assert!(validate_mcp_http_url("http://10.0.0.12:8790/mcp").is_ok());
+        assert!(validate_mcp_http_url("http://192.168.2.139:8790/mcp").is_ok());
         assert!(validate_mcp_http_url("http://127.0.0.1:8790/mcp").is_ok());
         assert!(validate_mcp_http_url("http://127.0.0.1:8790/MCP").is_ok());
         assert!(validate_mcp_http_url("http://localhost:8787/MCP").is_ok());

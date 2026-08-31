@@ -301,7 +301,7 @@ export async function runMcpChat(opts: {
   conversationId: string;
   emit: (e: SseEvent) => void;
   signal: AbortSignal;
-  /** Override Settings URL (used after loopback /mcp discovery). */
+  /** Override Settings URL (used after /mcp discovery). */
   mcpUrl?: string;
 }): Promise<string> {
   const override = opts.mcpUrl?.trim();
@@ -479,8 +479,9 @@ async function discoverAndRunMcp(opts: {
 }
 
 /**
- * Agent = MCP: Settings URL, then other loopback /mcp on connect refuse only
- * (GUI /mcp, dedicated mcp:http). Never Late's vLLM on :8000.
+ * Agent = MCP: Settings URL, then other /mcp on connect refuse only
+ * (GUI /mcp, dedicated mcp:http on this computer; a pasted private URL stays on that host).
+ * Never Late's vLLM on :8000.
  * Live HTTP errors stay on MCP.
  */
 export async function runMcpChatOrFallback(
