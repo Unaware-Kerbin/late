@@ -4,6 +4,11 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-31
 
+**v0.1.11 installers.**
+
+- GitHub Release [v0.1.11](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.11) packs from this `main`. File names are `Late-0.1.11-…`. Tag [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10) stays frozen — future installers are new tags; do not rewrite old tags. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions (no Apple notarization or Windows Authenticode). First time on a Mac: right-click Late → Open. On Windows, if SmartScreen appears: More info → Run anyway.
+- Keep a pasted RFC1918 MCP URL instead of replacing it with this computer’s `127.0.0.1:8787` / `:8790` so Late on another host can reach Orchestrator on the LAN.
+
 **GitHub packs every Linux package plus Windows zip.**
 
 - **Build installers** now runs on `main` (workflow artifacts) as well as `v*` tags (GitHub Release). Linux CI installs zstd, rpm, bsdtar, and fakeroot so `.deb`, `.rpm`, `.pacman`, and AppImage can all land. Windows also writes `Late-…-win-x64.zip`. Mac remains unsigned and needs macos-latest for the Mach-O `late-daemon` (no osxcross SDK on this Linux computer). See [release/README.md](release/README.md) for the real filenames. Do not commit the binaries. `pack.sh` reads `package.json` with a path Node on Windows Git Bash can open (`./apps/desktop/…`, not `/d/a/late/…`).

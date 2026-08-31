@@ -2,6 +2,8 @@
 
 Pack output is **not** stored in git (`apps/desktop/release/` is gitignored). GitHub Actions **Build installers** runs `scripts/pack.sh` on `main` and on `v*` tags, then uploads workflow artifacts. A `v*` tag also attaches the same files to the GitHub Release.
 
+Future installers are **new tags** (`v0.1.11`, then `v0.1.12`, …). Do not rewrite old tags.
+
 Do not commit the 100MB+ binaries.
 
 ## Names (`scripts/pack.sh` + electron-builder `artifactName`)
