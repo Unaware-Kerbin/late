@@ -4,6 +4,11 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-08-31
 
+**v0.1.12 installers.**
+
+- GitHub Release [v0.1.12](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.12) packs from this `main`. File names are `Late-0.1.12-…`. Tag [v0.1.11](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.11) stays frozen — future installers are new tags; do not rewrite old tags. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions (no Apple notarization or Windows Authenticode). First time on a Mac: right-click Late → Open. On Windows, if SmartScreen appears: More info → Run anyway.
+- `scripts/late` and `pack.sh` skip cargo when Rust is missing and reuse a staged or installer `late-daemon`, pointing at Releases instead of failing the cargo build.
+
 **v0.1.11 installers.**
 
 - GitHub Release [v0.1.11](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.11) packs from this `main`. File names are `Late-0.1.11-…`. Tag [v0.1.10](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.10) stays frozen — future installers are new tags; do not rewrite old tags. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions (no Apple notarization or Windows Authenticode). First time on a Mac: right-click Late → Open. On Windows, if SmartScreen appears: More info → Run anyway.

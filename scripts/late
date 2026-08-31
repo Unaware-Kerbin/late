@@ -73,11 +73,18 @@ find_daemon() {
   local p
   for p in \
     "$ROOT/target/release/late-daemon" \
-    "$ROOT/target/debug/late-daemon"
+    "$ROOT/target/debug/late-daemon" \
+    "$ROOT/apps/desktop/resources/bin/late-daemon"
   do
     [[ -x "$p" ]] && { echo "$p"; return 0; }
   done
   return 1
+}
+
+need_rust_or_installer() {
+  echo "late: cargo not found. A git clone needs Rust to build the backend." >&2
+  echo "late: Install Late from https://github.com/Unaware-Kerbin/late/releases (no Rust)." >&2
+  echo "late: Or install Rust from https://rustup.rs/ , open a new terminal, then ./late." >&2
 }
 
 up() {
@@ -105,14 +112,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "late: building daemon…"
-cargo build -p late-daemon --manifest-path "$ROOT/Cargo.toml" --quiet
-DAEMON_BIN="$ROOT/target/debug/late-daemon"
-if [[ -x "$ROOT/target/release/late-daemon" ]] && [[ "$ROOT/target/release/late-daemon" -nt "$DAEMON_BIN" ]]; then
-  DAEMON_BIN="$ROOT/target/release/late-daemon"
+DAEMON_BIN=""
+if command -v cargo >/dev/null 2>&1; then
+  echo "late: building daemon…"
+  cargo build -p late-daemon --manifest-path "$ROOT/Cargo.toml" --quiet
+  DAEMON_BIN="$ROOT/target/debug/late-daemon"
+  if [[ -x "$ROOT/target/release/late-daemon" ]] && [[ "$ROOT/target/release/late-daemon" -nt "$DAEMON_BIN" ]]; then
+    DAEMON_BIN="$ROOT/target/release/late-daemon"
+  fi
+elif DAEMON_BIN="$(find_daemon)"; then
+  echo "late: cargo not found; using $DAEMON_BIN"
+else
+  need_rust_or_installer
+  exit 1
 fi
 if [[ ! -x "$DAEMON_BIN" ]]; then
-  echo "late: daemon build finished but $DAEMON_BIN is missing" >&2
+  echo "late: daemon binary missing ($DAEMON_BIN)" >&2
   exit 1
 fi
 

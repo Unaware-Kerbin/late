@@ -135,6 +135,31 @@ stage_win_daemon() {
   echo "late: staged $src → $BIN_DIR/late-daemon.exe"
 }
 
+need_rust_or_installer() {
+  echo "late: cargo not found. Pack from a git clone needs Rust (https://rustup.rs/)." >&2
+  echo "late: To run Late without Rust, install from https://github.com/Unaware-Kerbin/late/releases" >&2
+}
+
+have_cargo() {
+  command -v cargo >/dev/null 2>&1
+}
+
+use_staged_unix_daemon() {
+  if [[ -x "$BIN_DIR/late-daemon" ]]; then
+    echo "late: cargo not found; using already-staged $BIN_DIR/late-daemon"
+    return 0
+  fi
+  return 1
+}
+
+use_staged_win_daemon() {
+  if [[ -f "$BIN_DIR/late-daemon.exe" ]]; then
+    echo "late: cargo not found; using already-staged $BIN_DIR/late-daemon.exe"
+    return 0
+  fi
+  return 1
+}
+
 find_mingw_bin() {
   local p cache
   if p="$(command -v x86_64-w64-mingw32-gcc 2>/dev/null)"; then
@@ -243,45 +268,75 @@ find_osxcross_clang() {
 }
 
 if [[ "$PACK_OS" == linux ]]; then
-  echo "late: cargo release daemon"
-  cargo build -p late-daemon --release
-  if [[ -f "$TARGET_DIR/release/late-daemon.exe" ]]; then
-    stage_win_daemon "$TARGET_DIR/release/late-daemon.exe"
-  elif [[ -f "$TARGET_DIR/release/late-daemon" ]]; then
-    stage_unix_daemon "$TARGET_DIR/release/late-daemon"
+  if have_cargo; then
+    echo "late: cargo release daemon"
+    cargo build -p late-daemon --release
+    if [[ -f "$TARGET_DIR/release/late-daemon.exe" ]]; then
+      stage_win_daemon "$TARGET_DIR/release/late-daemon.exe"
+    elif [[ -f "$TARGET_DIR/release/late-daemon" ]]; then
+      stage_unix_daemon "$TARGET_DIR/release/late-daemon"
+    else
+      echo "late: daemon binary missing under $TARGET_DIR/release" >&2
+      exit 1
+    fi
+  elif use_staged_unix_daemon; then
+    :
   else
-    echo "late: daemon binary missing under $TARGET_DIR/release" >&2
+    need_rust_or_installer
+    echo "late: no $BIN_DIR/late-daemon to reuse" >&2
     exit 1
   fi
 elif [[ "$PACK_OS" == win && "$HOST_OS" == win ]]; then
-  echo "late: cargo release daemon (windows)"
-  cargo build -p late-daemon --release
-  if [[ -f "$TARGET_DIR/release/late-daemon.exe" ]]; then
-    stage_win_daemon "$TARGET_DIR/release/late-daemon.exe"
-  elif [[ -f "$TARGET_DIR/x86_64-pc-windows-gnu/release/late-daemon.exe" ]]; then
-    stage_win_daemon "$TARGET_DIR/x86_64-pc-windows-gnu/release/late-daemon.exe"
+  if have_cargo; then
+    echo "late: cargo release daemon (windows)"
+    cargo build -p late-daemon --release
+    if [[ -f "$TARGET_DIR/release/late-daemon.exe" ]]; then
+      stage_win_daemon "$TARGET_DIR/release/late-daemon.exe"
+    elif [[ -f "$TARGET_DIR/x86_64-pc-windows-gnu/release/late-daemon.exe" ]]; then
+      stage_win_daemon "$TARGET_DIR/x86_64-pc-windows-gnu/release/late-daemon.exe"
+    else
+      echo "late: late-daemon.exe missing under $TARGET_DIR/release" >&2
+      exit 1
+    fi
+  elif use_staged_win_daemon; then
+    :
   else
-    echo "late: late-daemon.exe missing under $TARGET_DIR/release" >&2
+    need_rust_or_installer
+    echo "late: no $BIN_DIR/late-daemon.exe to reuse" >&2
     exit 1
   fi
 elif [[ "$PACK_OS" == mac && "$HOST_OS" == mac ]]; then
-  echo "late: cargo release daemon (mac)"
-  cargo build -p late-daemon --release
-  if [[ -f "$TARGET_DIR/release/late-daemon" ]]; then
-    stage_unix_daemon "$TARGET_DIR/release/late-daemon"
+  if have_cargo; then
+    echo "late: cargo release daemon (mac)"
+    cargo build -p late-daemon --release
+    if [[ -f "$TARGET_DIR/release/late-daemon" ]]; then
+      stage_unix_daemon "$TARGET_DIR/release/late-daemon"
+    else
+      echo "late: late-daemon missing under $TARGET_DIR/release" >&2
+      exit 1
+    fi
+  elif use_staged_unix_daemon; then
+    :
   else
-    echo "late: late-daemon missing under $TARGET_DIR/release" >&2
+    need_rust_or_installer
+    echo "late: no $BIN_DIR/late-daemon to reuse" >&2
     exit 1
   fi
 elif [[ "$PACK_OS" == win ]]; then
-  cross_compile_win_daemon
+  if have_cargo; then
+    cross_compile_win_daemon
+  elif use_staged_win_daemon; then
+    :
+  else
+    need_rust_or_installer
+  fi
   if [[ ! -f "$BIN_DIR/late-daemon.exe" ]]; then
     echo "late: Windows pack needs $BIN_DIR/late-daemon.exe (Electron will not cargo run)" >&2
     exit 1
   fi
 elif [[ "$PACK_OS" == mac ]]; then
   clang=""
-  if clang="$(find_osxcross_clang)"; then
+  if have_cargo && clang="$(find_osxcross_clang)"; then
     echo "late: cross-compile late-daemon (aarch64-apple-darwin via $clang)"
     rustup target add aarch64-apple-darwin >/dev/null
     CC="$clang" \
@@ -290,8 +345,13 @@ elif [[ "$PACK_OS" == mac ]]; then
     if [[ -f "$TARGET_DIR/aarch64-apple-darwin/release/late-daemon" ]]; then
       stage_unix_daemon "$TARGET_DIR/aarch64-apple-darwin/release/late-daemon"
     fi
+  elif ! have_cargo && use_staged_unix_daemon; then
+    :
   fi
   if [[ ! -f "$BIN_DIR/late-daemon" ]]; then
+    if ! have_cargo; then
+      need_rust_or_installer
+    fi
     echo "late: BLOCKED aarch64-apple-darwin (no macOS SDK / osxcross on $(uname -s) $(uname -m))" >&2
     echo "late: macOS CI hook: pack.sh --mac on Darwin runs cargo build -p late-daemon --release" >&2
     echo "late: resources-mac/bin/late-daemon will be missing until packed on macOS" >&2
