@@ -18,9 +18,11 @@ That is the whole idea.
 
 ![Watch how Late works](docs/assets/late-demo.webp)
 
+Short clips already in the tree (same takes as the animated stills): [overview](docs/assets/late-demo.mp4) · [helper backends / MCP](docs/assets/late-helper-backends.mp4) · [MCP device-output wrap](docs/assets/late-mcp-wrap.mp4) · [Approve](docs/assets/late-approve.mp4).
+
 ## What’s in the installer
 
-Ollama and llama-server come with Late. **Weights do not** — click **Pull** or **Download** after **Start**. vLLM is optional Docker. Start / Stop stay on **your computer** (`127.0.0.1`). **Add server** does not replace **Local**.
+Ollama and llama-server still come with Late as **optional** helpers. The usual Local chat is **Late** (`late-infer` on this computer, `127.0.0.1:8010`). **Weights do not** come in the installer — click **Start** (compiles a Hub snapshot for your computer; can take minutes) or **Pull** / **Download** for Ollama / llama.cpp. vLLM is optional Docker. Start / Stop stay on **your computer** (loopback). **Add server** does not replace **Local**.
 
 | What you get | Picture |
 |---|---|
@@ -41,9 +43,8 @@ sequenceDiagram
   actor You
   participant Late
   participant Local as Local 127.0.0.1
-  You->>Late: Agent → Ollama → Local → Start
-  Late->>Local: ollama serve
-  You->>Late: Pull a model (weights are not in the installer)
+  You->>Late: Agent → Late → Local → Start
+  Late->>Local: late-infer
   You->>Late: Send
   Late-->>You: propose a command
   You->>Late: Approve
@@ -104,8 +105,8 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 
 ## After it opens
 
-1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter).
-2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: pick **Ollama**, click **Local**, **Start** if needed, then **Pull** a model (try `gemma4:e4b`).
+1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter). Serial: Disconnect releases the port lock so you can reopen the same port without quitting Late (see [Serial disconnect / reconnect](#serial-disconnect--reconnect)).
+2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: pick **Late**, click **Local**, **Start** (first time compiles a Hub snapshot on your computer; weights are not in the installer). Ollama / llama.cpp / vLLM stay in the same menu if you want them.
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
 4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. **Ask agent** (or a `.pcap` path you type) can analyze headers. **More** → **Wireshark** opens the file in Wireshark.
 5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
@@ -117,9 +118,9 @@ All of this stays on loopback. Cloud AI is Cursor and public internet APIs only.
 
 | Do this | How | Picture |
 |---|---|---|
-| Chat | Right-hand **Agent** pane. Pick Ollama / llama.cpp / vLLM / MCP. **Local** = this computer. Type, **Send**. | ![Helper backends on your computer](docs/assets/late-helper-backends.webp) |
+| Chat | Right-hand **Agent** pane. Pick Late / Ollama / llama.cpp / vLLM / MCP. **Local** = this computer. Type, **Send**. | ![Helper backends on your computer](docs/assets/late-helper-backends.webp) |
 | Approve device CLI | The helper *suggests*. You click **Approve**. Enter does not send. Linux has no always-allow. | ![Approve a proposed command](docs/assets/late-approve.webp) |
-| MCP as Agent | First menu **MCP**. Paste the printed `/mcp` URL (same port as that program’s web UI). Empty URL = folder; Late also reads `mcp.gui.url` if Settings has a stale port. Send is one `chat_send` of Late’s isolated prompt. Extra `start_*` wait for **Approve**. Do **not** put this in Cursor `mcpServers`. | ![MCP wrap BEGIN and END](docs/assets/late-mcp-wrap.webp) |
+| MCP as Agent | Late is the **MCP client**. Start [Agent Orchestrator](https://github.com/Unaware-Kerbin/agent-orchestrator), click **Copy MCP URL** (Streamable HTTP, e.g. `http://127.0.0.1:8787/mcp` — same port as that program’s web UI). In Late: Agent → **MCP** → paste that URL. Empty URL = read `mcp.gui.url`. Send is one `chat_send`. Extra `start_*` wait for **Approve**. Do **not** register Late (or that `/mcp` URL) inside Cursor `mcpServers`. | ![MCP wrap BEGIN and END](docs/assets/late-mcp-wrap.webp) |
 | Use all GPUs | Local Start only. Default on when this computer has more than one GPU. Uncheck to stay on one card. Ollama already uses every GPU it sees. | ![Use all GPUs on your computer](docs/assets/late-gpus.webp) |
 | Sidecar + daemon | Chat/Approve is sidecar `127.0.0.1:7430`. SSH/serial/pcap is daemon `127.0.0.1:7420`. Status bar says online. Do not bind them on the LAN. | ![Loopback ports](docs/images/loopback-ports.png) |
 
@@ -131,9 +132,9 @@ The helper is the chat pane on the right. It can *suggest* commands. You still c
 
 Think of it as a brain in a box. You pick which box.
 
-**This computer.** In the Agent pane, pick **Ollama**, **vLLM**, or **llama.cpp**. The next menu says **Local**. That means the box on *this* desk. Ollama and llama.cpp come with the app — **Start** / **Pull** / **Download** only work for Local. vLLM Start needs Docker (optional). If this computer has more than one GPU, **Use all GPUs on this computer** is on by default (uncheck to use one card). Ollama already uses every GPU it sees.
+**This computer.** In the Agent pane, pick **Late**. The next menu says **Local**. That means the box on *this* desk. Click **Start** — Late compiles a Hub snapshot for your computer into `~/.local/share/late/compiled/` (can take minutes). Many Instruct LLMs work; not every Hub repo. Compiler is **MLC-LLM** when `mlc_llm` is on PATH. **Qwen2** and **Gemma 4** still serve via Candle until then. Weights are not in the installer. Default Hub id: `Qwen/Qwen2.5-0.5B-Instruct` (small; 0.5B is weak at tools — try `Qwen/Qwen2.5-1.5B-Instruct`). Loopback `127.0.0.1:8010`. From source: `cargo run -p late-infer --release` if Start cannot find the binary. **Ollama**, **llama.cpp**, and **vLLM** stay in the same menu as optional engines. Ollama and llama.cpp still come with the app. vLLM Start needs Docker (optional). If this computer has more than one GPU, **Use all GPUs on this computer** is on by default for those engines (uncheck to use one card). Ollama already uses every GPU it sees. Late does not start inference on another host.
 
-**Another computer at home or in the lab.** You start the brain on *that* machine yourself (SSH into it if you want). Then in Late: same engine (vLLM / llama.cpp / Ollama) → open the menu under **Local** → **Add server**. Type the address, like `http://10.0.0.12:8000/v1`. Click **Check**, then **Save**. Next time that address is a row in the menu. Click **Local** to come home. Late will not press the power button on the other box for you.
+**Another computer at home or in the lab.** You start the brain on *that* machine yourself (SSH into it if you want). Then in Late: same engine (Late / vLLM / llama.cpp / Ollama) → open the menu under **Local** → **Add server**. Type the address, like `http://10.0.0.12:8010/v1`. Click **Check**, then **Save**. Next time that address is a row in the menu. Click **Local** to come home. Late will not press the power button on the other box for you.
 
 That other box is still *your* network. Leave **Cloud AI** off. You do not need the internet.
 
@@ -141,9 +142,11 @@ That other box is still *your* network. Leave **Cloud AI** off. You do not need 
 
 **Claude, Gemini, or Azure on *your* network.** Settings has those names too. Point them at a box you run. Same rule: your network, Cloud AI off. The real anthropic.com / Google / public Azure sites still need Cloud AI.
 
-If the box asks for a secret, Settings → API keys → **Custom OpenAI-compatible** (or Anthropic / Gemini / Azure). The helper still has to speak the usual chat HTTP (`/v1` for vLLM, Ollama, llama.cpp). A weird custom protocol needs something like LiteLLM in front. Details for developers are below.
+If the box asks for a secret, Settings → API keys → **Custom OpenAI-compatible** (or Anthropic / Gemini / Azure). The helper still has to speak the usual chat HTTP (`/v1` for Late, vLLM, Ollama, llama.cpp). A weird custom protocol needs something like LiteLLM in front. Details for developers are below.
 
-**MCP as the agent.** Optional. A free open-source MCP server you can use is [Agent Orchestrator](https://github.com/Unaware-Kerbin/agent-orchestrator) (localhost GUI that also serves `/mcp`). Start it in that repo (`npm run gui`). In Late pick **MCP** and paste the `/mcp` URL it printed — **same port as its web UI**, not always 8790. The HTML page is not MCP. Or leave the address empty: Late looks for the URL that program wrote (`mcp.gui.url`). Chat stays on MCP; it does not switch to Late’s local vLLM on `:8000`. Late still waits for **Approve**. Late will not start that program and will not send API keys into it. Any Streamable HTTP `/mcp` server works the same way. Late still chats when MCP is off.
+**MCP as the agent (Late is the client).** Optional. A free open-source MCP **server** is [Agent Orchestrator](https://github.com/Unaware-Kerbin/agent-orchestrator) (localhost GUI that also serves Streamable HTTP `/mcp`). Start it in that repo (`npm run gui`). In Orchestrator click **Copy MCP URL**; in Late pick **MCP** and paste it (Streamable HTTP, e.g. `http://127.0.0.1:8787/mcp` — **same port as its web UI**, not always 8787/8790). The HTML page is not MCP. Or leave the address empty: Late looks for the URL that program wrote (`mcp.gui.url`). Chat stays on MCP; it does not fall back to Late’s local late-infer. Late still waits for **Approve**. Late will not start that program and will not send API keys into it. Any Streamable HTTP `/mcp` server works the same way. Late still chats when MCP is off.
+
+**Do not** put Late (or that Orchestrator `/mcp` URL) into Cursor `mcpServers` for this path — that skips Late Approve. Paste **Copy MCP URL** into Late Agent=MCP field instead.
 
 Device scrollback is wrapped as **BEGIN UNTRUSTED DEVICE OUTPUT** … **END UNTRUSTED DEVICE OUTPUT** (both fences, always) so that program cannot treat switch text as instructions.
 
@@ -156,6 +159,12 @@ Device scrollback is wrapped as **BEGIN UNTRUSTED DEVICE OUTPUT** … **END UNTR
 **Staging** (Tools) is a scratch pad on **your computer**. Write a CLI draft (or Ansible / Netmiko / Salt / Chef). **Push CLI** types it into an SSH or serial session you already opened. You pick that session in **Push session** (the inventory device can show the OS). Click **Push** to confirm — Enter does not confirm. The helper cannot Push.
 
 ![Push CLI asks you to confirm](docs/assets/late-staging-push.webp)
+
+## Serial disconnect / reconnect
+
+After [4db4e6b](https://github.com/Unaware-Kerbin/late/commit/4db4e6b) on `main`, closing a serial session joins the serial worker so the OS exclusive lock on the port is released. You can open the **same** port again without quitting Late or restarting the daemon.
+
+Disconnect → reconnect on `/dev/ttyUSB0` (or your path) should work in one Late window. If an old build still holds the port after Disconnect, update past that commit (or fully quit Late once).
 
 ## Packet capture
 
@@ -275,6 +284,7 @@ The **ci** workflow on each push is Rust tests, isolation greps, and advisory sc
 
 - `crates/late-core` — inventory, secrets, SSH/serial/PTY/SCP, policy, redact, pcap, API client, staging
 - `crates/late-daemon` — Axum JSON-RPC daemon
+- `crates/late-infer` — Late Local OpenAI `/v1` (Hugging Face safetensors, loopback). Not packed; not default-members
 - `crates/isolation-check` — sidecar firewall grep
 - `policies/` — vendor YAML permit lists
 - `apps/desktop` — Vite + React + xterm.js UI (Electron is the current shell; Tauri 2 is optional)
@@ -347,9 +357,22 @@ See `docker/README.md` for the full matrix. Short version:
 
 | Agent pane | Default URL | Typical runtime |
 |---|---|---|
+| Late | `http://127.0.0.1:8010/v1` | `late-infer` on this computer (Start in the Agent pane) |
 | Ollama | `http://127.0.0.1:11434/v1` | Bundled `ollama serve` (Pull from the Agent pane) |
 | llama.cpp | `http://127.0.0.1:8080/v1` | Bundled `llama-server` (Vulkan/Metal) |
 | vLLM | `http://127.0.0.1:8000/v1` | Docker image pull on first Start (optional) |
+
+**Late infer (not packed).** Agent → **Late** → **Local** → **Start** on your computer. That runs `late-infer` on loopback `127.0.0.1:8010`. First Start compiles a Hub snapshot into `~/.local/share/late/compiled/` (can take minutes). Many Instruct LLMs work; not every Hub repo. Compiler is **MLC-LLM** when `mlc_llm` is on PATH; **Qwen2** / **Gemma 4** still serve via Candle (NVIDIA/CUDA or Metal) or **OpenVINO GenAI** when the idle GPU on your computer is Intel. Default Hub id [`Qwen/Qwen2.5-0.5B-Instruct`](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct). OpenAI `tools` / `tool_choice`. Ollama / llama.cpp / vLLM stay optional. Weights stay out of the installer. CUDA/Metal optional crate features. Intel Start needs OpenVINO GenAI on your computer (`~/.local/share/late/intel-ov`); CPU is not that card. Loopback only — Late does not start inference on another host.
+
+From this repo if Start cannot find the binary:
+
+```bash
+cargo run -p late-infer --release
+# developer probe (not the Agent menu):
+curl -s http://127.0.0.1:8010/v1/models
+```
+
+Weights land in `~/.local/share/late/hf` (or `HF_HOME` / `LATE_HF_HOME`). Do not click vLLM **Start** for this engine — that still starts Docker vLLM.
 
 `docker/compose.yml` is an **optional Intel XPU** vLLM example only. NVIDIA/AMD users should not start from that file.
 
