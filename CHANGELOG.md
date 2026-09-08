@@ -2,6 +2,20 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-09-08
+
+**v0.1.13 installers.**
+
+- GitHub Release [v0.1.13](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.13) packs from this `main`. File names are `Late-0.1.13-…`. Tag [v0.1.12](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.12) stays frozen — future installers are new tags; do not rewrite old tags. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions (no Apple notarization or Windows Authenticode). First time on a Mac: right-click Late → Open. On Windows, if SmartScreen appears: More info → Run anyway.
+
+**Serial disconnect releases the OS exclusive lock.**
+
+- Join the serial worker on session close so the OS exclusive lock is released. Reopen the same port without a full app relaunch (`4db4e6b`).
+
+**README refresh for MCP client use and serial reconnect.**
+
+- Clarify Late as an MCP **client** (paste Orchestrator Copy MCP URL / Streamable HTTP into Agent=MCP; do not register Late in Cursor `mcpServers`), document serial disconnect releasing the OS lock after the join fix, and keep links to the existing demo clips (`a78d21c`).
+
 ## 2026-08-31
 
 **v0.1.12 installers.**
