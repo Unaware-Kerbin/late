@@ -53,7 +53,7 @@ sequenceDiagram
 
 ## Install
 
-Download from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.13](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.13)). Pick the file for **your computer**:
+Download from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (latest app tag is [v0.1.14](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.14)). Pick the file for **your computer**:
 
 | Your computer | File | What you do |
 |---|---|---|
@@ -65,7 +65,7 @@ Download from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (l
 | Linux (Arch) | `Late-….pacman` | `sudo pacman -U`. AppImage also works. |
 | Linux (any) | `Late-…AppImage` | Make it executable, then double-click. |
 
-Example Mac name: `Late-0.1.13-mac-arm64.zip`. The number matches the GitHub tag. These files are unsigned. SSH still uses the `ssh` program already on your computer.
+Example Mac name: `Late-0.1.14-mac-arm64.zip`. The number matches the GitHub tag. These files are unsigned. SSH still uses the `ssh` program already on your computer.
 
 If Releases has no app files yet, [build it yourself](#install-from-source).
 

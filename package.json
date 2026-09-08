@@ -1,7 +1,7 @@
 {
   "name": "late",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "Late — Local AI Terminal Emulator",
   "author": "Late contributors <noreply@users.noreply.github.com>",
   "homepage": "https://github.com/Unaware-Kerbin/late",
@@ -28,7 +28,9 @@
     "concurrently": "^9.1.2"
   },
   "overrides": {
-    "undici": "6.28.0"
+    "undici": "6.28.0",
+    "fast-uri": "3.1.6",
+    "@xmldom/xmldom": "0.8.15"
   },
   "engines": {
     "node": ">=22"

@@ -27,8 +27,9 @@ test("Late CJS host allowlist refuses SSRF and custom GitHub URLs", () => {
 
 test("gatherContext lateLocal is package.json, not Electron 44", () => {
   const root = path.join(__dirname, "..", "..", "..");
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   const ctx = update.gatherContext(root, false, "");
-  assert.equal(ctx.lateLocal, "0.1.9");
+  assert.equal(ctx.lateLocal, pkg.version);
   assert.notEqual(ctx.lateLocal, "44.0.0");
 });
 
@@ -40,8 +41,9 @@ test("usableProductVersion rejects Electron 44 and env override cannot skip", ()
   process.env.UPDATE_SYNC_LATE_LOCAL = "44.0.0";
   try {
     const root = path.join(__dirname, "..", "..", "..");
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
     const ctx = update.gatherContext(root, false, "");
-    assert.equal(ctx.lateLocal, "0.1.9");
+    assert.equal(ctx.lateLocal, pkg.version);
   } finally {
     if (prev === undefined) delete process.env.UPDATE_SYNC_LATE_LOCAL;
     else process.env.UPDATE_SYNC_LATE_LOCAL = prev;

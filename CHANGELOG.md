@@ -4,6 +4,13 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-09-08
 
+**v0.1.14 installers (Dependabot security bumps).**
+
+- GitHub Release v0.1.14 packs from this main. File names Late-0.1.14-*. Tag v0.1.13 stays frozen. Still unsigned.
+- Security pins: fast-uri 3.1.6 (alerts 78 79 81 82) and xmldom 0.8.15 (alert 80); undici stays 6.28.0.
+- Includes v0.1.13 serial reconnect and README MCP/serial notes already on main.
+
+
 **v0.1.13 installers.**
 
 - GitHub Release [v0.1.13](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.13) packs from this `main`. File names are `Late-0.1.13-…`. Tag [v0.1.12](https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.12) stays frozen — future installers are new tags; do not rewrite old tags. Still unsigned. macOS and Windows installers are packed unsigned by GitHub Actions (no Apple notarization or Windows Authenticode). First time on a Mac: right-click Late → Open. On Windows, if SmartScreen appears: More info → Run anyway.
