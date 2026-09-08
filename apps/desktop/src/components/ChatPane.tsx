@@ -6,6 +6,7 @@ import {
   sidecarGrantDir,
   sidecarModels,
   sidecarPending,
+  sidecarDiscoverMcp,
   sidecarProbe,
   stopChat,
   streamChat,
@@ -485,6 +486,31 @@ function McpServerPick(props: {
     setDialog(false);
   }
 
+  async function connectOrchestrator() {
+    setOpen(false);
+    setDialog(true);
+    setUrl(saved || "http://127.0.0.1:8787/mcp");
+    setCheck({ busy: true, message: "Looking for local Orchestrator…" });
+    try {
+      const r = await sidecarDiscoverMcp();
+      if (!r.ok || !r.url?.trim()) {
+        setCheck({ busy: false, ok: false, message: r.message || "Orchestrator /mcp not found." });
+        props.onHint(r.message || "Orchestrator /mcp not found. Start it, then try Connect again.");
+        return;
+      }
+      setUrl(r.url);
+      setCheck({ busy: false, ok: true, message: r.message });
+      stashMcpHttpUrl(r.url);
+      await apply({ enabled: true, url: r.url }, false, `MCP · ${inferenceHostLabel(r.url)}`);
+      setDialog(false);
+      props.onHint(r.message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setCheck({ busy: false, ok: false, message });
+      props.onHint(message);
+    }
+  }
+
   async function checkUrl() {
     setCheck({ busy: true, message: "Checking…" });
     try {
@@ -510,6 +536,14 @@ function McpServerPick(props: {
       </button>
       {open ? (
         <div className="server-menu" role="listbox">
+          <button
+            type="button"
+            className="server-add"
+            title="Find local Orchestrator /mcp (advertise + health + initialize) and set Agent=MCP"
+            onClick={() => void connectOrchestrator()}
+          >
+            Connect Orchestrator
+          </button>
           <button
             type="button"
             className={mode === "stdio" ? "on" : undefined}
@@ -543,8 +577,8 @@ function McpServerPick(props: {
             <h2 id="late-mcp-http-title">{saved ? "Edit MCP address" : "MCP address"}</h2>
             <p className="hint">
               A program you already started. Late will not start it. Streamable HTTP — same as Settings.
-              Use the <code>/mcp</code> URL printed when you started the GUI or <code>npm run mcp:http</code>
-              (default example <code>{DEFAULT_MCP_HTTP_URL}</code> if you did not set a port). Late Settings is the source of truth. Cloud AI stays off for a private IP.
+              Prefer the <code>/mcp</code> URL printed when you started the GUI or <code>npm run mcp:http</code>
+              (example <code>{DEFAULT_MCP_HTTP_URL}</code>; GUI often 8787). Late Settings is the source of truth. Cloud AI stays off for a private IP.
             </p>
             <div className="url-check">
               <label>
@@ -562,6 +596,15 @@ function McpServerPick(props: {
               </label>
               <button type="button" className="ghost" disabled={check?.busy || !url.trim()} onClick={() => void checkUrl()}>
                 {check?.busy ? "Checking…" : "Check"}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                disabled={check?.busy}
+                title="Discover local Orchestrator /mcp and set it"
+                onClick={() => void connectOrchestrator()}
+              >
+                {check?.busy ? "Connecting…" : "Connect Orchestrator"}
               </button>
             </div>
             {check?.message ? <p className={check.ok ? "hint" : "hint warn"}>{check.message}</p> : null}

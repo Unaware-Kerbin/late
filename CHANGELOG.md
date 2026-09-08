@@ -4,6 +4,11 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-09-08
 
+**One-click LATE <-> Orchestrator connect.**
+
+- Agent=MCP **Connect Orchestrator** / Settings **Find Orchestrator** discover advertised `/mcp` (optional GET `/mcp/health`, then Streamable initialize) and set the Agent=MCP URL. Sidecar `POST /mcp/discover`.
+
+
 **v0.1.14 installers (Dependabot security bumps).**
 
 - GitHub Release v0.1.14 packs from this main. File names Late-0.1.14-*. Tag v0.1.13 stays frozen. Still unsigned.

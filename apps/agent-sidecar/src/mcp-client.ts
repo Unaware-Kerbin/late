@@ -20,6 +20,7 @@ import { recoverMcpThreadDump, sanitizeMcpStopMessage } from "./mcp-chat-format.
 import {
   mcpHttpRpc,
   openMcpHttpSession,
+  preflightMcpHealth,
   probeMcpHttpEndpoint,
   type JsonRpc,
   type McpHttpSession,
@@ -351,6 +352,63 @@ async function discoverReachableHttp(cfg: { url: string; cwd: string }, skipUrl?
     (candidate) => probeMcpHttpEndpoint(candidate),
     skip,
   );
+}
+
+
+export type McpDiscoverResult = {
+  ok: boolean;
+  url?: string;
+  tools: string[];
+  message: string;
+  candidates: string[];
+};
+
+/**
+ * One-click LATE ↔ Orchestrator: walk advertise / Settings / GUI defaults,
+ * optional GET /mcp/health, then Streamable initialize (+ tools/list).
+ * Does not write Settings — the GUI pastes the URL when ok.
+ */
+export async function discoverLocalMcp(): Promise<McpDiscoverResult> {
+  const cfg = await mcpSettingsFromDaemon();
+  const candidates = mcpDiscoverCandidates({ settingsUrl: cfg.url, mcpCwd: cfg.cwd });
+  if (!candidates.length) {
+    return {
+      ok: false,
+      tools: [],
+      message: "No local Orchestrator /mcp candidates.",
+      candidates,
+    };
+  }
+  const tried: string[] = [];
+  let lastMessage = "";
+  for (const url of candidates) {
+    tried.push(url);
+    const health = await preflightMcpHealth(url);
+    if (health === "down") {
+      lastMessage = `No Orchestrator at ${url}`;
+      continue;
+    }
+    const probed = await probeMcpHttpEndpoint(url);
+    if (probed.ok) {
+      const n = probed.tools.length;
+      return {
+        ok: true,
+        url: probed.url,
+        tools: probed.tools,
+        message: `Connected · ${n} tool${n === 1 ? "" : "s"} at ${probed.url}.`,
+        candidates: tried,
+      };
+    }
+    lastMessage = probed.message;
+  }
+  return {
+    ok: false,
+    tools: [],
+    message:
+      lastMessage ||
+      "Orchestrator /mcp not found. Start Agent Orchestrator (Copy MCP URL / advertise), then try Connect again.",
+    candidates: tried,
+  };
 }
 
 async function probeMcpFresh(overrideUrl?: string): Promise<McpProbe> {

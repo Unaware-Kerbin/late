@@ -94,6 +94,30 @@ export async function sidecarModels(): Promise<SidecarModels> {
   };
 }
 
+
+export async function sidecarDiscoverMcp(): Promise<{
+  ok: boolean;
+  url?: string;
+  tools?: string[];
+  message: string;
+  candidates?: string[];
+}> {
+  const r = await fetch(`${SIDECAR_HTTP}/mcp/discover`, {
+    method: "POST",
+    headers: await sidecarHeaders({ "Content-Type": "application/json" }),
+    body: "{}",
+    signal: AbortSignal.timeout(25_000),
+  });
+  if (!r.ok) throw new Error(`sidecar discover ${r.status}`);
+  return (await r.json()) as {
+    ok: boolean;
+    url?: string;
+    tools?: string[];
+    message: string;
+    candidates?: string[];
+  };
+}
+
 export async function sidecarProbe(
   kind: "vllm" | "ollama" | "llamacpp" | "anthropic" | "gemini" | "azure" | "mcp",
   base = "",
