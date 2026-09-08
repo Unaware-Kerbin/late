@@ -23,7 +23,7 @@ import {
   runGeminiChat,
   type NativeKind,
 } from "./native-loop.js";
-import { callMcpTool, probeMcp, listMcpAgents, mcpTargetMeta } from "./mcp-client.js";
+import { callMcpTool, discoverLocalMcp, probeMcp, listMcpAgents, mcpTargetMeta } from "./mcp-client.js";
 import { grantMcpAllowedDir, parseGrantDirPath } from "./mcp-grant-dir.js";
 import { runMcpChatOrFallback } from "./mcp-loop.js";
 import { mcpSafeErrorMessage } from "./mcp-chat-format.js";
@@ -178,6 +178,10 @@ const server = createServer(async (req, res) => {
       });
       auditEvent("approve", { ok, allow: Boolean(body.allow), alwaysAllow: Boolean(body.alwaysAllow) });
       sendJson(res, req, ok ? 200 : 404, { ok });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/mcp/discover") {
+      sendJson(res, req, 200, await discoverLocalMcp());
       return;
     }
     if (req.method === "POST" && url.pathname === "/mcp/grant-dir") {

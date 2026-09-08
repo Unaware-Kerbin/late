@@ -170,6 +170,46 @@ export async function mcpHttpNotify(sess: McpHttpSession, method: string, params
   }
 }
 
+/** Canonical GET preflight path for Orchestrator Streamable /mcp. */
+export function mcpHealthUrl(mcpUrl: string): string | undefined {
+  const parsed = parseMcpHttpUrl(mcpUrl);
+  if (typeof parsed !== "string") return undefined;
+  const u = new URL(parsed);
+  u.pathname = "/mcp/health";
+  u.search = "";
+  u.hash = "";
+  return u.toString();
+}
+
+export type McpHealthPreflight = "ok" | "absent" | "down";
+
+/**
+ * Optional GET /mcp/health before initialize.
+ * ok → {"ok":true}; absent → missing/404/non-JSON (still try initialize); down → connection refused.
+ */
+export async function preflightMcpHealth(mcpUrl: string): Promise<McpHealthPreflight> {
+  const health = mcpHealthUrl(mcpUrl);
+  if (!health) return "absent";
+  try {
+    const r = await fetchStayOnBox(health, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(2000),
+    });
+    if (r.status === 404) return "absent";
+    if (!r.ok) return "absent";
+    const body = (await r.json().catch(() => null)) as { ok?: unknown } | null;
+    if (body && body.ok === true) return "ok";
+    return "absent";
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|unreachable/i.test(message)) {
+      return "down";
+    }
+    return "absent";
+  }
+}
+
 export type McpHttpProbe = {
   ok: boolean;
   tools: string[];
