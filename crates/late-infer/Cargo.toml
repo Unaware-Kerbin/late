@@ -1,0 +1,33 @@
+[package]
+name = "late-infer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Late-owned OpenAI-compatible Local inference (Hugging Face safetensors, loopback only)"
+publish = false
+
+[[bin]]
+name = "late-infer"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda = ["candle-core/cuda"]
+metal = ["candle-core/metal"]
+
+[dependencies]
+anyhow.workspace = true
+axum = { version = "0.8", features = ["json"] }
+candle-core = "0.9"
+candle-nn = "0.9"
+candle-transformers = "0.9"
+clap = { version = "4", features = ["derive"] }
+dirs.workspace = true
+hf-hub = { version = "0.4", default-features = false, features = ["ureq"] }
+minijinja = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokenizers = "0.21"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

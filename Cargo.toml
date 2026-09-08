@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/late-core", "crates/late-daemon", "crates/isolation-check"]
+members = ["crates/late-core", "crates/late-daemon", "crates/isolation-check", "crates/late-infer"]
 default-members = ["crates/late-core", "crates/late-daemon"]
 
 [workspace.package]
