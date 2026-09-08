@@ -82,6 +82,8 @@ struct LiveSession {
     input: Option<mpsc::Sender<Vec<u8>>>,
     resize: Option<mpsc::Sender<(u32, u32)>>,
     close: Option<mpsc::Sender<()>>,
+    /// Serial worker join handle — waited on close so the TTY flock is released.
+    serial_join: Option<std::thread::JoinHandle<()>>,
     output: broadcast::Sender<Vec<u8>>,
     scrollback: Vec<u8>,
     redactor: Redactor,
@@ -150,6 +152,7 @@ impl App {
                 input: None,
                 resize: None,
                 close: None,
+                serial_join: None,
                 output: out_tx,
                 scrollback: Vec::new(),
                 redactor: Redactor::new(),
@@ -182,7 +185,7 @@ impl App {
             self.validate_settings_dir(&PathBuf::from(cmd))?;
         }
         if !settings.cloud_chat_enabled && settings.default_backend.eq_ignore_ascii_case("cursor") {
-            settings.default_backend = "local".into();
+            settings.default_backend = "late".into();
         }
         crate::config::remember_remote_inference_urls(&mut settings);
         let prev_cloud = self.settings.lock().cloud_chat_enabled;
@@ -279,17 +282,30 @@ impl App {
     }
 
     pub fn close_session(&self, session_id: &str) -> Result<()> {
-        let mut inner = self.inner.lock();
-        if let Some(s) = inner.sessions.remove(session_id) {
-            if let Some(tx) = s.close {
-                let _ = tx.try_send(());
+        let (close_tx, serial_join, input, serial_break) = {
+            let mut inner = self.inner.lock();
+            if let Some(s) = inner.sessions.remove(session_id) {
+                let _ = self.events.send(AppEvent {
+                    event: "session.closed".into(),
+                    session_id: session_id.into(),
+                    data: None,
+                    reason: Some("closed".into()),
+                });
+                (s.close, s.serial_join, s.input, s.serial_break)
+            } else {
+                return Ok(());
             }
-            let _ = self.events.send(AppEvent {
-                event: "session.closed".into(),
-                session_id: session_id.into(),
-                data: None,
-                reason: Some("closed".into()),
-            });
+        };
+        // Drop I/O senders so the worker sees Disconnected even if try_send races.
+        if let Some(tx) = close_tx {
+            let _ = tx.try_send(());
+            drop(tx);
+        }
+        drop(input);
+        drop(serial_break);
+        // Join outside the session map lock so we never deadlock with output tasks.
+        if let Some(h) = serial_join {
+            let _ = h.join();
         }
         Ok(())
     }
@@ -570,6 +586,7 @@ impl App {
             .ok_or_else(|| LateError::Serial("no serial path".into()))?;
         let io = serial::open_serial(&path, device.baud.unwrap_or(9600))?;
         let break_tx = io.break_tx;
+        let serial_join = io.join;
         let info = self.attach(
             device.name.clone(),
             SessionKind::Serial,
@@ -595,6 +612,7 @@ impl App {
         )?;
         if let Some(s) = self.inner.lock().sessions.get_mut(&info.id) {
             s.serial_break = Some(break_tx);
+            s.serial_join = serial_join;
         }
         Ok(info)
     }
@@ -1743,6 +1761,7 @@ impl App {
             input,
             resize,
             close,
+            serial_join: None,
             output: out_tx.clone(),
             scrollback: Vec::new(),
             redactor: Redactor::new(),
@@ -2505,6 +2524,118 @@ mod stage_push_tests {
         assert_eq!(app.stage_list().unwrap().len(), 1);
         app.stage_delete(&art.id).unwrap();
         assert!(app.stage_list().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod serial_session_tests {
+    use super::*;
+    use crate::types::{Device, DeviceKind, Vendor};
+    use std::process::{Command, Stdio};
+
+    fn isolated_app() -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("late-serial-sess-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        (app, dir)
+    }
+
+    struct PtyPair {
+        path: String,
+        child: std::process::Child,
+    }
+
+    impl PtyPair {
+        fn spawn() -> Option<Self> {
+            let mut child = Command::new("python3")
+                .args([
+                    "-c",
+                    r#"
+import os, pty, sys, time
+master, slave = pty.openpty()
+sys.stdout.write(os.ttyname(slave) + "\n")
+sys.stdout.flush()
+try:
+    while True:
+        time.sleep(1)
+except Exception:
+    pass
+os.close(master)
+os.close(slave)
+"#,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut stdout = child.stdout.take()?;
+            let mut buf = [0u8; 128];
+            let mut line = Vec::new();
+            loop {
+                let n = std::io::Read::read(&mut stdout, &mut buf).ok()?;
+                if n == 0 {
+                    let _ = child.kill();
+                    return None;
+                }
+                line.extend_from_slice(&buf[..n]);
+                if line.contains(&b'\n') {
+                    break;
+                }
+            }
+            let path = String::from_utf8_lossy(&line)
+                .lines()
+                .next()?
+                .trim()
+                .to_string();
+            if path.is_empty() || !path.starts_with("/dev/") {
+                let _ = child.kill();
+                return None;
+            }
+            std::thread::spawn(move || {
+                let mut sink = stdout;
+                let mut b = [0u8; 64];
+                while std::io::Read::read(&mut sink, &mut b).unwrap_or(0) > 0 {}
+            });
+            Some(Self { path, child })
+        }
+    }
+
+    impl Drop for PtyPair {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn close_session_releases_port_for_reopen() {
+        let Some(pty) = PtyPair::spawn() else {
+            eprintln!("skip: could not allocate PTY");
+            return;
+        };
+        let (app, dir) = isolated_app();
+        let mut d = Device::new_ssh("console", "unused", Vendor::Linux);
+        d.kind = DeviceKind::Serial;
+        d.host = None;
+        d.port = None;
+        d.serial_path = Some(pty.path.clone());
+        d.baud = Some(115200);
+        let d = app.inventory.upsert_device(d).unwrap();
+
+        let s1 = app.open_serial(&d.id).expect("first session open");
+        app.close_session(&s1.id).expect("close");
+        let s2 = app
+            .open_serial(&d.id)
+            .expect("reopen same port without app restart");
+        app.close_session(&s2.id).expect("second close");
+        let s3 = app.open_serial(&d.id).expect("third open");
+        app.close_session(&s3.id).expect("third close");
         let _ = std::fs::remove_dir_all(dir);
     }
 }
