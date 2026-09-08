@@ -4,6 +4,12 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-09-08
 
+**v0.1.15 installers (one-click Orchestrator MCP connect).**
+
+- GitHub Release v0.1.15 packs from this main. File names Late-0.1.15-*. Tag v0.1.14 stays frozen. Still unsigned.
+- Agent=MCP Connect Orchestrator / Settings Find Orchestrator discover advertised /mcp (optional GET /mcp/health, then Streamable initialize) and set the Agent=MCP URL. Sidecar POST /mcp/discover.
+- Electron 44 already on main; Dependabot PRs #1/#2 closed as superseded. Open vulnerability alerts: none.
+
 **One-click LATE <-> Orchestrator connect.**
 
 - Agent=MCP **Connect Orchestrator** / Settings **Find Orchestrator** discover advertised `/mcp` (optional GET `/mcp/health`, then Streamable initialize) and set the Agent=MCP URL. Sidecar `POST /mcp/discover`.
