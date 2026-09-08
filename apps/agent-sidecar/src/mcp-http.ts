@@ -202,8 +202,21 @@ export async function preflightMcpHealth(mcpUrl: string): Promise<McpHealthPrefl
     if (body && body.ok === true) return "ok";
     return "absent";
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|unreachable/i.test(message)) {
+    const parts: string[] = [];
+    let cur: unknown = err;
+    for (let i = 0; i < 4 && cur; i++) {
+      if (cur instanceof Error) {
+        parts.push(cur.message);
+        const code = (cur as NodeJS.ErrnoException).code;
+        if (code) parts.push(String(code));
+        cur = (cur as { cause?: unknown }).cause;
+      } else {
+        parts.push(String(cur));
+        break;
+      }
+    }
+    const message = parts.join(" ");
+    if (/ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ECONNRESET|unreachable|fetch failed/i.test(message)) {
       return "down";
     }
     return "absent";

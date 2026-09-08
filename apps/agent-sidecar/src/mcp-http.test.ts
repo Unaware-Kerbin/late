@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { describe, it } from "node:test";
 import { parseMcpHttpUrl, parseSseJsonRpc } from "./mcp-format.ts";
-import { formatMcpHttpStatusError, probeMcpHttpEndpoint } from "./mcp-http.ts";
+import { formatMcpHttpStatusError, mcpHealthUrl, preflightMcpHealth, probeMcpHttpEndpoint } from "./mcp-http.ts";
 
 function jsonRpc(res: ServerResponse, status: number, body: unknown) {
   res.writeHead(status, {
@@ -243,6 +243,43 @@ describe("mcp-http", () => {
       assert.match(probed.message, /MCP HTTP 400/);
       assert.match(probed.message, /Mcp-Session-Id header is required/);
       assert.doesNotMatch(probed.message, /unreachable|will not switch to the local vLLM helper/i);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+    }
+  });
+});
+
+describe("mcp health preflight", () => {
+  it("maps /mcp to /mcp/health", () => {
+    assert.equal(mcpHealthUrl("http://127.0.0.1:8787/mcp"), "http://127.0.0.1:8787/mcp/health");
+    assert.equal(mcpHealthUrl("http://localhost:8787/"), "http://127.0.0.1:8787/mcp/health");
+  });
+
+  it("reports ok, absent, and down", async () => {
+    let mode: "ok" | "absent" = "ok";
+    const server = createServer((req, res) => {
+      if (req.url === "/mcp/health") {
+        if (mode === "ok") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    assert.ok(addr && typeof addr === "object");
+    const url = `http://127.0.0.1:${addr.port}/mcp`;
+    try {
+      assert.equal(await preflightMcpHealth(url), "ok");
+      mode = "absent";
+      assert.equal(await preflightMcpHealth(url), "absent");
+      assert.equal(await preflightMcpHealth("http://127.0.0.1:9/mcp"), "down");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
     }

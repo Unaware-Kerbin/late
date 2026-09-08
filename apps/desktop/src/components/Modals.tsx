@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { dismissProposal } from "../lib/approvals-ui";
-import { approve, sidecarProbe } from "../lib/sidecar";
+import { approve, sidecarDiscoverMcp, sidecarProbe } from "../lib/sidecar";
 import { TermHighlightEditor } from "./TermHighlightEditor";
 import {
   DENSITIES,
@@ -826,6 +826,25 @@ function SettingsModal() {
       }));
     }
   }
+
+  async function discoverOrchestrator() {
+    setChecks((c) => ({ ...c, mcp: { busy: true, message: "Looking for local Orchestrator…" } }));
+    try {
+      const r = await sidecarDiscoverMcp();
+      if (!r.ok || !r.url?.trim()) {
+        setChecks((c) => ({ ...c, mcp: { busy: false, ok: false, message: r.message } }));
+        return;
+      }
+      setMcpUrl(r.url);
+      setMcpEnabled(true);
+      setChecks((c) => ({ ...c, mcp: { busy: false, ok: true, message: r.message } }));
+    } catch (err) {
+      setChecks((c) => ({
+        ...c,
+        mcp: { busy: false, ok: false, message: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  }
   return (
     <div className="modal-root" onMouseDown={() => setState({ settingsOpen: false })}>
       <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
@@ -1022,10 +1041,18 @@ function SettingsModal() {
           >
             {checks.mcp?.busy ? "Checking…" : "Check"}
           </button>
+          <button
+            type="button"
+            className="ghost"
+            disabled={checks.mcp?.busy}
+            onClick={() => void discoverOrchestrator()}
+          >
+            {checks.mcp?.busy ? "Finding…" : "Find Orchestrator"}
+          </button>
         </div>
         <p className="hint">
           Leave blank to use the folder below. If both are set, Late uses the address. That program
-          must already be listening — Late will not start it. Put the <code>/mcp</code> URL printed
+          must already be listening — Late will not start it. Use Find Orchestrator for advertised local /mcp, or put the <code>/mcp</code> URL printed
           by the GUI or <code>npm run mcp:http</code> here (example{" "}
           <code>http://127.0.0.1:8790/mcp</code> if you left the default port). Same dual-gate as
           chat: your network does not need Cloud AI; a public internet host does.
