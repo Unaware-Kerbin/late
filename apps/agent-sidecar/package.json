@@ -14,13 +14,13 @@
     "ws": "^8.18.3"
   },
   "optionalDependencies": {
-    "@cursor/sdk": "^1.0.6",
-    "undici": "6.28.0"
+    "@cursor/sdk": "^1.0.31",
+    "undici": "8.10.2"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
+    "@types/node": "^26.6.1",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
   }
 }
