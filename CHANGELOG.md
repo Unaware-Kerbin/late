@@ -2,6 +2,13 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-09-21
+
+**v0.1.16 installers (js-yaml and rustls security pins).**
+
+- GitHub Release v0.1.16 packs from this main. File names Late-0.1.16-*. Tag v0.1.15 stays frozen. Still unsigned.
+- Override js-yaml to 4.3.2 (Dependabot #83 / GHSA-2883-xcg3-v3hh) and bump rustls to 0.23.45 (RUSTSEC-2026-0285). Weekly Dependabot for npm and cargo.
+
 ## 2026-09-08
 
 **v0.1.15 installers (one-click Orchestrator MCP connect).**
