@@ -18,16 +18,16 @@ metal = ["candle-core/metal"]
 [dependencies]
 anyhow.workspace = true
 axum = { version = "0.8", features = ["json"] }
-candle-core = "0.9"
-candle-nn = "0.9"
-candle-transformers = "0.9"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
 clap = { version = "4", features = ["derive"] }
 dirs.workspace = true
-hf-hub = { version = "0.4", default-features = false, features = ["ureq"] }
+hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
 minijinja = "2"
 serde.workspace = true
 serde_json.workspace = true
-tokenizers = "0.21"
+tokenizers = "0.22"
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
