@@ -28,17 +28,27 @@ pub async fn handle(app: &App, raw: &str) -> String {
                 .to_string();
         }
     };
+    let notify = is_rpc_notification(&req.id);
     if req.method.is_empty() {
+        if notify {
+            return String::new();
+        }
         return json!({"id": req.id, "error": {"code": -32600, "message": "missing method"}})
             .to_string();
     }
     match dispatch(app, &req.method, to_snake(req.params)).await {
         Ok(result) => {
             let _ = late_core::audit::append(&app.paths, &req.method, true);
+            if notify {
+                return String::new();
+            }
             json!({"id": req.id, "result": to_camel(result)}).to_string()
         }
         Err(e) => {
             let _ = late_core::audit::append(&app.paths, &req.method, false);
+            if notify {
+                return String::new();
+            }
             let mut err = json!({"code": e.rpc_code(), "message": e.to_string()});
             if let Some(data) = e.rpc_data() {
                 err["data"] = data;
@@ -46,6 +56,33 @@ pub async fn handle(app: &App, raw: &str) -> String {
             json!({"id": req.id, "error": err}).to_string()
         }
     }
+}
+
+/// JSON-RPC notification: omitted or null `id` must not get a response.
+pub fn is_rpc_notification(id: &Value) -> bool {
+    id.is_null()
+}
+
+/// Fast-path terminal stdin: `sessionId\0raw-bytes` (not JSON, not base64).
+pub fn parse_term_input_frame(buf: &[u8]) -> Option<(String, Vec<u8>)> {
+    let z = buf.iter().position(|&b| b == 0)?;
+    if z == 0 || z > 80 {
+        return None;
+    }
+    let id = std::str::from_utf8(&buf[..z]).ok()?;
+    if !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    Some((id.to_string(), buf[z + 1..].to_vec()))
+}
+
+/// PTY stdout WS frame — same layout as stdin (`sessionId\\0` + raw bytes).
+pub fn encode_term_data_frame(session_id: &str, data: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(session_id.len() + 1 + data.len());
+    buf.extend_from_slice(session_id.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(data);
+    buf
 }
 
 async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateError> {
@@ -114,13 +151,12 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 &pstr(&params, &["engine", "backend"]).unwrap_or_default(),
             )?;
             let settings = app.settings();
-            let model = pstr(&params, &["model", "serve_model", "id"]).unwrap_or_else(|| {
-                match engine {
+            let model =
+                pstr(&params, &["model", "serve_model", "id"]).unwrap_or_else(|| match engine {
                     late_core::weights::Engine::Vllm => settings.vllm_model.clone(),
                     late_core::weights::Engine::LlamaCpp => settings.llama_cpp_model.clone(),
                     late_core::weights::Engine::Ollama => settings.ollama_model.clone(),
-                }
-            });
+                });
             Ok(serde_json::to_value(late_core::weights::start(
                 engine, &model, &settings,
             )?)?)
@@ -527,18 +563,31 @@ fn auth_upsert(app: &App, mut params: Value) -> Result<Value, LateError> {
 
 fn parse_open(params: &Value) -> Result<OpenSession, LateError> {
     let kind = parse_kind(&req_str(params, &["kind"])?)?;
-    Ok(OpenSession {
-        device_id: pstr(params, &["device_id"]),
-        kind,
-        accept_unknown_host: json_flag(params, &["accept_unknown_host", "acceptUnknownHost"]),
-        replace_host_key: json_flag(params, &["replace_host_key", "replaceHostKey"]),
-        cols: params.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32,
-        rows: params.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32,
-        shell: pstr(params, &["shell"]),
-        path: pstr(params, &["path"]).map(PathBuf::from),
-        iface: pstr(params, &["iface", "interface"]),
-        bpf: pstr(params, &["bpf", "filter"]),
-    })
+    let mut req = OpenSession::empty();
+    req.device_id = pstr(params, &["device_id"]);
+    req.kind = kind;
+    req.accept_unknown_host = json_flag(params, &["accept_unknown_host", "acceptUnknownHost"]);
+    req.replace_host_key = json_flag(params, &["replace_host_key", "replaceHostKey"]);
+    req.cols = params.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u32;
+    req.rows = params.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u32;
+    req.shell = pstr(params, &["shell"]);
+    req.path = pstr(params, &["path"]).map(PathBuf::from);
+    req.iface = pstr(params, &["iface", "interface"]);
+    req.bpf = pstr(params, &["bpf", "filter"]);
+    req.host = pstr(params, &["host"]);
+    req.port = params.get("port").and_then(|v| {
+        v.as_u64()
+            .map(|n| n as u16)
+            .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+    });
+    req.username = pstr(params, &["username", "user"]);
+    req.password = pstr(params, &["password"]);
+    req.key_path = pstr(params, &["key_path"]);
+    req.save_session = json_flag(params, &["save_session"]);
+    req.save_password = json_flag(params, &["save_password"]);
+    req.vendor = pstr(params, &["vendor"]).map(|s| Vendor::parse(&s));
+    req.name = pstr(params, &["name"]);
+    Ok(req)
 }
 
 fn parse_kind(s: &str) -> Result<SessionKind, LateError> {
@@ -742,5 +791,102 @@ mod tests {
     fn folder_upsert_delete_aliases() {
         let params = to_snake(json!({ "path": "Sites/NYC", "folder": "Sites/NYC" }));
         assert_eq!(req_str(&params, &["path", "folder"]).unwrap(), "Sites/NYC");
+    }
+
+    #[test]
+    fn parse_open_quick_connect_one_time() {
+        let params = to_snake(json!({
+            "kind": "ssh",
+            "host": "10.1.0.12",
+            "port": 22,
+            "username": "admin",
+            "password": "not-for-logs",
+            "saveSession": false,
+            "savePassword": true,
+            "cols": 120,
+            "rows": 36
+        }));
+        let req = parse_open(&params).unwrap();
+        assert_eq!(req.host.as_deref(), Some("10.1.0.12"));
+        assert_eq!(req.port, Some(22));
+        assert_eq!(req.username.as_deref(), Some("admin"));
+        assert_eq!(req.password.as_deref(), Some("not-for-logs"));
+        assert!(!req.save_session);
+        assert!(req.save_password); // backend still refuses to persist when save_session is false
+        assert!(req.device_id.is_none());
+        let dbg = format!("{req:?}");
+        assert!(
+            !dbg.contains("not-for-logs"),
+            "OpenSession Debug must redact passwords"
+        );
+    }
+
+    #[test]
+    fn parse_open_saved_device_still_works() {
+        let params = to_snake(json!({
+            "kind": "ssh",
+            "deviceId": "f4e037d1-cd78-4bbc-8ce0-5a0b1e90a1fb",
+            "cols": 120,
+            "rows": 36
+        }));
+        let req = parse_open(&params).unwrap();
+        assert_eq!(
+            req.device_id.as_deref(),
+            Some("f4e037d1-cd78-4bbc-8ce0-5a0b1e90a1fb")
+        );
+        assert!(req.password.is_none());
+        assert!(!req.save_session);
+    }
+
+    #[test]
+    fn parse_term_input_frame_splits_id_and_bytes() {
+        let mut buf = b"a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_vec();
+        buf.push(0);
+        buf.extend_from_slice(b"sh");
+        let (id, data) = parse_term_input_frame(&buf).unwrap();
+        assert_eq!(id, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        assert_eq!(data, b"sh");
+        assert!(parse_term_input_frame(b"no-null").is_none());
+        assert!(parse_term_input_frame(b"not a uuid\0x").is_none());
+    }
+
+    #[test]
+    fn encode_term_data_frame_matches_stdin_layout() {
+        let frame = encode_term_data_frame("a1b2c3d4-e5f6-7890-abcd-ef1234567890", b"ok\r\n");
+        let (id, data) = parse_term_input_frame(&frame).unwrap();
+        assert_eq!(id, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        assert_eq!(data, b"ok\r\n");
+        assert!(!frame.contains(&b'{'), "must not be JSON");
+    }
+
+    #[test]
+    fn rpc_null_id_is_a_notification() {
+        assert!(is_rpc_notification(&Value::Null));
+        assert!(!is_rpc_notification(&json!(1)));
+    }
+
+    #[tokio::test]
+    async fn session_input_notification_returns_no_body() {
+        let dir = std::env::temp_dir().join(format!("late-input-notify-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = late_core::LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        let empty = handle(
+            &app,
+            r#"{"method":"session.input","params":{"session_id":"missing","data":"YQ=="}}"#,
+        )
+        .await;
+        assert_eq!(empty, "");
+        let with_id = handle(
+            &app,
+            r#"{"id":7,"method":"session.input","params":{"session_id":"missing","data":"YQ=="}}"#,
+        )
+        .await;
+        assert!(with_id.contains("\"id\":7"), "{with_id}");
+        assert!(with_id.contains("error"), "{with_id}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

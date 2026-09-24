@@ -673,11 +673,17 @@ button.tree-row { color: inherit; }
   font-family: var(--mono); font-size: 12px;
   overflow-wrap: anywhere;
   word-break: break-word;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
+.banner > span { flex: 1; min-width: 0; }
 .banner.linux { background: var(--amber-dim); color: var(--amber); border-color: #7a5a18; }
 .empty {
   flex: 1; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 24px;
+  gap: 12px;
 }
+.empty .primary { justify-self: center; }
 
 .form { display: grid; gap: 8px; padding: 12px; overflow: auto; }
 label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
@@ -742,7 +748,8 @@ textarea { min-height: 88px; font-family: var(--mono); }
   padding: 16px;
   overscroll-behavior: contain;
 }
-.modal-root.hostkey { z-index: 80; }
+.modal-root.hostkey { z-index: 120; }
+.modal-root.connect-failed { z-index: 120; }
 .modal-root.update-modal { z-index: 110; }
 .modal-root.docker-first-run { z-index: 105; }
 .update-products {
@@ -791,12 +798,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .check {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
   text-transform: none;
   letter-spacing: 0;
   color: var(--text);
   font-size: 13px;
 }
+.persist-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 12px;
+}
+.persist-choice .check { margin: 0; }
 .linkish {
   background: none;
   border: 0;

@@ -6,13 +6,16 @@ import { StagePane } from "./StagePane";
 import { TerminalPane } from "./TerminalPane";
 import {
   closePaneSession,
+  disconnectPane,
   exportSession,
+  reconnectPane,
   sendBreak,
   setLogging,
   setSplitRatio,
   setState,
   splitFocused,
   splitKey,
+  startQuickConnect,
   useApp,
 } from "../store";
 import type { PaneState, SplitNode } from "../types";
@@ -130,7 +133,10 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
   else if (pane.kind === "empty") {
     body = (
       <div className="empty">
-        Select a device and press Enter, or open a local PTY from the sidebar.
+        <p>Quick Connect from the toolbar, double-click a saved session, or open Local PTY.</p>
+        <button type="button" className="primary" onClick={() => startQuickConnect()}>
+          Quick Connect
+        </button>
       </div>
     );
   } else body = <TerminalPane pane={pane} visible={visible} />;
@@ -169,6 +175,33 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
           >
             Export
           </button>
+        )}
+        {pane.session && pane.kind !== "pcap" && pane.kind !== "empty" && pane.kind !== "stage" && pane.kind !== "sftp" && pane.kind !== "api" && (
+          pane.disconnected ? (
+            <button
+              type="button"
+              className="ghost"
+              title="Reconnect this session"
+              onClick={(e) => {
+                e.stopPropagation();
+                void reconnectPane(pane.id);
+              }}
+            >
+              Reconnect
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="ghost"
+              title="Disconnect (keeps this pane)"
+              onClick={(e) => {
+                e.stopPropagation();
+                void disconnectPane(pane.id);
+              }}
+            >
+              Disconnect
+            </button>
+          )
         )}
         {pane.kind === "serial" && pane.session && (
           <button

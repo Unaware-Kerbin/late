@@ -105,7 +105,7 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 
 ## After it opens
 
-1. On the left, click **+** (or right-click **Sessions**) → **Add device**. Fill it in. Connect. The first time, click **Trust** for the host key (not Enter). Serial: Disconnect releases the port lock so you can reopen the same port without quitting Late (see [Serial disconnect / reconnect](#serial-disconnect--reconnect)).
+1. **Quick Connect** (left toolbar plug, or **+** → Quick Connect): host, port (22), username, password, Connect. Choose **One-time connection** (password is forgotten when the session closes) or **Save session** / **Save password**. If the host does not answer in 15 seconds, Late shows **Unable to Connect** (it does not keep looping until you Cancel). The first time, click **Trust** for the host key (not Enter). Saved sessions in the list still Connect in one click; right-click **Connect with login…** to type a password this time. Serial: Disconnect releases the port lock so you can reopen the same port without quitting Late (see [Serial disconnect / reconnect](#serial-disconnect--reconnect)).
 2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: pick **Late**, click **Local**, **Start** (first time compiles a Hub snapshot on your computer; weights are not in the installer). Ollama / llama.cpp / vLLM stay in the same menu if you want them.
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
 4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. **Ask agent** (or a `.pcap` path you type) can analyze headers. **More** → **Wireshark** opens the file in Wireshark.
@@ -266,7 +266,7 @@ PTY output event:
 { "event": "session.data", "sessionId": "...", "data": "<base64>" }
 ```
 
-Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId`, `acceptUnknownHost`, `cols`, `rows`, `shell`; `scp` is an alias for `sftp`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm` (aliases `scp.list|get|put|upload|download`; `recursive` copies folders with `scp -r`), `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
+Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId` or Quick Connect `host`/`port`/`username`/`password`, `saveSession`/`savePassword`, `acceptUnknownHost`, `cols`, `rows`, `shell`; one-time SSH does not write `secrets.json`; `scp` is an alias for `sftp`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm` (aliases `scp.list|get|put|upload|download`; `recursive` copies folders with `scp -r`), `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
 
 Agent tools call these same session/policy/pcap/api methods. The daemon does not talk to LLMs.
 

@@ -207,7 +207,9 @@ pub fn download(
             "download destination is a directory; pick a file path".into(),
         ));
     }
-    scp(profile, secrets, host, port, remote, local, false, recursive)
+    scp(
+        profile, secrets, host, port, remote, local, false, recursive,
+    )
 }
 
 pub fn upload(

@@ -27,11 +27,35 @@ function ptyPaste(text: string) {
   return text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
 }
 
+function createWritePump(term: Terminal) {
+  const q: string[] = [];
+  let writing = false;
+  const pump = () => {
+    if (writing || !q.length) return;
+    const chunk = q.length > 4 ? q.splice(0).join("") : q.shift()!;
+    writing = true;
+    term.write(chunk, () => {
+      writing = false;
+      pump();
+    });
+  };
+  return (text: string) => {
+    if (!text) return;
+    q.push(text);
+    if (q.length > 48) q.splice(0, q.length, q.join(""));
+    pump();
+  };
+}
+
 export function TerminalPane({ pane, visible = true }: { pane: PaneState; visible?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal>();
   const searchRef = useRef<SearchAddon>();
   const fitRef = useRef<FitAddon>();
+  const paneRef = useRef(pane);
+  paneRef.current = pane;
+  const disconnectedRef = useRef(pane.disconnected);
+  disconnectedRef.current = pane.disconnected;
   const termFontSize = useApp((s) => s.termFontSize);
   const termFont = useApp((s) => s.termFont);
   const termFontCustom = useApp((s) => s.termFontCustom);
@@ -52,17 +76,19 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   }, [menu]);
 
   useEffect(() => {
-    if (!host.current || !pane.session) return;
+    if (!host.current || !paneRef.current.session) return;
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: termFontCss(termFont, termFontCustom),
       fontSize: termFontSize,
       theme: xtermTheme(theme),
-      scrollback: 50000,
+      scrollback: 10000,
+      fastScrollModifier: "alt",
       rightClickSelectsWord: false,
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
+    const writePump = createWritePump(term);
     term.loadAddon(fit);
     term.loadAddon(search);
     // Canvas renderer: WebGL blanks the whole pane when the layout changes
@@ -74,23 +100,25 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
           const el = host.current;
           if (!el || el.clientWidth < 8 || el.clientHeight < 8) return;
           fit.fit();
-          if (pane.session) void resizeSession(pane.session.id, term.cols, term.rows);
+          const sid = paneRef.current.session?.id;
+          if (sid) void resizeSession(sid, term.cols, term.rows);
         } catch {
           /* ignore */
         }
       });
     };
     fitSoon();
+    const sid = paneRef.current.session.id;
     void rpc
       .call<{ text?: string }>("session.scrollback", {
-        id: pane.session.id,
-        sessionId: pane.session.id,
-        session_id: pane.session.id,
+        id: sid,
+        sessionId: sid,
+        session_id: sid,
         redacted: false,
       })
       .then((r) => {
         const text = r?.text ?? "";
-        if (text) term.write(hlRef.current.feed(text.replace(/\n/g, "\r\n")) + hlRef.current.flush());
+        if (text) writePump(hlRef.current.feed(text.replace(/\n/g, "\r\n")) + hlRef.current.flush());
       })
       .catch(() => undefined);
     termRef.current = term;
@@ -98,16 +126,17 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     fitRef.current = fit;
 
     const unsub = rpc.onBytes((sessionId, bytes) => {
-      if (sessionId !== pane.session?.id) return;
+      if (sessionId !== paneRef.current.session?.id) return;
       const text = decRef.current.decode(bytes, { stream: true });
-      if (text) term.write(hlRef.current.feed(text));
+      if (text) writePump(hlRef.current.feed(text));
     });
     const onData = term.onData((data) => {
-      if (pane.disconnected) {
-        if (data === "\r") void reconnectPane(pane.id);
+      const p = paneRef.current;
+      if (disconnectedRef.current) {
+        if (data === "\r") void reconnectPane(p.id);
         return;
       }
-      void sendInput(pane.session!.id, data);
+      if (p.session) void sendInput(p.session.id, data);
     });
     const copySel = () => {
       const sel = term.getSelection();
@@ -115,9 +144,10 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       return Boolean(sel);
     };
     const pasteClip = async () => {
-      if (pane.disconnected || !pane.session) return;
+      const p = paneRef.current;
+      if (disconnectedRef.current || !p.session) return;
       const text = await clipboardRead();
-      if (text) void sendInput(pane.session.id, ptyPaste(text));
+      if (text) void sendInput(p.session.id, ptyPaste(text));
     };
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
@@ -152,21 +182,17 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     window.addEventListener("resize", fitSoon);
 
     const onKey = (e: KeyboardEvent) => {
-      if (
-        pane.kind === "serial" &&
-        pane.session &&
-        e.ctrlKey &&
-        (e.key === "Pause" || e.key === "Break")
-      ) {
+      const p = paneRef.current;
+      if (p.kind === "serial" && p.session && e.ctrlKey && (e.key === "Pause" || e.key === "Break")) {
         e.preventDefault();
-        void sendBreak(pane.session.id);
+        void sendBreak(p.session.id);
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setState((s) => ({
           ...s,
-          panes: { ...s.panes, [pane.id]: { ...s.panes[pane.id], searchOpen: !s.panes[pane.id].searchOpen } },
+          panes: { ...s.panes, [p.id]: { ...s.panes[p.id], searchOpen: !s.panes[p.id].searchOpen } },
         }));
       }
     };
@@ -177,8 +203,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       bumpTermFont(e.deltaY < 0 ? 1 : -1);
     };
     host.current.addEventListener("wheel", onWheel, { passive: false });
-
-    void rpc.call("session.resize", { sessionId: pane.session.id, cols: term.cols, rows: term.rows }).catch(() => undefined);
+    term.focus();
 
     return () => {
       unsub();
@@ -192,7 +217,9 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       host.current?.removeEventListener("wheel", onWheel);
       term.dispose();
     };
-  }, [pane.id, pane.session?.id, pane.disconnected]);
+    // Keep one xterm for the pane lifetime. Disconnect/reconnect update refs, not this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pane.id]);
 
   useEffect(() => {
     hlRef.current.setSettings(termHighlights);
@@ -217,6 +244,12 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     }
   }, [visible, termFontSize, termFont, termFontCustom, theme, pane.session?.id, activeTabId, focusedPaneId]);
 
+  useEffect(() => {
+    if (!visible || pane.searchOpen) return;
+    if (focusedPaneId !== pane.id) return;
+    termRef.current?.focus();
+  }, [visible, focusedPaneId, pane.id, pane.searchOpen, pane.session?.id, pane.disconnected]);
+
   return (
     <>
       {pane.kind === "serial" && pane.session && (
@@ -235,7 +268,10 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       )}
       {pane.disconnected && (
         <div className="banner">
-          {pane.disconnectReason ?? "Disconnected"} — press Enter to reconnect
+          <span>{pane.disconnectReason ?? "Disconnected"} — press Enter to reconnect</span>
+          <button type="button" className="ghost" onClick={() => void reconnectPane(pane.id)}>
+            Reconnect
+          </button>
         </div>
       )}
       {pane.searchOpen && (
@@ -337,4 +373,3 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     </>
   );
 }
-

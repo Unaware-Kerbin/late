@@ -235,7 +235,9 @@ fn fill_vendor_placeholder(vendor: Vendor, intent: &str, body: &str) -> String {
     let Some(cli) = vendor_vlan_cli(vendor, vlan) else {
         return body.to_string();
     };
-    if !looks_like_placeholder_cli(body) && body.to_ascii_lowercase().contains(&format!("vlan {vlan}")) {
+    if !looks_like_placeholder_cli(body)
+        && body.to_ascii_lowercase().contains(&format!("vlan {vlan}"))
+    {
         return body.to_string();
     }
     let mut out = String::new();
@@ -500,7 +502,8 @@ pub fn delete(paths: &LatePaths, id: &str) -> Result<()> {
         body.with_extension("inventory.ini"),
         body.with_extension("sls"),
     ];
-    fs::remove_file(&body).map_err(|e| LateError::Message(format!("could not delete draft: {e}")))?;
+    fs::remove_file(&body)
+        .map_err(|e| LateError::Message(format!("could not delete draft: {e}")))?;
     for p in extras {
         let _ = fs::remove_file(p);
     }
@@ -1080,7 +1083,10 @@ mod tests {
         assert!(a.body.contains("vlan 2000"), "{}", a.body);
         assert!(a.body.contains("name VLAN2000"), "{}", a.body);
         assert!(a.body.contains("arubanetworks.aoscx"));
-        assert!(!a.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+        assert!(!a
+            .body
+            .to_ascii_lowercase()
+            .contains("replace with vendor syntax"));
         assert!(!a.body.contains("PLACEHOLDER"));
         let filled = render(
             StageFormat::Ansible,
@@ -1090,7 +1096,10 @@ mod tests {
         )
         .unwrap();
         assert!(filled.body.contains("vlan 2000"));
-        assert!(!filled.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+        assert!(!filled
+            .body
+            .to_ascii_lowercase()
+            .contains("replace with vendor syntax"));
     }
 
     #[test]

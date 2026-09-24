@@ -16,48 +16,180 @@ const LIBRARY: &[(&str, u32, &str)] = &[
     ("Qwen/Qwen3-4B", 8, "Small tool-calling"),
     ("Qwen/Qwen3-8B", 16, "Default 16GB-class card"),
     ("Qwen/Qwen3-14B", 28, "Needs a ~32GB card"),
-    ("Qwen/Qwen3-32B", 64, "Needs ~64GB (one 80GB or TP=2 × 32GB+)"),
-    ("Qwen/Qwen3.5-0.8B", 2, "Qwen3.5 tiny instruct (needs recent vLLM)"),
-    ("Qwen/Qwen3.5-2B", 5, "Qwen3.5 2B instruct (needs recent vLLM)"),
-    ("Qwen/Qwen3.5-4B", 9, "Qwen3.5 4B instruct (needs recent vLLM)"),
-    ("Qwen/Qwen3.5-9B", 19, "Qwen3.5 9B instruct (needs recent vLLM)"),
-    ("Qwen/Qwen3.5-27B", 54, "Qwen3.5 27B instruct (needs recent vLLM)"),
+    (
+        "Qwen/Qwen3-32B",
+        64,
+        "Needs ~64GB (one 80GB or TP=2 × 32GB+)",
+    ),
+    (
+        "Qwen/Qwen3.5-0.8B",
+        2,
+        "Qwen3.5 tiny instruct (needs recent vLLM)",
+    ),
+    (
+        "Qwen/Qwen3.5-2B",
+        5,
+        "Qwen3.5 2B instruct (needs recent vLLM)",
+    ),
+    (
+        "Qwen/Qwen3.5-4B",
+        9,
+        "Qwen3.5 4B instruct (needs recent vLLM)",
+    ),
+    (
+        "Qwen/Qwen3.5-9B",
+        19,
+        "Qwen3.5 9B instruct (needs recent vLLM)",
+    ),
+    (
+        "Qwen/Qwen3.5-27B",
+        54,
+        "Qwen3.5 27B instruct (needs recent vLLM)",
+    ),
     ("Qwen/Qwen3.5-35B-A3B", 70, "Qwen3.5 MoE, needs ~70GB"),
-    ("Qwen/Qwen3.8-27B", 53, "Newest Qwen dense 27B (needs recent vLLM)"),
+    (
+        "Qwen/Qwen3.8-27B",
+        53,
+        "Newest Qwen dense 27B (needs recent vLLM)",
+    ),
     ("Qwen/Qwen3.6-35B-A3B", 70, "BF16 MoE, needs ~70GB"),
-    ("Qwen/Qwen3.6-35B-A3B-FP8", 37, "FP8 MoE, needs ~37GB or TP=2"),
+    (
+        "Qwen/Qwen3.6-35B-A3B-FP8",
+        37,
+        "FP8 MoE, needs ~37GB or TP=2",
+    ),
     ("Qwen/Qwen2.5-0.5B-Instruct", 1, "Tiny Qwen2.5 (previous)"),
     ("Qwen/Qwen2.5-1.5B-Instruct", 3, "Small Qwen2.5 (previous)"),
-    ("Qwen/Qwen2.5-7B-Instruct", 14, "Instruct, one 16–24GB card (previous)"),
-    ("Qwen/Qwen2.5-14B-Instruct", 28, "Needs a ~32GB card (previous)"),
+    (
+        "Qwen/Qwen2.5-7B-Instruct",
+        14,
+        "Instruct, one 16–24GB card (previous)",
+    ),
+    (
+        "Qwen/Qwen2.5-14B-Instruct",
+        28,
+        "Needs a ~32GB card (previous)",
+    ),
     ("Qwen/Qwen2.5-32B-Instruct", 64, "Needs ~64GB (previous)"),
-    ("google/gemma-4-E2B-it", 10, "Gemma 4 E2B instruct (ungated Apache-2.0)"),
-    ("google/gemma-4-E4B-it", 16, "Gemma 4 E4B instruct (ungated Apache-2.0)"),
-    ("google/gemma-4-12B-it", 23, "Gemma 4 12B instruct (ungated Apache-2.0)"),
-    ("google/gemma-4-26B-A4B-it", 50, "Gemma 4 26B-A4B MoE instruct (ungated Apache-2.0)"),
-    ("google/gemma-4-31B-it", 62, "Gemma 4 31B instruct (ungated Apache-2.0)"),
-    ("google/gemma-3-1b-it", 3, "Gemma 3 tiny instruct (gated Hub, previous)"),
-    ("google/gemma-3-4b-it", 8, "Gemma 3 small instruct (gated Hub, previous)"),
-    ("google/gemma-3-12b-it", 24, "Gemma 3 12B instruct (gated Hub, previous)"),
-    ("google/gemma-3-27b-it", 54, "Gemma 3 27B, needs ~54GB (gated Hub, previous)"),
-    ("google/gemma-2-2b-it", 5, "Gemma 2 tiny instruct (gated Hub, previous)"),
-    ("google/gemma-2-9b-it", 18, "Gemma 2 9B instruct (gated Hub, previous)"),
-    ("google/gemma-2-27b-it", 54, "Gemma 2 27B instruct (gated Hub, previous)"),
-    ("meta-llama/Llama-4-Scout-17B-16E-Instruct", 207, "Llama 4 Scout MoE instruct (gated Hub)"),
-    ("meta-llama/Llama-3.3-70B-Instruct", 140, "Llama 3.3 70B instruct (gated Hub)"),
-    ("meta-llama/Llama-3.2-1B-Instruct", 3, "Llama 3.2 tiny (gated Hub)"),
-    ("meta-llama/Llama-3.2-3B-Instruct", 7, "Llama 3.2 3B instruct (gated Hub)"),
-    ("meta-llama/Llama-3.1-8B-Instruct", 16, "Llama 8B instruct (gated Hub, previous)"),
-    ("meta-llama/Llama-3.1-70B-Instruct", 140, "Llama 3.1 70B instruct (gated Hub, previous)"),
-    ("mistralai/Mistral-Small-3.2-24B-Instruct-2506", 48, "Mistral Small 3.2 24B instruct"),
-    ("mistralai/Ministral-8B-Instruct-2410", 16, "Ministral 8B instruct"),
-    ("mistralai/Mistral-7B-Instruct-v0.3", 14, "Mistral 7B instruct (previous)"),
+    (
+        "google/gemma-4-E2B-it",
+        10,
+        "Gemma 4 E2B instruct (ungated Apache-2.0)",
+    ),
+    (
+        "google/gemma-4-E4B-it",
+        16,
+        "Gemma 4 E4B instruct (ungated Apache-2.0)",
+    ),
+    (
+        "google/gemma-4-12B-it",
+        23,
+        "Gemma 4 12B instruct (ungated Apache-2.0)",
+    ),
+    (
+        "google/gemma-4-26B-A4B-it",
+        50,
+        "Gemma 4 26B-A4B MoE instruct (ungated Apache-2.0)",
+    ),
+    (
+        "google/gemma-4-31B-it",
+        62,
+        "Gemma 4 31B instruct (ungated Apache-2.0)",
+    ),
+    (
+        "google/gemma-3-1b-it",
+        3,
+        "Gemma 3 tiny instruct (gated Hub, previous)",
+    ),
+    (
+        "google/gemma-3-4b-it",
+        8,
+        "Gemma 3 small instruct (gated Hub, previous)",
+    ),
+    (
+        "google/gemma-3-12b-it",
+        24,
+        "Gemma 3 12B instruct (gated Hub, previous)",
+    ),
+    (
+        "google/gemma-3-27b-it",
+        54,
+        "Gemma 3 27B, needs ~54GB (gated Hub, previous)",
+    ),
+    (
+        "google/gemma-2-2b-it",
+        5,
+        "Gemma 2 tiny instruct (gated Hub, previous)",
+    ),
+    (
+        "google/gemma-2-9b-it",
+        18,
+        "Gemma 2 9B instruct (gated Hub, previous)",
+    ),
+    (
+        "google/gemma-2-27b-it",
+        54,
+        "Gemma 2 27B instruct (gated Hub, previous)",
+    ),
+    (
+        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        207,
+        "Llama 4 Scout MoE instruct (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.3-70B-Instruct",
+        140,
+        "Llama 3.3 70B instruct (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.2-1B-Instruct",
+        3,
+        "Llama 3.2 tiny (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.2-3B-Instruct",
+        7,
+        "Llama 3.2 3B instruct (gated Hub)",
+    ),
+    (
+        "meta-llama/Llama-3.1-8B-Instruct",
+        16,
+        "Llama 8B instruct (gated Hub, previous)",
+    ),
+    (
+        "meta-llama/Llama-3.1-70B-Instruct",
+        140,
+        "Llama 3.1 70B instruct (gated Hub, previous)",
+    ),
+    (
+        "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        48,
+        "Mistral Small 3.2 24B instruct",
+    ),
+    (
+        "mistralai/Ministral-8B-Instruct-2410",
+        16,
+        "Ministral 8B instruct",
+    ),
+    (
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        14,
+        "Mistral 7B instruct (previous)",
+    ),
     ("microsoft/Phi-4-mini-instruct", 8, "Phi-4 mini instruct"),
     ("microsoft/phi-4", 28, "Phi-4, needs ~32GB"),
     ("ibm-granite/granite-4.2-3b", 7, "Granite 4.2 3B instruct"),
     ("ibm-granite/granite-4.2-8b", 17, "Granite 4.2 8B instruct"),
-    ("ibm-granite/granite-4.2-30b", 60, "Granite 4.2 30B instruct"),
-    ("ibm-granite/granite-3.3-8b-instruct", 16, "Granite 3.3 8B instruct (previous)"),
+    (
+        "ibm-granite/granite-4.2-30b",
+        60,
+        "Granite 4.2 30B instruct",
+    ),
+    (
+        "ibm-granite/granite-3.3-8b-instruct",
+        16,
+        "Granite 3.3 8B instruct (previous)",
+    ),
     ("allenai/Olmo-3-7B-Instruct", 14, "OLMo 3 7B instruct"),
     ("allenai/Olmo-3.1-32B-Instruct", 64, "OLMo 3.1 32B instruct"),
 ];
@@ -133,16 +265,14 @@ pub fn serving_profile(profile: &GpuProfile, use_all: bool) -> GpuProfile {
 
 pub fn device_mask(count: u32) -> String {
     let n = count.max(1);
-    (0..n)
-        .map(|i| i.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
+    (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(",")
 }
 
 pub fn launch_plan(profile: &GpuProfile, use_all: bool) -> GpuLaunchPlan {
     let n = profile.discrete_count;
     let multi = n >= 2;
-    let want_all = use_all && n >= 2 && matches!(profile.vendor.as_str(), "nvidia" | "amd" | "intel");
+    let want_all =
+        use_all && n >= 2 && matches!(profile.vendor.as_str(), "nvidia" | "amd" | "intel");
     let tensor_parallel = if want_all { n } else { 1 };
     let note = if n == 0 {
         "No discrete GPU found on this computer.".into()
@@ -523,7 +653,11 @@ fn summarize(vendor: &str, cards: Vec<GpuCard>, tp_ok: bool) -> GpuProfile {
             names.join(", ")
         )
     } else {
-        format!("{} GPU(s) on this computer: {}", discrete_count, names.join(", "))
+        format!(
+            "{} GPU(s) on this computer: {}",
+            discrete_count,
+            names.join(", ")
+        )
     };
     GpuProfile {
         vendor: vendor.into(),
@@ -772,7 +906,9 @@ fn newest_id_set<'a>(ids: impl Iterator<Item = &'a str>) -> HashSet<&'a str> {
 pub fn default_model(profile: &GpuProfile) -> String {
     let recs = recommend(profile);
     recs.iter()
-        .filter(|r| r.recommended && r.newest && r.tp == 1 && u64::from(r.weight_gb) + 6 <= profile.vram_gb)
+        .filter(|r| {
+            r.recommended && r.newest && r.tp == 1 && u64::from(r.weight_gb) + 6 <= profile.vram_gb
+        })
         .max_by_key(|r| r.weight_gb)
         .or_else(|| {
             recs.iter()
@@ -850,11 +986,19 @@ mod tests {
         assert!(rec.iter().any(|r| r.id.contains("32B") && !r.recommended));
         assert_eq!(rec.len(), LIBRARY.len());
         assert!(LIBRARY.len() > 30, "vLLM catalog is not a 2-row slice");
-        assert!(rec.iter().any(|r| r.id == "Qwen/Qwen2.5-7B-Instruct" && !r.newest));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "Qwen/Qwen2.5-7B-Instruct" && !r.newest));
         assert!(rec.iter().any(|r| r.id == "Qwen/Qwen3-8B" && r.newest));
-        assert!(rec.iter().any(|r| r.id == "google/gemma-4-12B-it" && r.newest));
-        assert!(rec.iter().any(|r| r.id == "google/gemma-3-12b-it" && !r.newest));
-        assert!(rec.iter().any(|r| r.id == "google/gemma-2-9b-it" && !r.newest));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "google/gemma-4-12B-it" && r.newest));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "google/gemma-3-12b-it" && !r.newest));
+        assert!(rec
+            .iter()
+            .any(|r| r.id == "google/gemma-2-9b-it" && !r.newest));
         let d = default_model(&intel_32x2());
         assert!(
             d.contains("12b")
@@ -978,17 +1122,11 @@ GPU[1]          : vram Total Memory (B): 17163091968
         let all = llama_gpu_args(&p, true);
         assert_eq!(all, vec!["-ngl", "99", "-sm", "layer", "-ts", "1,1"]);
         let env_all = llama_gpu_env(&p, true);
-        assert_eq!(
-            env_all,
-            vec![("CUDA_VISIBLE_DEVICES".into(), "0,1".into())]
-        );
+        assert_eq!(env_all, vec![("CUDA_VISIBLE_DEVICES".into(), "0,1".into())]);
         let one = llama_gpu_args(&p, false);
         assert_eq!(one, vec!["-ngl", "99"]);
         let env_one = llama_gpu_env(&p, false);
-        assert_eq!(
-            env_one,
-            vec![("CUDA_VISIBLE_DEVICES".into(), "0".into())]
-        );
+        assert_eq!(env_one, vec![("CUDA_VISIBLE_DEVICES".into(), "0".into())]);
         let amd = GpuProfile {
             vendor: "amd".into(),
             discrete_count: 2,
@@ -999,7 +1137,9 @@ GPU[1]          : vram Total Memory (B): 17163091968
             cards: vec![],
         };
         let hip = llama_gpu_env(&amd, true);
-        assert!(hip.iter().any(|(k, v)| k == "HIP_VISIBLE_DEVICES" && v == "0,1"));
+        assert!(hip
+            .iter()
+            .any(|(k, v)| k == "HIP_VISIBLE_DEVICES" && v == "0,1"));
         let none = GpuProfile {
             vendor: "none".into(),
             discrete_count: 0,

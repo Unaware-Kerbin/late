@@ -110,7 +110,8 @@ fn repo_root() -> Result<PathBuf> {
         return Ok(here);
     }
     Err(LateError::Message(
-        "cannot find docker/compose.yml; Late packages it in resources/docker, or set LATE_ROOT".into(),
+        "cannot find docker/compose.yml; Late packages it in resources/docker, or set LATE_ROOT"
+            .into(),
     ))
 }
 
@@ -123,9 +124,7 @@ pub fn docker_available() -> bool {
         .stderr(Stdio::null())
         .output()
     {
-        Ok(out) => {
-            out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty()
-        }
+        Ok(out) => out.status.success() && !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
         Err(_) => false,
     }
 }
@@ -470,15 +469,15 @@ fn scan_hf_cache() -> Vec<LocalModel> {
         } else {
             "incomplete download (config/tokenizer only)".into()
         };
-            out.push(LocalModel {
-                id,
-                complete,
-                size_bytes,
-                note,
-                recommended: false,
-                newest: false,
-                tp: 1,
-            });
+        out.push(LocalModel {
+            id,
+            complete,
+            size_bytes,
+            note,
+            recommended: false,
+            newest: false,
+            tp: 1,
+        });
     }
     out.sort_by(|a, b| b.complete.cmp(&a.complete).then(a.id.cmp(&b.id)));
     out

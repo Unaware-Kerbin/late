@@ -115,12 +115,7 @@ impl PolicyEngine {
             .map(|b| {
                 b.allow
                     .iter()
-                    .filter(|a| {
-                        !overlay
-                            .allow
-                            .iter()
-                            .any(|o| o.eq_ignore_ascii_case(a))
-                    })
+                    .filter(|a| !overlay.allow.iter().any(|o| o.eq_ignore_ascii_case(a)))
                     .cloned()
                     .collect()
             })
@@ -401,11 +396,7 @@ pub fn absorb_bundled_allow(dest: &Path, bundled: &Path) -> Result<bool> {
     }
     let mut added = false;
     for a in &bundled_p.allow {
-        if !dest_p
-            .allow
-            .iter()
-            .any(|d| d.eq_ignore_ascii_case(a))
-        {
+        if !dest_p.allow.iter().any(|d| d.eq_ignore_ascii_case(a)) {
             dest_p.allow.push(a.clone());
             added = true;
         }
@@ -423,9 +414,9 @@ pub fn overlay_path(dir: &Path, vendor: Vendor) -> std::path::PathBuf {
 pub fn is_dangerous_verb(token: &str) -> bool {
     let t = token.trim().to_ascii_lowercase();
     let first = t.split_whitespace().next().unwrap_or("");
-    DANGEROUS_VERBS.iter().any(|d| {
-        t == *d || first == *d || t.starts_with(&format!("{d} "))
-    })
+    DANGEROUS_VERBS
+        .iter()
+        .any(|d| t == *d || first == *d || t.starts_with(&format!("{d} ")))
 }
 
 fn lifts_overlay_deny(token_l: &str) -> bool {
@@ -450,9 +441,13 @@ fn lifts_overlay_deny(token_l: &str) -> bool {
 pub fn normalize_allow_token(raw: &str) -> Result<String> {
     let t = raw.trim();
     if t.is_empty() {
-        return Err(crate::error::LateError::Message("empty permit-list token".into()));
+        return Err(crate::error::LateError::Message(
+            "empty permit-list token".into(),
+        ));
     }
-    if t.chars().any(|c| c.is_control() || c == '\n' || c == '\r' || c == '|') {
+    if t.chars()
+        .any(|c| c.is_control() || c == '\n' || c == '\r' || c == '|')
+    {
         return Err(crate::error::LateError::Message(
             "permit-list token must be a single verb (no newlines or pipes)".into(),
         ));
@@ -471,7 +466,8 @@ pub fn normalize_allow_token(raw: &str) -> Result<String> {
 pub fn apply_allow_list(mut policy: VendorPolicy, allow: Vec<String>) -> Result<VendorPolicy> {
     if policy.unrestricted || policy.vendor.eq_ignore_ascii_case("linux") {
         return Err(crate::error::LateError::Message(
-            "Linux has no permit list. Every command still needs Approve. Always-allow stays off.".into(),
+            "Linux has no permit list. Every command still needs Approve. Always-allow stays off."
+                .into(),
         ));
     }
     let mut next: Vec<String> = Vec::new();
@@ -497,7 +493,8 @@ pub fn apply_allow_list(mut policy: VendorPolicy, allow: Vec<String>) -> Result<
         });
     }
     policy.allow = next;
-    policy.allow_always_allow = policy.allow_always_allow && !policy.vendor.eq_ignore_ascii_case("linux");
+    policy.allow_always_allow =
+        policy.allow_always_allow && !policy.vendor.eq_ignore_ascii_case("linux");
     Ok(policy)
 }
 
@@ -1087,7 +1084,13 @@ allow_always_allow: true
     #[test]
     fn name_vlan_2500_allowed_on_aoscx() {
         let e = PolicyEngine::builtin();
-        for cmd in ["name VLAN2500", "name VLAN2000", "vlan 2500", "configure terminal", "end"] {
+        for cmd in [
+            "name VLAN2500",
+            "name VLAN2000",
+            "vlan 2500",
+            "configure terminal",
+            "end",
+        ] {
             let d = e.check(Vendor::AosCx, cmd);
             assert!(d.allowed, "{cmd}: {}", d.reason);
         }
@@ -1119,7 +1122,11 @@ allow_always_allow: true
         let mut e = PolicyEngine::builtin();
         e.merge_dir(dir.path()).unwrap();
         let name = e.check(Vendor::AosCx, "name VLAN2500");
-        assert!(name.allowed, "stale first-boot YAML must not drop builtin name: {}", name.reason);
+        assert!(
+            name.allowed,
+            "stale first-boot YAML must not drop builtin name: {}",
+            name.reason
+        );
         assert!(e.check(Vendor::AosCx, "vlan 2500").allowed);
         assert!(!e.check(Vendor::AosCx, "reload").allowed);
         assert!(!e.check(Vendor::AosCx, "erase").allowed);
@@ -1127,7 +1134,8 @@ allow_always_allow: true
         assert!(!e.check(Vendor::AosCx, "sudo reboot").allowed);
 
         let dest = dir.path().join("aos_cx.yaml");
-        let bundled = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../policies/aos_cx.yaml");
+        let bundled =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../policies/aos_cx.yaml");
         if bundled.is_file() {
             assert!(absorb_bundled_allow(&dest, &bundled).unwrap());
             let refreshed = std::fs::read_to_string(&dest).unwrap();
@@ -1219,7 +1227,10 @@ allow_always_allow: true
         e.merge_dir(dir.path()).unwrap();
         let reload = e.check(Vendor::AosCx, "reload");
         assert!(reload.allowed, "{}", reload.reason);
-        assert!(!reload.allow_always_allow, "builtin deny still blocks always-allow");
+        assert!(
+            !reload.allow_always_allow,
+            "builtin deny still blocks always-allow"
+        );
         assert!(!e.check(Vendor::AosCx, "erase").allowed);
         assert!(!e.check(Vendor::AosCx, "start-shell").allowed);
     }

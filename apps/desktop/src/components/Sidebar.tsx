@@ -7,7 +7,9 @@ import {
   openLocal,
   openPcapPane,
   openStagePane,
-  openSession,
+  startQuickConnect,
+  startConnectPrompt,
+  connectDevice,
   renameFolder,
   setState,
   startDeviceEditor,
@@ -243,7 +245,11 @@ export function Sidebar() {
   const [dragOver, setDragOver] = useState<string | null>(null);
   const [activeFolder, setActiveFolder] = useState("");
   const [folderDlg, setFolderDlg] = useState<
-    { mode: "create"; parent: string } | { mode: "rename"; path: string } | { mode: "delete"; path: string } | null
+    | { mode: "create"; parent: string }
+    | { mode: "rename"; path: string }
+    | { mode: "delete"; path: string }
+    | { mode: "delete-device"; id: string; name: string }
+    | null
   >(null);
   const [folderName, setFolderName] = useState("");
   const folderInput = useRef<HTMLInputElement>(null);
@@ -447,7 +453,7 @@ export function Sidebar() {
   }
 
   function connect(d: Device, kind?: SessionKind, split?: SplitPlacement) {
-    void openSession(d, kind, split ? { split } : undefined);
+    void connectDevice(d, kind, split);
   }
 
   function askNewFolder(parent: string) {
@@ -478,12 +484,22 @@ export function Sidebar() {
     setFolderDlg({ mode: "delete", path });
   }
 
+  function confirmDeleteDevice(id: string, name: string) {
+    setMenu(null);
+    setFolderDlg({ mode: "delete-device", id, name });
+  }
+
   async function submitFolderDlg() {
     if (!folderDlg) return;
     if (folderDlg.mode === "delete") {
       const gone = folderDlg.path;
       if (!(await deleteFolder(gone))) return;
       setActiveFolder((cur) => (folderPathIsUnder(cur, gone) ? "" : cur));
+      setFolderDlg(null);
+      return;
+    }
+    if (folderDlg.mode === "delete-device") {
+      await deleteDevice(folderDlg.id);
       setFolderDlg(null);
       return;
     }
@@ -613,7 +629,7 @@ export function Sidebar() {
     if (e.key === "Delete") {
       if (selectedDevice) {
         e.preventDefault();
-        void deleteDevice(selectedDevice.id);
+        confirmDeleteDevice(selectedDevice.id, selectedDevice.name);
       } else if (activeFolder) {
         e.preventDefault();
         confirmDelete(activeFolder);
@@ -744,9 +760,10 @@ export function Sidebar() {
           e.dataTransfer.effectAllowed = "move";
         }}
         onClick={(e) => {
-          e.currentTarget.focus();
+          e.preventDefault();
           selectDevice(d);
         }}
+        onMouseDown={(e) => e.preventDefault()}
         onDoubleClick={() => connect(d)}
         onContextMenu={(e) => openMenu({ kind: "device", id: d.id, x: 0, y: 0 }, e)}
       >
@@ -784,6 +801,22 @@ export function Sidebar() {
         Sessions
       </div>
       <div className="sess-toolbar">
+        <button
+          type="button"
+          className="sess-tb"
+          title="Quick Connect"
+          onClick={() => startQuickConnect()}
+        >
+          <svg viewBox="0 0 16 16" aria-hidden>
+            <path
+              d="M3 8h7M8 5l3 3-3 3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+            />
+            <circle cx="3" cy="8" r="1.2" fill="currentColor" />
+          </svg>
+        </button>
         <button
           type="button"
           className="sess-tb"
@@ -855,10 +888,19 @@ export function Sidebar() {
                   type="button"
                   onClick={() => {
                     setNewPop(null);
+                    startQuickConnect();
+                  }}
+                >
+                  Quick Connect
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewPop(null);
                     startDeviceEditor(undefined, "ssh", activeFolder === "__tools__" ? "" : activeFolder);
                   }}
                 >
-                  SSH session
+                  SSH options…
                 </button>
                 <button
                   type="button"
@@ -918,7 +960,7 @@ export function Sidebar() {
           title="Delete"
           disabled={!selectedDevice && !activeFolder}
           onClick={() => {
-            if (selectedDevice) void deleteDevice(selectedDevice.id);
+            if (selectedDevice) confirmDeleteDevice(selectedDevice.id, selectedDevice.name);
             else if (activeFolder && activeFolder !== "__tools__") confirmDelete(activeFolder);
           }}
         >
@@ -960,6 +1002,10 @@ export function Sidebar() {
               <p>
                 Delete folder <strong>{folderDlg.path}</strong>? Devices move to the parent group.
               </p>
+            ) : folderDlg.mode === "delete-device" ? (
+              <p>
+                Delete session <strong>{folderDlg.name}</strong>?
+              </p>
             ) : (
               <label>
                 {folderDlg.mode === "rename"
@@ -981,10 +1027,14 @@ export function Sidebar() {
               </button>
               <button
                 type="submit"
-                className={folderDlg.mode === "delete" ? "danger" : "primary"}
-                disabled={folderDlg.mode !== "delete" && !normalizeFolder(folderName)}
+                className={folderDlg.mode === "delete" || folderDlg.mode === "delete-device" ? "danger" : "primary"}
+                disabled={folderDlg.mode !== "delete" && folderDlg.mode !== "delete-device" && !normalizeFolder(folderName)}
               >
-                {folderDlg.mode === "delete" ? "Delete" : folderDlg.mode === "rename" ? "Rename" : "Create"}
+                {folderDlg.mode === "delete" || folderDlg.mode === "delete-device"
+                  ? "Delete"
+                  : folderDlg.mode === "rename"
+                    ? "Rename"
+                    : "Create"}
               </button>
             </div>
           </form>,
@@ -1060,6 +1110,16 @@ export function Sidebar() {
               onClick={() => {
                 setMenu(null);
                 setActiveFolder(menu.path);
+                startQuickConnect();
+              }}
+            >
+              Quick Connect
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenu(null);
+                setActiveFolder(menu.path);
                 startDeviceEditor(undefined, "ssh", menu.path);
               }}
             >
@@ -1097,6 +1157,18 @@ export function Sidebar() {
             >
               Connect
             </button>
+            {inventory.devices.find((x) => x.id === menu.id)?.kind === "ssh" && (
+              <button
+                type="button"
+                onClick={() => {
+                  const d = inventory.devices.find((x) => x.id === menu.id);
+                  setMenu(null);
+                  if (d) startConnectPrompt(d);
+                }}
+              >
+                Connect with login…
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1162,8 +1234,9 @@ export function Sidebar() {
             <button
               type="button"
               onClick={() => {
+                const d = inventory.devices.find((x) => x.id === menu.id);
                 setMenu(null);
-                void deleteDevice(menu.id);
+                if (d) confirmDeleteDevice(d.id, d.name);
               }}
             >
               Delete session

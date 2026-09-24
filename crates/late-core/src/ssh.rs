@@ -8,10 +8,11 @@ use crate::types::{AuthProfile, Device};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::fs;
 use std::io::{Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{broadcast, mpsc};
 use zeroize::Zeroize;
 
@@ -27,27 +28,226 @@ pub struct SshConnectOpts {
     pub replace_host_key: bool,
 }
 
+/// PuTTY-like one-shot budget for TCP + SSH. No silent retry loop.
+pub const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const KEYSCAN_TIMEOUT: Duration = Duration::from_secs(8);
+
 pub fn probe_fingerprint(host: &str, port: u16) -> Result<String> {
     Ok(probe_keyscan(host, port)?.2)
 }
 
-fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
-    let out = Command::new("ssh-keyscan")
-        .args([
-            "-T",
-            "5",
-            "-t",
-            "ed25519,ecdsa,rsa",
-            "-p",
-            &port.to_string(),
+fn display_host(host: &str, port: u16) -> String {
+    if port == 22 {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+pub fn unable_to_connect(host: &str, port: u16, cause: &str, reason: &str) -> LateError {
+    LateError::UnableToConnect {
+        host: display_host(host, port),
+        reason: reason.to_string(),
+        cause: cause.to_string(),
+    }
+}
+
+/// Map I/O / OpenSSH text to a canned reason. Never returns caller secrets.
+pub fn classify_connect_io(err: &std::io::Error) -> (&'static str, &'static str) {
+    classify_connect_text(&err.to_string()).unwrap_or_else(|| match err.kind() {
+        std::io::ErrorKind::TimedOut => ("timeout", "connection timed out"),
+        std::io::ErrorKind::ConnectionRefused => ("refused", "connection refused"),
+        std::io::ErrorKind::ConnectionReset => ("failed", "connection reset"),
+        std::io::ErrorKind::AddrNotAvailable => ("unreachable", "address not available"),
+        _ => ("failed", "unable to connect"),
+    })
+}
+
+pub fn classify_connect_text(text: &str) -> Option<(&'static str, &'static str)> {
+    let s = text.to_ascii_lowercase();
+    if s.contains("permission denied")
+        || s.contains("authentication failed")
+        || s.contains("too many authentication")
+        || s.contains("auth fail")
+    {
+        Some(("auth", "authentication failed"))
+    } else if s.contains("timed out") || s.contains("timeout") || s.contains("connection timed out")
+    {
+        Some(("timeout", "connection timed out"))
+    } else if s.contains("connection refused") || s.contains("actively refused") {
+        Some(("refused", "connection refused"))
+    } else if s.contains("no route to host")
+        || s.contains("network is unreachable")
+        || s.contains("host is unreachable")
+        || s.contains("network unreachable")
+    {
+        Some(("unreachable", "no route to host"))
+    } else if s.contains("name or service not known")
+        || s.contains("nodename nor servname")
+        || s.contains("temporary failure in name resolution")
+        || s.contains("not known")
+    {
+        Some(("failed", "could not resolve host"))
+    } else {
+        None
+    }
+}
+
+fn resolve_addrs(host: &str, port: u16, timeout: Duration) -> Result<Vec<std::net::SocketAddr>> {
+    let host_owned = host.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = (host_owned.as_str(), port)
+            .to_socket_addrs()
+            .map(|i| i.collect::<Vec<_>>());
+        let _ = tx.send(r);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(addrs)) if !addrs.is_empty() => Ok(addrs),
+        Ok(Ok(_)) => Err(unable_to_connect(
             host,
-        ])
-        .output()
-        .map_err(|e| LateError::Ssh(format!("ssh-keyscan: {e}")))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = pick_keyscan_line(&text)?;
-    let (algo, fp) = KnownHosts::fingerprint_keyscan_line(&line)?;
-    Ok((line, algo, fp))
+            port,
+            "failed",
+            "could not resolve host",
+        )),
+        Ok(Err(e)) => {
+            let (cause, reason) = classify_connect_io(&e);
+            Err(unable_to_connect(host, port, cause, reason))
+        }
+        Err(_) => Err(unable_to_connect(
+            host,
+            port,
+            "timeout",
+            "connection timed out",
+        )),
+    }
+}
+
+/// TCP connect with a finite timeout. One attempt per resolved address, then fail.
+pub fn preflight_tcp(host: &str, port: u16, timeout: Duration) -> Result<()> {
+    let addrs = resolve_addrs(host, port, timeout)?;
+    let start = Instant::now();
+    let mut last: Option<std::io::Error> = None;
+    for addr in addrs {
+        let remain = timeout.saturating_sub(start.elapsed());
+        if remain.is_zero() {
+            return Err(unable_to_connect(
+                host,
+                port,
+                "timeout",
+                "connection timed out",
+            ));
+        }
+        match TcpStream::connect_timeout(&addr, remain) {
+            Ok(stream) => {
+                drop(stream);
+                return Ok(());
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    match last {
+        Some(e) => {
+            let (cause, reason) = classify_connect_io(&e);
+            Err(unable_to_connect(host, port, cause, reason))
+        }
+        None => Err(unable_to_connect(host, port, "failed", "unable to connect")),
+    }
+}
+
+fn wait_command(
+    mut cmd: Command,
+    timeout: Duration,
+    host: &str,
+    port: u16,
+) -> Result<(Vec<u8>, Vec<u8>, bool)> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| LateError::Ssh(format!("ssh: {e}")))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let out_h = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut r) = stdout {
+            let _ = r.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_h = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut r) = stderr {
+            let _ = r.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let out = out_h.join().unwrap_or_default();
+                let err = err_h.join().unwrap_or_default();
+                return Ok((out, err, status.success()));
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let give_up = Instant::now() + Duration::from_millis(400);
+                    let mut reaped = false;
+                    while Instant::now() < give_up {
+                        if child.try_wait().ok().flatten().is_some() {
+                            reaped = true;
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(15));
+                    }
+                    if reaped {
+                        let _ = out_h.join();
+                        let _ = err_h.join();
+                    } else {
+                        // Child::drop waits; do not block the connect attempt.
+                        std::mem::forget(child);
+                    }
+                    return Err(unable_to_connect(
+                        host,
+                        port,
+                        "timeout",
+                        "connection timed out",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(LateError::Ssh(format!("ssh: {e}")));
+            }
+        }
+    }
+}
+
+fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
+    preflight_tcp(host, port, SSH_CONNECT_TIMEOUT)?;
+    let mut cmd = Command::new("ssh-keyscan");
+    cmd.args([
+        "-T",
+        "5",
+        "-t",
+        "ed25519,ecdsa,rsa",
+        "-p",
+        &port.to_string(),
+        host,
+    ]);
+    let (stdout, stderr, _ok) = wait_command(cmd, KEYSCAN_TIMEOUT, host, port)?;
+    let text = String::from_utf8_lossy(&stdout);
+    if let Ok(line) = pick_keyscan_line(&text) {
+        let (algo, fp) = KnownHosts::fingerprint_keyscan_line(&line)?;
+        return Ok((line, algo, fp));
+    }
+    let combined = format!("{text}\n{}", String::from_utf8_lossy(&stderr));
+    if let Some((cause, reason)) = classify_connect_text(&combined) {
+        return Err(unable_to_connect(host, port, cause, reason));
+    }
+    Err(unable_to_connect(host, port, "failed", "no SSH banner"))
 }
 
 pub(crate) fn confined_identity(profile: &AuthProfile) -> Result<Option<PathBuf>> {
@@ -113,6 +313,7 @@ pub fn open_ssh(
     opts: SshConnectOpts,
     cols: u32,
     rows: u32,
+    session_password: Option<String>,
 ) -> Result<(SshIo, String)> {
     let host = device
         .host
@@ -147,11 +348,12 @@ pub fn open_ssh(
     }
     let kh = write_openssh_known_hosts(paths, &host, port, &keyscan_line)?;
 
-    let mut password = if profile.has_password {
-        secrets.get(&profile.id)?
-    } else {
-        None
+    let mut password = match session_password.filter(|s| !s.is_empty()) {
+        Some(p) => Some(p),
+        None if profile.has_password => secrets.get(&profile.id)?,
+        None => None,
     };
+    let using_password = password.as_ref().is_some_and(|s| !s.is_empty());
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -177,7 +379,7 @@ pub fn open_ssh(
         cmd.arg("IdentitiesOnly=yes");
     }
     cmd.arg(format!("{}@{}", profile.username, host));
-    if profile.has_password {
+    if using_password {
         cmd.arg("-o");
         cmd.arg("PreferredAuthentications=keyboard-interactive,password");
         cmd.arg("-o");
@@ -204,36 +406,36 @@ pub fn open_ssh(
         .master
         .try_clone_reader()
         .map_err(|e| LateError::Ssh(e.to_string()))?;
-    let mut writer = pair
+    let writer = pair
         .master
         .take_writer()
         .map_err(|e| LateError::Ssh(e.to_string()))?;
     let master = pair.master;
 
-    let (in_tx, mut in_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (in_tx, in_rx) = mpsc::channel::<Vec<u8>>(256);
     let (out_tx, _) = broadcast::channel::<Vec<u8>>(256);
-    let (resize_tx, mut resize_rx) = mpsc::channel::<(u32, u32)>(8);
-    let (close_tx, mut close_rx) = mpsc::channel::<()>(1);
+    let (resize_tx, resize_rx) = mpsc::channel::<(u32, u32)>(8);
+    let (close_tx, close_rx) = mpsc::channel::<()>(1);
     let out_tx2 = out_tx.clone();
+    let io_handle = tokio::runtime::Handle::try_current().ok();
 
-    std::thread::spawn(move || loop {
-        if close_rx.try_recv().is_ok() {
-            let _ = child.kill();
-            break;
-        }
-        while let Ok(b) = in_rx.try_recv() {
-            let _ = writer.write_all(&b);
-            let _ = writer.flush();
-        }
-        if let Ok((c, r)) = resize_rx.try_recv() {
-            let _ = master.resize(PtySize {
-                rows: r as u16,
-                cols: c as u16,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
-        }
-        std::thread::sleep(std::time::Duration::from_millis(8));
+    std::thread::spawn(move || {
+        crate::pty_io::pump_writes(
+            writer,
+            in_rx,
+            resize_rx,
+            close_rx,
+            |(c, r)| {
+                let _ = master.resize(PtySize {
+                    rows: r as u16,
+                    cols: c as u16,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            },
+            io_handle,
+        );
+        let _ = child.kill();
     });
 
     std::thread::spawn(move || {
@@ -685,6 +887,110 @@ mod askpass_tests {
     }
 }
 
+#[cfg(test)]
+mod connect_timeout_tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn classify_timeout_refused_unreachable_auth_no_password_leak() {
+        assert_eq!(
+            classify_connect_text("ssh: connect to host 10.1.0.10 port 9: Connection timed out"),
+            Some(("timeout", "connection timed out"))
+        );
+        assert_eq!(
+            classify_connect_text("Connection refused"),
+            Some(("refused", "connection refused"))
+        );
+        assert_eq!(
+            classify_connect_text("No route to host"),
+            Some(("unreachable", "no route to host"))
+        );
+        assert_eq!(
+            classify_connect_text("Permission denied (publickey,password)"),
+            Some(("auth", "authentication failed"))
+        );
+        let msg = unable_to_connect("10.1.0.12", 22, "auth", "authentication failed").to_string();
+        assert!(msg.contains("Unable to Connect"));
+        assert!(msg.contains("10.1.0.12"));
+        assert!(!msg.to_lowercase().contains("secret"));
+        assert!(!msg.contains("admin-password"));
+        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        assert_eq!(
+            classify_connect_io(&io),
+            ("timeout", "connection timed out")
+        );
+    }
+
+    #[test]
+    fn preflight_ok_on_local_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        preflight_tcp("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn preflight_refused_on_closed_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let err = preflight_tcp("127.0.0.1", port, Duration::from_secs(2)).unwrap_err();
+        match err {
+            LateError::UnableToConnect { cause, reason, host } => {
+                assert!(
+                    cause == "refused" || cause == "failed" || cause == "timeout",
+                    "cause={cause}"
+                );
+                assert!(reason.contains("connect") || reason.contains("refused") || reason.contains("timed out"));
+                assert!(host.contains("127.0.0.1"));
+            }
+            other => panic!("expected UnableToConnect, got {other}"),
+        }
+    }
+
+    #[test]
+    fn preflight_times_out_on_documentation_black_hole() {
+        let start = Instant::now();
+        let err = preflight_tcp("192.0.2.1", 22, Duration::from_millis(400)).unwrap_err();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "must fail once, not loop ({:?})",
+            start.elapsed()
+        );
+        match err {
+            LateError::UnableToConnect { cause, .. } => {
+                assert!(
+                    ["timeout", "unreachable", "refused", "failed"].contains(&cause.as_str()),
+                    "cause={cause}"
+                );
+            }
+            other => panic!("expected UnableToConnect, got {other}"),
+        }
+    }
+
+    #[test]
+    fn wait_command_kills_hung_process() {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("30");
+        let start = Instant::now();
+        let err = wait_command(cmd, Duration::from_millis(250), "192.0.2.1", 22).unwrap_err();
+        assert!(start.elapsed() < Duration::from_secs(2));
+        match err {
+            LateError::UnableToConnect { cause, .. } => assert_eq!(cause, "timeout"),
+            other => panic!("{other}"),
+        }
+    }
+
+    #[test]
+    fn wait_command_success_unchanged() {
+        let cmd = Command::new("/bin/true");
+        let (out, err, ok) = wait_command(cmd, Duration::from_secs(2), "127.0.0.1", 22).unwrap();
+        assert!(ok);
+        assert!(out.is_empty());
+        assert!(err.is_empty());
+    }
+}
+
 /// Password file + helper live until OpenSSH execs the script (which self-deletes)
 /// or until a delayed reap. Immediate Drop after spawn races pre-auth banners
 /// (e.g. Aruba) and yields `ssh_askpass: No such file or directory`.
@@ -842,6 +1148,9 @@ fn apply_strict_std(cmd: &mut Command, kh: &Path, algo: &str) {
         .arg(format!("UserKnownHostsFile={}", kh.display()));
     cmd.arg("-o").arg("GlobalKnownHostsFile=/dev/null");
     cmd.arg("-o").arg("UpdateHostKeys=no");
+    cmd.arg("-o")
+        .arg(format!("ConnectTimeout={}", SSH_CONNECT_TIMEOUT.as_secs()));
+    cmd.arg("-o").arg("ConnectionAttempts=1");
     if let Some(a) = sanitized_host_key_algo(algo) {
         cmd.arg("-o").arg(format!("HostKeyAlgorithms={a}"));
     }
@@ -856,6 +1165,16 @@ fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &Path, algo: &str) {
     cmd.arg("GlobalKnownHostsFile=/dev/null");
     cmd.arg("-o");
     cmd.arg("UpdateHostKeys=no");
+    cmd.arg("-o");
+    cmd.arg("IPQoS=lowdelay");
+    cmd.arg("-o");
+    cmd.arg("ServerAliveInterval=15");
+    cmd.arg("-o");
+    cmd.arg("ServerAliveCountMax=3");
+    cmd.arg("-o");
+    cmd.arg(format!("ConnectTimeout={}", SSH_CONNECT_TIMEOUT.as_secs()));
+    cmd.arg("-o");
+    cmd.arg("ConnectionAttempts=1");
     if let Some(a) = sanitized_host_key_algo(algo) {
         cmd.arg("-o");
         cmd.arg(format!("HostKeyAlgorithms={a}"));

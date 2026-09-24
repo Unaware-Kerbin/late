@@ -233,8 +233,7 @@ pub fn open_serial(path: &str, baud: u32) -> Result<SerialIo> {
                         }
                     },
                 };
-                let user_closed =
-                    run_port(w, r, &mut in_rx, &mut brk_rx, &mut close_rx, &out_tx2);
+                let user_closed = run_port(w, r, &mut in_rx, &mut brk_rx, &mut close_rx, &out_tx2);
                 if user_closed {
                     break;
                 }
@@ -381,10 +380,7 @@ os.close(slave)
         let mut io = open_serial(&path, 9600).expect("open");
         let _ = io.close.try_send(());
         // Mimic session close: drop close/input senders, then join worker.
-        drop(std::mem::replace(
-            &mut io.close,
-            mpsc::channel::<()>(1).0,
-        ));
+        drop(std::mem::replace(&mut io.close, mpsc::channel::<()>(1).0));
         let join = io.join.take();
         drop(io);
         if let Some(h) = join {

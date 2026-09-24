@@ -20,6 +20,13 @@ pub enum LateError {
     Io(#[from] std::io::Error),
     #[error("ssh: {0}")]
     Ssh(String),
+    /// One-shot connect failure (timeout, refused, unreachable, auth). Never include secrets.
+    #[error("Unable to Connect to {host}: {reason}")]
+    UnableToConnect {
+        host: String,
+        reason: String,
+        cause: String,
+    },
     #[error("serial: {0}")]
     Serial(String),
     #[error("sftp: {0}")]
@@ -51,6 +58,7 @@ impl LateError {
             LateError::PolicyDenied(_) => -32010,
             LateError::HostKeyUntrusted { .. } => -32021,
             LateError::HostKeyMismatch { .. } => -32022,
+            LateError::UnableToConnect { .. } => -32030,
             _ => -32000,
         }
     }
@@ -78,8 +86,36 @@ impl LateError {
                 "code": "policy_denied",
                 "reason": reason
             })),
+            LateError::UnableToConnect { host, reason, cause } => Some(serde_json::json!({
+                "code": "unable_to_connect",
+                "kind": "unable_to_connect",
+                "host": host,
+                "reason": reason,
+                "cause": cause
+            })),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unable_to_connect_rpc_shape_no_secrets() {
+        let e = LateError::UnableToConnect {
+            host: "10.1.0.10:9".into(),
+            reason: "connection refused".into(),
+            cause: "refused".into(),
+        };
+        assert_eq!(e.rpc_code(), -32030);
+        assert_eq!(e.to_string(), "Unable to Connect to 10.1.0.10:9: connection refused");
+        let d = e.rpc_data().unwrap();
+        assert_eq!(d["code"], "unable_to_connect");
+        assert_eq!(d["host"], "10.1.0.10:9");
+        assert_eq!(d["cause"], "refused");
+        assert!(!e.to_string().to_lowercase().contains("password"));
     }
 }
 

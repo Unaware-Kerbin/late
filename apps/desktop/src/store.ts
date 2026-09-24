@@ -35,7 +35,8 @@ import {
   moveShellPane,
   type ShellPaneId,
 } from "./shell";
-import { isHostKeyError, rpc, textToB64 } from "./lib/rpc";
+import { isCancelled, isConnectError, isHostKeyError, rpc } from "./lib/rpc";
+import { sidecarHealth } from "./lib/sidecar";
 import { stageBodyAfterOpen, stageDeviceAfterOpen, stageSessionAfterOpen, stagingSeedRemounts } from "./lib/stageDrafts";
 import {
   coerceAuth,
@@ -57,6 +58,10 @@ import {
   type ApprovalPrompt,
   type SessionInfo,
   type SessionKind,
+  type SessionLogin,
+  type ConnectFailedPrompt,
+  type ConnectProgress,
+  type ConnectPrompt,
   type SplitNode,
   type SplitPlacement,
   type TabState,
@@ -80,6 +85,9 @@ export type AppState = {
   focusedPaneId: string | null;
   selectedDeviceId: string | null;
   hostKey: HostKeyPrompt | null;
+  connectFailed: ConnectFailedPrompt | null;
+  connectProgress: ConnectProgress | null;
+  connectPrompt: ConnectPrompt | null;
   approval: ApprovalPrompt | null;
   paletteOpen: boolean;
   importOpen: boolean;
@@ -135,6 +143,9 @@ function bootstrap(): AppState {
     focusedPaneId: pane.id,
     selectedDeviceId: null,
     hostKey: null,
+    connectFailed: null,
+    connectProgress: null,
+    connectPrompt: null,
     approval: null,
     paletteOpen: false,
     importOpen: false,
@@ -536,10 +547,6 @@ export async function saveDeviceWithLogin(
       const hasPw = Boolean(login?.password);
       const hasKey = Boolean(login?.keyPath?.trim());
       const existing = getState().auth.find((p) => p.id === device.auth_profile_id);
-      if (!hasPw && !hasKey && !existing?.has_password && !existing?.key_path) {
-        toast("error", "Enter a password (or key path) so Late can log in without a prompt");
-        return;
-      }
       const id = device.auth_profile_id || newId();
       const profile: AuthProfile = {
         id,
@@ -682,6 +689,8 @@ function attachSession(
   setState((s) => ({
     ...s,
     hostKey: null,
+    connectFailed: null,
+    connectProgress: null,
     panes: {
       ...s.panes,
       [paneId]: {
@@ -700,32 +709,94 @@ function attachSession(
   }));
 }
 
+let connectEpoch = 0;
+let connectAbort: AbortController | null = null;
+
+export function cancelInFlightConnect() {
+  connectEpoch += 1;
+  connectAbort?.abort();
+  connectAbort = null;
+  setState({ connectProgress: null });
+}
+
+function connectTargetLabel(host: string | undefined, device?: Device, port?: number) {
+  const h = host || device?.host || device?.name || "device";
+  if (port && port !== 22 && host) return `${host}:${port}`;
+  return h;
+}
+
 export async function openSession(
-  device: Device,
+  device?: Device,
   kind?: SessionKind,
   hostKeyFlags?: { acceptUnknownHost?: boolean; replaceHostKey?: boolean; split?: SplitPlacement },
+  login?: SessionLogin,
 ) {
-  const sessionKind = kindForDevice(device, kind);
-  try {
-    const info = await rpc.call<SessionInfo>("session.open", {
-      deviceId: device.id,
-      device_id: device.id,
-      kind: sessionKind,
-      cols: 120,
-      rows: 36,
-      acceptUnknownHost: hostKeyFlags?.acceptUnknownHost,
-      replaceHostKey: hostKeyFlags?.replaceHostKey,
-      accept_unknown_host: hostKeyFlags?.acceptUnknownHost,
-      replace_host_key: hostKeyFlags?.replaceHostKey,
+  const sessionKind = device ? kindForDevice(device, kind) : (kind ?? "ssh");
+  const host = login?.host?.trim() || device?.host || undefined;
+  const port = login?.port ?? device?.port ?? 22;
+  const username = login?.username?.trim() || undefined;
+  const password = login?.password || undefined;
+  const keyPath = login?.keyPath?.trim() || undefined;
+  const epoch = ++connectEpoch;
+  connectAbort?.abort();
+  const ac = new AbortController();
+  connectAbort = ac;
+  const needsProgress = sessionKind === "ssh" || sessionKind === "sftp";
+  if (needsProgress && !getState().connectPrompt) {
+    setState({
+      connectFailed: null,
+      connectProgress: { host: connectTargetLabel(host, device, port) },
     });
-    attachSession(info, device.id, sessionKind, hostKeyFlags?.split);
+  } else {
+    setState({ connectFailed: null });
+  }
+  try {
+    const info = await rpc.call<SessionInfo>(
+      "session.open",
+      {
+        deviceId: device?.id,
+        device_id: device?.id,
+        kind: sessionKind,
+        cols: 120,
+        rows: 36,
+        host: sessionKind === "ssh" || sessionKind === "sftp" ? host : undefined,
+        port: sessionKind === "ssh" || sessionKind === "sftp" ? port : undefined,
+        username,
+        password: password || undefined,
+        keyPath,
+        key_path: keyPath,
+        name: login?.name || device?.name || host,
+        vendor: login?.vendor || device?.vendor,
+        saveSession: Boolean(login?.saveSession),
+        save_session: Boolean(login?.saveSession),
+        savePassword: Boolean(login?.savePassword),
+        save_password: Boolean(login?.savePassword),
+        acceptUnknownHost: hostKeyFlags?.acceptUnknownHost,
+        replaceHostKey: hostKeyFlags?.replaceHostKey,
+        accept_unknown_host: hostKeyFlags?.acceptUnknownHost,
+        replace_host_key: hostKeyFlags?.replaceHostKey,
+      },
+      { timeoutMs: 28_000, signal: ac.signal },
+    );
+    if (epoch !== connectEpoch) {
+      void rpc.call("session.close", { sessionId: info.id, session_id: info.id }).catch(() => undefined);
+      return;
+    }
+    attachSession(info, device?.id ?? info.device_id ?? undefined, sessionKind, hostKeyFlags?.split);
+    setState({ connectPrompt: null, deviceEditor: null, connectProgress: null, connectFailed: null });
     await refreshAll();
   } catch (err) {
+    if (epoch !== connectEpoch || isCancelled(err)) {
+      setState({ connectProgress: null });
+      return;
+    }
     const hk = isHostKeyError(err);
     if (hk) {
       setState({
+        connectPrompt: null,
+        connectProgress: null,
         hostKey: {
-          host: hk.host || device.host || device.name,
+          host: hk.host || host || device?.host || device?.name || "",
           presented: hk.presented ?? "unknown fingerprint",
           pinned: hk.pinned,
           mismatch: hk.mismatch,
@@ -743,18 +814,82 @@ export async function openSession(
                 /* session.open flags still pin if this method is missing */
               }
             }
-            await openSession(device, sessionKind, {
-              acceptUnknownHost: true,
-              replaceHostKey: hk.mismatch,
-              split: hostKeyFlags?.split,
-            });
+            await openSession(
+              device,
+              sessionKind,
+              {
+                acceptUnknownHost: true,
+                replaceHostKey: hk.mismatch,
+                split: hostKeyFlags?.split,
+              },
+              login,
+            );
           },
         },
       });
       return;
     }
+    const fail = isConnectError(err);
+    if (fail) {
+      const label = fail.host || connectTargetLabel(host, device, port);
+      setState({
+        connectPrompt: null,
+        connectProgress: null,
+        connectFailed: {
+          host: label,
+          reason: fail.reason,
+          cause: fail.cause,
+          retry: async () => {
+            setState({ connectFailed: null });
+            await openSession(device, sessionKind, hostKeyFlags, login);
+          },
+        },
+      });
+      return;
+    }
+    setState({ connectProgress: null });
     toast("error", errText(err));
+  } finally {
+    if (connectAbort === ac) connectAbort = null;
   }
+}
+
+export function startQuickConnect(split?: SplitPlacement) {
+  setState({
+    connectPrompt: {
+      kind: "ssh",
+      split,
+      port: 22,
+    },
+  });
+}
+
+export function startConnectPrompt(device: Device, kind?: SessionKind, split?: SplitPlacement) {
+  const auth = getState().auth.find((p) => p.id === (device.auth_profile_id ?? ""));
+  setState({
+    connectPrompt: {
+      device,
+      kind,
+      split,
+      host: device.host ?? "",
+      port: device.port ?? 22,
+      username: auth?.username ?? "",
+      hasSavedPassword: Boolean(auth?.has_password),
+    },
+  });
+}
+
+/** Saved SSH: one click when a password, key, or agent is already stored; otherwise prompt. */
+export function connectDevice(device: Device, kind?: SessionKind, split?: SplitPlacement) {
+  if ((kind ?? kindForDevice(device)) === "ssh") {
+    const auth = getState().auth.find((p) => p.id === (device.auth_profile_id ?? ""));
+    const hasLogin = Boolean(auth?.has_password || auth?.key_path || auth?.use_agent);
+    if (!hasLogin) {
+      startConnectPrompt(device, kind, split);
+      return;
+    }
+  }
+  void openSession(device, kind, split ? { split } : undefined);
 }
 
 export async function openLocal(shell?: string) {
@@ -792,9 +927,11 @@ export async function reconnectPane(paneId: string) {
     }));
   } catch (err) {
     const hk = isHostKeyError(err);
+    const fail = isConnectError(err);
     const device = state.inventory.devices.find((d) => d.id === pane.deviceId);
     if (hk && device) {
       setState({
+        connectPrompt: null,
         hostKey: {
           host: hk.host,
           presented: hk.presented ?? "",
@@ -823,6 +960,24 @@ export async function reconnectPane(paneId: string) {
       });
       return;
     }
+    if (fail && (pane.kind === "ssh" || pane.session?.kind === "ssh" || pane.kind === "sftp")) {
+      setState({
+        connectPrompt: null,
+        connectProgress: null,
+        connectFailed: {
+          host: fail.host || device?.host || pane.session?.name || "device",
+          reason: fail.reason,
+          cause: fail.cause,
+          retry: async () => {
+            setState({ connectFailed: null });
+            if (device) await openSession(device, pane.session?.kind);
+            else await reconnectPane(paneId);
+          },
+        },
+      });
+      markDisconnected(oldId, fail.reason);
+      return;
+    }
     toast("error", errText(err));
     markDisconnected(oldId, errText(err));
   } finally {
@@ -835,11 +990,39 @@ export async function closePaneSession(paneId: string) {
 }
 
 export async function sendInput(sessionId: string, text: string) {
-  await rpc.call("session.input", { sessionId, session_id: sessionId, data: textToB64(text) });
+  await rpc.sendTermInput(sessionId, text);
 }
 
-export async function resizeSession(sessionId: string, cols: number, rows: number) {
-  await rpc.call("session.resize", { sessionId, session_id: sessionId, cols, rows }).catch(() => undefined);
+const pendingResize = new Map<string, { cols: number; rows: number }>();
+const resizeTimers = new Map<string, number>();
+
+export function resizeSession(sessionId: string, cols: number, rows: number) {
+  pendingResize.set(sessionId, { cols, rows });
+  const prev = resizeTimers.get(sessionId);
+  if (prev) window.clearTimeout(prev);
+  const t = window.setTimeout(() => {
+    resizeTimers.delete(sessionId);
+    const r = pendingResize.get(sessionId);
+    pendingResize.delete(sessionId);
+    if (!r) return;
+    void rpc
+      .call("session.resize", { sessionId, session_id: sessionId, cols: r.cols, rows: r.rows })
+      .catch(() => undefined);
+  }, 75);
+  resizeTimers.set(sessionId, t);
+}
+
+export async function disconnectPane(paneId: string) {
+  const pane = state.panes[paneId];
+  if (!pane?.session || pane.disconnected) return;
+  const sid = pane.session.id;
+  noteUserClosed(sid);
+  try {
+    await rpc.call("session.close", { sessionId: sid, session_id: sid });
+  } catch {
+    /* already gone */
+  }
+  markDisconnected(sid, "Disconnected");
 }
 
 export async function sendBreak(sessionId: string) {
@@ -1437,7 +1620,7 @@ export function markDisconnected(sessionId: string, reason?: string) {
         };
       }
     }
-    return { ...s, panes };
+    return { ...s, panes, sessions: s.sessions.filter((x) => x.id !== sessionId) };
   });
 }
 
@@ -1459,11 +1642,6 @@ rpc.onClosed((sessionId, reason) => {
   if (reconnectingSessions.has(sessionId)) return;
   if (userClosedSessions.has(sessionId) || reason === "closed") {
     userClosedSessions.delete(sessionId);
-    return;
-  }
-  const pane = Object.values(getState().panes).find((p) => p.session?.id === sessionId);
-  if (pane?.kind === "serial") {
-    void reconnectPane(pane.id);
     return;
   }
   markDisconnected(sessionId, reason);
@@ -1507,6 +1685,8 @@ export function boot() {
       if (ok && !getState().daemonOk) void refreshAll();
       if (!ok) setState({ daemonOk: false, daemonError: getState().daemonError ?? "daemon unreachable" });
     });
+    void sidecarHealth().then((ok) => setState({ sidecarOk: ok }));
   }, 4000);
+  void sidecarHealth().then((ok) => setState({ sidecarOk: ok }));
 }
 

@@ -46,6 +46,9 @@ import {
   upsertDevice,
   useApp,
   inferenceStatus,
+  startQuickConnect,
+  connectDevice,
+  cancelInFlightConnect,
 } from "../store";
 import { rpc } from "../lib/rpc";
 import {
@@ -67,6 +70,7 @@ import {
   type AuthProfile,
   type Device,
   type DeviceKind,
+  type SessionLogin,
   type Vendor,
 } from "../types";
 import { loadUpdateCheckOnStart, persistUpdateCheckOnStart } from "../lib/updatePrefs";
@@ -100,10 +104,15 @@ export function Modals() {
   const captureOpen = useApp((s) => s.captureOpen);
   const authOpen = useApp((s) => s.authOpen);
   const deviceEditor = useApp((s) => s.deviceEditor);
+  const connectPrompt = useApp((s) => s.connectPrompt);
+  const connectFailed = useApp((s) => s.connectFailed);
+  const connectProgress = useApp((s) => s.connectProgress);
   const updatePrompt = useApp((s) => s.updatePrompt);
   return (
     <>
       {hostKey && <HostKeyModal />}
+      {connectFailed && <ConnectFailedModal />}
+      {connectProgress && !connectPrompt && !hostKey && !connectFailed && <ConnectingModal />}
       {approval && <ApprovalModal key={approval.proposalId} />}
       {paletteOpen && <Palette />}
       {importOpen && <ImportModal />}
@@ -113,6 +122,7 @@ export function Modals() {
       {captureOpen && <CaptureModal />}
       {authOpen && <AuthModal />}
       {deviceEditor && <DeviceModal key={deviceEditor.id} device={deviceEditor} />}
+      {connectPrompt && <ConnectModal />}
       {updatePrompt && <UpdateModal snapshot={updatePrompt} />}
       <DockerFirstRunModal />
     </>
@@ -144,7 +154,12 @@ function DockerFirstRunModal() {
     }
     setOpen(false);
   }
-  if (!open) return null;
+  const hostKey = useApp((s) => s.hostKey);
+  const connectPrompt = useApp((s) => s.connectPrompt);
+  const connectFailed = useApp((s) => s.connectFailed);
+  const connectProgress = useApp((s) => s.connectProgress);
+  const deviceEditor = useApp((s) => s.deviceEditor);
+  if (!open || hostKey || connectPrompt || connectFailed || connectProgress || deviceEditor) return null;
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
   const win = /Windows/i.test(ua);
   const mac = /Mac OS X|Macintosh/i.test(ua);
@@ -217,6 +232,7 @@ function HostKeyModal() {
   }
   function cancel() {
     if (busy) return;
+    cancelInFlightConnect();
     setState({ hostKey: null });
   }
   useEffect(() => {
@@ -241,6 +257,89 @@ function HostKeyModal() {
           </button>
           <button type="button" className="primary" onClick={() => void accept()} disabled={busy}>
             {busy ? "Connecting…" : hostKey.mismatch ? "Replace pin and connect" : "Trust and connect"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectingModal() {
+  const progress = useApp((s) => s.connectProgress)!;
+  function cancel() {
+    cancelInFlightConnect();
+    setState({ connectPrompt: null });
+  }
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancel();
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  return (
+    <div className="modal-root connect-failed" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="connecting-title">
+        <h2 id="connecting-title">Connecting…</h2>
+        <p>Late is contacting {progress.host}. This stops on its own if the host does not answer.</p>
+        <div className="actions">
+          <button type="button" className="ghost" onClick={cancel}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConnectFailedModal() {
+  const fail = useApp((s) => s.connectFailed)!;
+  const [busy, setBusy] = useState(false);
+  function ok() {
+    if (busy) return;
+    setState({ connectFailed: null });
+  }
+  async function retry() {
+    if (busy) return;
+    setBusy(true);
+    const run = fail.retry;
+    setState({ connectFailed: null });
+    try {
+      await run();
+    } catch (err) {
+      toast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      ok();
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+  return (
+    <div className="modal-root connect-failed" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="unable-connect-title">
+        <h2 id="unable-connect-title">Unable to Connect</h2>
+        <p>
+          Late could not open a session to <strong>{fail.host}</strong>
+          {fail.reason ? ` (${fail.reason})` : ""}.
+        </p>
+        <p className="hint">The attempt stopped. Nothing is retrying in the background.</p>
+        <div className="actions">
+          <button type="button" className="ghost" onClick={ok} disabled={busy}>
+            OK
+          </button>
+          <button type="button" className="primary" onClick={() => void retry()} disabled={busy}>
+            {busy ? "Connecting…" : "Retry"}
           </button>
         </div>
       </div>
@@ -403,7 +502,8 @@ function Palette() {
     { id: "keys", label: "API keys", run: () => setState({ keysOpen: true }) },
     { id: "auth", label: "Auth profiles", run: () => setState({ authOpen: true }) },
     { id: "cap", label: "Captures / diff", run: () => setState({ captureOpen: true }) },
-    { id: "add-ssh", label: "New SSH session", run: () => startDeviceEditor(undefined, "ssh") },
+    { id: "quick", label: "Quick Connect (SSH)", run: () => startQuickConnect() },
+    { id: "add-ssh", label: "SSH session (advanced)", run: () => startDeviceEditor(undefined, "ssh") },
     { id: "add-serial", label: "New serial console", run: () => startDeviceEditor(undefined, "serial") },
     { id: "add-api", label: "New API controller", run: () => startDeviceEditor(undefined, "api") },
     { id: "zoom-in", label: "Larger terminal text", run: () => bumpTermFont(1) },
@@ -413,7 +513,7 @@ function Palette() {
     { id: "theme-paper", label: "Theme: Paper", run: () => patchAppearance({ theme: "paper" }) },
     { id: "theme-contrast", label: "Theme: High contrast", run: () => patchAppearance({ theme: "contrast" }) },
     { id: "theme-nord", label: "Theme: Nord", run: () => patchAppearance({ theme: "nord" }) },
-    ...devices.map((d) => ({ id: d.id, label: `Connect ${d.name}`, run: () => void openSession(d) })),
+    ...devices.map((d) => ({ id: d.id, label: `Connect ${d.name}`, run: () => connectDevice(d) })),
     ...devices
       .filter((d) => d.kind === "ssh")
       .map((d) => ({ id: `scp-${d.id}`, label: `SCP ${d.name}`, run: () => void openSession(d, "sftp") })),
@@ -1391,8 +1491,8 @@ function PermitListSection() {
     <div className="permit-list">
       <h3>Permit list</h3>
       <p className="hint">
-        Commands Late may type on the switch on <strong>your computer</strong> after you click{" "}
-        <strong>Approve</strong>. This is not the MCP grant-folder list (folders a helper may write
+        Commands Late may type on the device after you click <strong>Approve</strong> (on{" "}
+        <strong>your computer</strong>). This is not the MCP grant-folder list (folders a helper may write
         after Approve). Linux has no permit list and no always-allow.
       </p>
       <label>
@@ -1640,6 +1740,197 @@ const SESSION_TYPES: { kind: DeviceKind; title: string; hint: string }[] = [
 
 const BAUD_RATES = [9600, 19200, 38400, 57600, 115200];
 
+function matchingSshDevice(host: string, port: number, devices: Device[]): Device | undefined {
+  const h = host.trim().toLowerCase();
+  if (!h) return undefined;
+  return devices.find(
+    (d) => d.kind === "ssh" && (d.host ?? "").toLowerCase() === h && (d.port ?? 22) === port,
+  );
+}
+
+function ConnectModal() {
+  const prompt = useApp((s) => s.connectPrompt)!;
+  const devices = useApp((s) => s.inventory.devices);
+  const auth = useApp((s) => s.auth);
+  const saved = prompt.device;
+  const [host, setHost] = useState(prompt.host ?? saved?.host ?? "");
+  const [port, setPort] = useState(String(prompt.port ?? saved?.port ?? 22));
+  const [username, setUsername] = useState(prompt.username ?? "");
+  const [password, setPassword] = useState("");
+  const [persist, setPersist] = useState<"one-time" | "save">(saved ? "one-time" : "one-time");
+  const [savePassword, setSavePassword] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const portNum = Number(port) || 22;
+  const match = matchingSshDevice(host, portNum, devices);
+  const matchAuth = auth.find((p) => p.id === (match?.auth_profile_id ?? saved?.auth_profile_id ?? ""));
+  const hasSavedPassword = prompt.hasSavedPassword || Boolean(matchAuth?.has_password);
+  const knownDevice = saved ?? match;
+
+  useEffect(() => {
+    if (username || !matchAuth?.username) return;
+    setUsername(matchAuth.username);
+  }, [matchAuth?.username, username]);
+
+  async function connect(e?: { preventDefault(): void }) {
+    e?.preventDefault();
+    if (busy) return;
+    const h = host.trim();
+    if (!h) {
+      toast("error", "Hostname or IP is required");
+      return;
+    }
+    if (!username.trim()) {
+      toast("error", "Username is required");
+      return;
+    }
+    const saveSession = persist === "save";
+    const login: SessionLogin = {
+      host: h,
+      port: portNum,
+      username: username.trim(),
+      password: password || undefined,
+      saveSession,
+      savePassword: saveSession && savePassword,
+      name: saved?.name || match?.name || h,
+    };
+    setBusy(true);
+    try {
+      await openSession(
+        knownDevice,
+        prompt.kind ?? "ssh",
+        prompt.split ? { split: prompt.split } : undefined,
+        login,
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      className="modal-root"
+      onMouseDown={() => {
+        cancelInFlightConnect();
+        setState({ connectPrompt: null });
+      }}
+    >
+      <form className="modal" onMouseDown={(e) => e.stopPropagation()} onSubmit={(e) => void connect(e)}>
+        <h2>{saved ? `Connect ${saved.name}` : "Quick Connect"}</h2>
+        <p className="hint">
+          {saved
+            ? "Use the saved login, or type a password for this session only."
+            : "Host, port, username, password — then Connect. You do not have to save a session first."}
+        </p>
+        <div className="row">
+          <label>
+            Hostname / IP
+            <input
+              autoFocus={!saved}
+              placeholder="10.1.0.12"
+              autoComplete="off"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+            />
+          </label>
+          <label>
+            Port
+            <input
+              type="number"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="row">
+          <label>
+            Username
+            <input
+              autoFocus={Boolean(saved)}
+              placeholder="admin"
+              autoComplete="off"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={hasSavedPassword ? "saved — leave blank to use" : ""}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+        </div>
+        {match && !saved && (
+          <p className="hint">
+            Saved session {match.name} matches this host. Leave the password blank to use the stored login, or type a new one for this time.
+          </p>
+        )}
+        <div className="persist-choice" role="radiogroup" aria-label="Save credentials">
+          <label className="check">
+            <input
+              type="radio"
+              name="late-persist"
+              checked={persist === "one-time"}
+              onChange={() => setPersist("one-time")}
+            />
+            One-time connection — forget the password when this session closes
+          </label>
+          <label className="check">
+            <input
+              type="radio"
+              name="late-persist"
+              checked={persist === "save"}
+              onChange={() => setPersist("save")}
+            />
+            Save session
+          </label>
+          {persist === "save" && (
+            <label className="check" style={{ marginLeft: 22 }}>
+              <input
+                type="checkbox"
+                checked={savePassword}
+                onChange={(e) => setSavePassword(e.target.checked)}
+              />
+              Save password (0600 secret file on your computer)
+            </label>
+          )}
+        </div>
+        <div className="actions">
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              cancelInFlightConnect();
+              setState({ connectPrompt: null });
+            }}
+          >
+            Cancel
+          </button>
+          {!saved && (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                cancelInFlightConnect();
+                setState({ connectPrompt: null });
+                startDeviceEditor(undefined, "ssh");
+              }}
+            >
+              More options
+            </button>
+          )}
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? "Connecting…" : "Connect"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function pick<T>(d: Device, snake: keyof Device, camel: string): T | undefined {
   const rec = d as unknown as Record<string, unknown>;
   return (rec[snake as string] ?? rec[camel]) as T | undefined;
@@ -1655,6 +1946,8 @@ function DeviceModal({ device }: { device: Device }) {
   const [username, setUsername] = useState(linked?.username ?? "");
   const [password, setPassword] = useState("");
   const [keyPath, setKeyPath] = useState(linked?.key_path ?? "");
+  const [persist, setPersist] = useState<"one-time" | "save">("save");
+  const [savePassword, setSavePassword] = useState(false);
 
   useEffect(() => {
     if (d.kind !== "serial") return;
@@ -1792,8 +2085,8 @@ function DeviceModal({ device }: { device: Device }) {
               </label>
             </div>
             <p className="hint">
-              Late logs in automatically from this session. The password is stored in a 0600 secret
-              file, never in inventory and never on the SSH command line.
+              Connect logs in from this dialog. One-time never writes the password. Save session
+              stores the host on your computer; Save password uses the 0600 secret file.
             </p>
             <label>
               Private key (optional)
@@ -1978,10 +2271,73 @@ function DeviceModal({ device }: { device: Device }) {
           </>
         )}
 
+        {d.kind === "ssh" && (
+          <div className="persist-choice" role="radiogroup" aria-label="Save credentials">
+            <label className="check">
+              <input
+                type="radio"
+                name="late-editor-persist"
+                checked={persist === "one-time"}
+                onChange={() => setPersist("one-time")}
+              />
+              One-time connection — forget the password when this session closes
+            </label>
+            <label className="check">
+              <input
+                type="radio"
+                name="late-editor-persist"
+                checked={persist === "save"}
+                onChange={() => setPersist("save")}
+              />
+              Save session
+            </label>
+            {persist === "save" && (
+              <label className="check" style={{ marginLeft: 22 }}>
+                <input
+                  type="checkbox"
+                  checked={savePassword}
+                  onChange={(e) => setSavePassword(e.target.checked)}
+                />
+                Save password
+              </label>
+            )}
+          </div>
+        )}
+
         <div className="actions">
           <button className="ghost" onClick={() => setState({ deviceEditor: null })}>
             Cancel
           </button>
+          {persist === "save" && (
+            <button
+              className="ghost"
+              onClick={() => {
+                const name = d.name.trim() || (d.kind === "serial" ? serialPath || "serial" : d.host || "session");
+                const body = {
+                  ...d,
+                  name,
+                  folder: normalizeFolderPath(d.folder),
+                  serial_path: d.kind === "serial" ? serialPath || d.serial_path : null,
+                  host: d.kind === "ssh" || d.kind === "api" ? d.host : null,
+                  port: d.kind === "ssh" ? d.port ?? 22 : null,
+                  baud: d.kind === "serial" ? d.baud ?? 9600 : null,
+                  api_base_url: d.kind === "api" ? apiUrl : null,
+                  auth_profile_id: d.kind === "serial" || d.kind === "local" ? null : authId || null,
+                };
+                if (d.kind === "ssh") {
+                  void saveDeviceWithLogin(body, {
+                    username,
+                    password: savePassword ? password || undefined : undefined,
+                    keyPath: keyPath.trim() || null,
+                  });
+                } else {
+                  void upsertDevice(body);
+                }
+              }}
+            >
+              Save
+            </button>
+          )}
           <button
             className="primary"
             onClick={() => {
@@ -1998,17 +2354,29 @@ function DeviceModal({ device }: { device: Device }) {
                 auth_profile_id: d.kind === "serial" || d.kind === "local" ? null : authId || null,
               };
               if (d.kind === "ssh") {
-                void saveDeviceWithLogin(body, {
+                const saveSession = persist === "save";
+                void openSession(body, undefined, undefined, {
+                  host: body.host ?? undefined,
+                  port: body.port ?? 22,
                   username,
                   password: password || undefined,
                   keyPath: keyPath.trim() || null,
+                  saveSession,
+                  savePassword: saveSession && savePassword,
+                  name,
+                  vendor: d.vendor,
                 });
-              } else {
-                void upsertDevice(body);
+                return;
               }
+              if (d.kind === "local") {
+                void openLocal(d.shell ?? undefined);
+                setState({ deviceEditor: null });
+                return;
+              }
+              void upsertDevice(body).then(() => void openSession(body));
             }}
           >
-            Save session
+            Connect
           </button>
         </div>
       </div>

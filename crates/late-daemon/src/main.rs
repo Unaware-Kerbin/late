@@ -6,7 +6,10 @@ use axum::extract::State;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use axum::serve::ListenerExt;
 use axum::{Json, Router};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use clap::Parser;
 use late_core::origin::{is_allowed_origin, is_loopback_host_header};
 use late_core::App;
@@ -52,6 +55,9 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("late-daemon listening on {bind}");
     let listener = tokio::net::TcpListener::bind(bind).await?;
+    let listener = listener.tap_io(|stream| {
+        let _ = stream.set_nodelay(true);
+    });
     axum::serve(listener, router).await?;
     Ok(())
 }
@@ -165,10 +171,7 @@ async fn health() -> Json<Value> {
 }
 
 /// Sidecar-only. Rejects browser Origin. Same Host + token gate as `/rpc`.
-async fn internal_provider_keys(
-    State(app): State<App>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn internal_provider_keys(State(app): State<App>, headers: HeaderMap) -> impl IntoResponse {
     if headers.get(header::ORIGIN).is_some() {
         return (
             StatusCode::FORBIDDEN,
@@ -234,8 +237,16 @@ async fn ws_loop(mut socket: WebSocket, app: App) {
                 match incoming {
                     Some(Ok(Message::Text(t))) => {
                         let resp = rpc::handle(&app, t.as_str()).await;
+                        if resp.is_empty() {
+                            continue;
+                        }
                         if socket.send(Message::Text(resp.into())).await.is_err() {
                             break;
+                        }
+                    }
+                    Some(Ok(Message::Binary(b))) => {
+                        if let Some((id, data)) = rpc::parse_term_input_frame(&b) {
+                            let _ = app.write(&id, &data);
                         }
                     }
                     Some(Ok(Message::Ping(p))) => {
@@ -249,13 +260,26 @@ async fn ws_loop(mut socket: WebSocket, app: App) {
             ev = events.recv() => {
                 match ev {
                     Ok(e) => {
+                        if e.event == "session.data" {
+                            if let Some(ref b64) = e.data {
+                                if let Ok(raw) = STANDARD.decode(b64) {
+                                    let frame = rpc::encode_term_data_frame(&e.session_id, &raw);
+                                    if socket.send(Message::Binary(frame.into())).await.is_err() {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
                         if let Ok(s) = serde_json::to_string(&e) {
                             if socket.send(Message::Text(s.into())).await.is_err() {
                                 break;
                             }
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("websocket lagged; dropped {n} session events");
+                    }
                     Err(_) => {
                         events = app.events.subscribe();
                     }

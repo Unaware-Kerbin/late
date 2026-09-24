@@ -30,7 +30,11 @@ const GGUF_LIBRARY: &[(&str, u32, &str)] = &[
     ("unsloth/Qwen3.5-4B-GGUF", 3, "Qwen3.5 4B instruct GGUF"),
     ("unsloth/Qwen3.5-9B-GGUF", 6, "Qwen3.5 9B instruct GGUF"),
     ("unsloth/Qwen3.8-27B-GGUF", 16, "Newest Qwen dense 27B GGUF"),
-    ("Qwen/Qwen2.5-7B-Instruct-GGUF", 5, "Qwen2.5 instruct GGUF (previous)"),
+    (
+        "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        5,
+        "Qwen2.5 instruct GGUF (previous)",
+    ),
     (
         "google/gemma-4-E2B-it-qat-q4_0-gguf",
         3,
@@ -146,9 +150,17 @@ const OLLAMA_LIBRARY: &[(&str, u32, &str)] = &[
     ("qwen3:4b", 3, "Ollama library, Qwen3 4B (previous)"),
     ("qwen3:8b", 5, "Ollama library, Qwen3 8B"),
     ("qwen3:14b", 9, "Ollama library, Qwen3 14B"),
-    ("qwen3:32b", 20, "Ollama library, Qwen3 32B (previous vs 3.8)"),
+    (
+        "qwen3:32b",
+        20,
+        "Ollama library, Qwen3 32B (previous vs 3.8)",
+    ),
     ("qwen2.5:7b", 5, "Ollama library, Qwen 2.5 (previous)"),
-    ("qwen2.5:14b", 9, "Ollama library, Qwen 2.5 larger (previous)"),
+    (
+        "qwen2.5:14b",
+        9,
+        "Ollama library, Qwen 2.5 larger (previous)",
+    ),
     ("mistral-small3.2", 15, "Ollama library, Mistral Small 3.2"),
     ("mistral", 5, "Ollama library, Mistral (previous)"),
     ("phi4", 9, "Ollama library, Phi-4"),
@@ -384,7 +396,8 @@ fn ollama_status(settings: &AppSettings) -> InferenceStatus {
                     j.last_error = Some(format!(
                         "ollama serve exited {} — {}",
                         st.code().unwrap_or(-1),
-                        tail_log(&ollama_serve_log()).unwrap_or_else(|| "see logs/ollama-serve.log".into())
+                        tail_log(&ollama_serve_log())
+                            .unwrap_or_else(|| "see logs/ollama-serve.log".into())
                     ));
                 }
                 j.starting = false;
@@ -1270,7 +1283,9 @@ fn list_gguf_models(gpu: &GpuProfile) -> Vec<LocalModel> {
     let mut out = scan_gguf_dir();
     out.extend(scan_hf_gguf_cache());
     for m in &mut out {
-        if let Some(r) = recs.iter().find(|r| r.id == m.id || m.id.starts_with(&format!("{}:", r.id)))
+        if let Some(r) = recs
+            .iter()
+            .find(|r| r.id == m.id || m.id.starts_with(&format!("{}:", r.id)))
         {
             m.recommended = r.recommended;
             m.newest = r.newest;
@@ -1716,7 +1731,10 @@ fn write_owned_pid_at(
             "could not read {fallback_comm} starttime; Stop will only kill the child we spawned"
         )));
     }
-    write_private(path, format!("pid={pid}\nstarttime={starttime}\ncomm={comm}\n"))
+    write_private(
+        path,
+        format!("pid={pid}\nstarttime={starttime}\ncomm={comm}\n"),
+    )
 }
 
 fn read_owned_pid() -> Option<OwnedPid> {
@@ -1990,7 +2008,9 @@ mod tests {
     fn bundled_bin_wins_over_path() {
         // Same lock as stage PATH fakes. A second mutex here raced CI:
         // ansible-playbook vanished from PATH mid-plan_push.
-        let _path = crate::stage::TEST_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path = crate::stage::TEST_PATH_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bundle = tempfile::tempdir().unwrap();
         let path_dir = tempfile::tempdir().unwrap();
@@ -2074,7 +2094,9 @@ mod tests {
         let gguf = crate::hardware::rank_quant_catalog(GGUF_LIBRARY, &gpu8());
         assert_eq!(gguf.len(), GGUF_LIBRARY.len());
         assert!(GGUF_LIBRARY.len() > 15, "GGUF catalog is not a 2-row slice");
-        assert!(gguf.iter().any(|r| r.id == "Qwen/Qwen3-8B-GGUF" && r.newest && r.recommended));
+        assert!(gguf
+            .iter()
+            .any(|r| r.id == "Qwen/Qwen3-8B-GGUF" && r.newest && r.recommended));
         assert!(gguf
             .iter()
             .any(|r| r.id == "Qwen/Qwen2.5-7B-Instruct-GGUF" && !r.newest));
@@ -2092,12 +2114,19 @@ mod tests {
 
         let ollama = crate::hardware::rank_quant_catalog(OLLAMA_LIBRARY, &gpu8());
         assert_eq!(ollama.len(), OLLAMA_LIBRARY.len());
-        assert!(OLLAMA_LIBRARY.len() > 20, "Ollama catalog is not a 2-row slice");
-        assert!(ollama.iter().any(|r| r.id == "qwen3:8b" && r.newest && r.recommended));
+        assert!(
+            OLLAMA_LIBRARY.len() > 20,
+            "Ollama catalog is not a 2-row slice"
+        );
+        assert!(ollama
+            .iter()
+            .any(|r| r.id == "qwen3:8b" && r.newest && r.recommended));
         assert!(ollama.iter().any(|r| r.id == "qwen2.5:7b" && !r.newest));
         assert!(ollama.iter().any(|r| r.id == "gemma4:e4b" && r.newest));
         assert!(ollama.iter().any(|r| r.id == "gemma3:4b" && !r.newest));
         assert!(ollama.iter().any(|r| r.id == "llama3.3" && !r.recommended));
-        assert!(ollama.iter().any(|r| r.id == "qwen3.8:27b" && r.newest && !r.recommended));
+        assert!(ollama
+            .iter()
+            .any(|r| r.id == "qwen3.8:27b" && r.newest && !r.recommended));
     }
 }

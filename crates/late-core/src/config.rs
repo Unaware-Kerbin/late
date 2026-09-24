@@ -196,7 +196,10 @@ fn url_host_is_loopback(raw: &str) -> bool {
     let Ok(u) = reqwest::Url::parse(raw.trim()) else {
         return false;
     };
-    let host = u.host_str().unwrap_or("").trim_matches(|c| c == '[' || c == ']');
+    let host = u
+        .host_str()
+        .unwrap_or("")
+        .trim_matches(|c| c == '[' || c == ']');
     let h = host.to_ascii_lowercase();
     h == "localhost"
         || h == "localhost.localdomain"
@@ -225,9 +228,8 @@ pub fn validate_mcp_http_url(raw: &str) -> Result<()> {
             "MCP address cannot contain shell or control characters".into(),
         ));
     }
-    let u = reqwest::Url::parse(t).map_err(|_| {
-        LateError::Config("MCP address is not a valid URL".into())
-    })?;
+    let u = reqwest::Url::parse(t)
+        .map_err(|_| LateError::Config("MCP address is not a valid URL".into()))?;
     if u.scheme() != "http" && u.scheme() != "https" {
         return Err(LateError::Config(
             "MCP address must be http:// or https:// (not a file path)".into(),
@@ -239,7 +241,9 @@ pub fn validate_mcp_http_url(raw: &str) -> Result<()> {
         ));
     }
     if u.host_str().unwrap_or("").is_empty() {
-        return Err(LateError::Config("MCP address needs a host (IP or name)".into()));
+        return Err(LateError::Config(
+            "MCP address needs a host (IP or name)".into(),
+        ));
     }
     Ok(())
 }

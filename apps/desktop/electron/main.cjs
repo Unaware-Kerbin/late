@@ -199,7 +199,8 @@ async function startBackend() {
   } else {
     startNpmSidecar(extra);
   }
-  await waitHttp("http://127.0.0.1:7430/health").catch((err) => {
+  // Terminal only needs the daemon. Sidecar can finish after the window is up.
+  void waitHttp("http://127.0.0.1:7430/health").catch((err) => {
     console.error("late: sidecar did not come up", err);
   });
 }

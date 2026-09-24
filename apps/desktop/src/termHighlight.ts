@@ -268,7 +268,10 @@ function findMatches(text: string, rules: Compiled[]): { start: number; end: num
 }
 
 export function colorPlain(text: string, rules: TermHighlightRule[]): string {
-  const compiled = compile(rules);
+  return colorPlainCompiled(text, compile(rules));
+}
+
+function colorPlainCompiled(text: string, compiled: Compiled[]): string {
   if (!compiled.length || !text) return text;
   const hits = findMatches(text, compiled);
   if (!hits.length) return text;
@@ -325,13 +328,17 @@ export function consumeEscape(s: string, i: number): number {
 }
 
 export function colorAnsiAware(s: string, rules: TermHighlightRule[]): string {
-  if (!rules.length || !s) return s;
+  return colorAnsiAwareCompiled(s, compile(rules));
+}
+
+function colorAnsiAwareCompiled(s: string, compiled: Compiled[]): string {
+  if (!compiled.length || !s) return s;
   let out = "";
   let i = 0;
   let plain = "";
   const flushPlain = () => {
     if (plain) {
-      out += colorPlain(plain, rules);
+      out += colorPlainCompiled(plain, compiled);
       plain = "";
     }
   };
@@ -383,7 +390,10 @@ function isPatternPrefix(suffix: string, rules: Compiled[]): boolean {
 
 /** Keep a trailing prefix of a keyword so "do"+"wn" still colors `down`. */
 export function holdPlainSuffix(ready: string, rules: TermHighlightRule[]): { flush: string; hold: string } {
-  const compiled = compile(rules);
+  return holdPlainSuffixCompiled(ready, compile(rules));
+}
+
+function holdPlainSuffixCompiled(ready: string, compiled: Compiled[]): { flush: string; hold: string } {
   if (!compiled.length || !ready) return { flush: ready, hold: "" };
   const maxLen = Math.min(MAX_PATTERN, Math.max(1, ...compiled.map((r) => r.pattern.length)));
   const headAt = lastPlainStart(ready);
@@ -400,7 +410,7 @@ export function holdPlainSuffix(ready: string, rules: TermHighlightRule[]): { fl
 }
 
 export class StreamHighlighter {
-  private rules: TermHighlightRule[] = [];
+  private compiled: Compiled[] = [];
   private enabled = true;
   private buf = "";
 
@@ -411,7 +421,7 @@ export class StreamHighlighter {
   setSettings(s: TermHighlightSettings) {
     const clean = sanitizeHighlights(s);
     this.enabled = clean.enabled;
-    this.rules = resolvedRules(clean);
+    this.compiled = compile(resolvedRules(clean));
   }
 
   feed(chunk: string): string {
@@ -424,16 +434,16 @@ export class StreamHighlighter {
     const incompleteAt = this.incompleteEscapeAt(this.buf);
     const ready = incompleteAt >= 0 ? this.buf.slice(0, incompleteAt) : this.buf;
     const restEsc = incompleteAt >= 0 ? this.buf.slice(incompleteAt) : "";
-    const { flush, hold } = holdPlainSuffix(ready, this.rules);
+    const { flush, hold } = holdPlainSuffixCompiled(ready, this.compiled);
     this.buf = hold + restEsc;
-    return colorAnsiAware(flush, this.rules);
+    return colorAnsiAwareCompiled(flush, this.compiled);
   }
 
   flush(): string {
     const left = this.buf;
     this.buf = "";
     if (!this.enabled) return left;
-    return colorAnsiAware(left, this.rules);
+    return colorAnsiAwareCompiled(left, this.compiled);
   }
 
   private incompleteEscapeAt(s: string): number {

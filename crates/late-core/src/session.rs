@@ -29,6 +29,23 @@ use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use zeroize::Zeroize;
 
+/// Flush PTY output to the UI at least this often (typing echo stays in the ~10ms class).
+const OUTPUT_COALESCE_MS: u64 = 8;
+/// …or sooner when a burst fills this many bytes (`cat`, `show running-config`, `top`).
+const OUTPUT_COALESCE_MAX: usize = 65_536;
+
+fn emit_session_data(events: &broadcast::Sender<AppEvent>, session_id: &str, buf: &[u8]) {
+    if buf.is_empty() {
+        return;
+    }
+    let _ = events.send(AppEvent {
+        event: "session.data".into(),
+        session_id: session_id.into(),
+        data: Some(STANDARD.encode(buf)),
+        reason: None,
+    });
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppEvent {
@@ -40,7 +57,6 @@ pub struct AppEvent {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
 pub struct OpenSession {
     pub device_id: Option<String>,
     pub kind: SessionKind,
@@ -52,6 +68,90 @@ pub struct OpenSession {
     pub path: Option<PathBuf>,
     pub iface: Option<String>,
     pub bpf: Option<String>,
+    pub host: Option<String>,
+    pub port: Option<u16>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub key_path: Option<String>,
+    pub save_session: bool,
+    pub save_password: bool,
+    pub vendor: Option<Vendor>,
+    pub name: Option<String>,
+}
+
+impl OpenSession {
+    pub fn empty() -> Self {
+        Self {
+            device_id: None,
+            kind: SessionKind::Ssh,
+            accept_unknown_host: false,
+            replace_host_key: false,
+            cols: 80,
+            rows: 24,
+            shell: None,
+            path: None,
+            iface: None,
+            bpf: None,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            key_path: None,
+            save_session: false,
+            save_password: false,
+            vendor: None,
+            name: None,
+        }
+    }
+}
+
+impl Clone for OpenSession {
+    fn clone(&self) -> Self {
+        Self {
+            device_id: self.device_id.clone(),
+            kind: self.kind,
+            accept_unknown_host: self.accept_unknown_host,
+            replace_host_key: self.replace_host_key,
+            cols: self.cols,
+            rows: self.rows,
+            shell: self.shell.clone(),
+            path: self.path.clone(),
+            iface: self.iface.clone(),
+            bpf: self.bpf.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            username: self.username.clone(),
+            password: self.password.clone(),
+            key_path: self.key_path.clone(),
+            save_session: self.save_session,
+            save_password: self.save_password,
+            vendor: self.vendor,
+            name: self.name.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for OpenSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenSession")
+            .field("device_id", &self.device_id)
+            .field("kind", &self.kind)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "***"))
+            .field("save_session", &self.save_session)
+            .field("save_password", &self.save_password)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for OpenSession {
+    fn drop(&mut self) {
+        if let Some(ref mut pw) = self.password {
+            pw.zeroize();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -115,7 +215,7 @@ impl App {
         let mut policy = PolicyEngine::load_dir(&bundled)?;
         policy.merge_dir(&paths.config.join("policies"))?;
         let known = KnownHosts::load(&paths)?;
-        let (events, _) = broadcast::channel(1024);
+        let (events, _) = broadcast::channel(4096);
         Ok(Self {
             inventory: InventoryStore::new(paths.clone()),
             secrets: SecretStore::new(paths.clone()),
@@ -351,10 +451,7 @@ impl App {
     pub fn policy_list(&self) -> Vec<PolicyView> {
         let dir = self.paths.config.join("policies");
         let engine = self.policy.lock();
-        Vendor::ALL
-            .iter()
-            .map(|v| engine.view(*v, &dir))
-            .collect()
+        Vendor::ALL.iter().map(|v| engine.view(*v, &dir)).collect()
     }
 
     pub fn policy_get(&self, vendor: Vendor) -> PolicyView {
@@ -409,19 +506,7 @@ impl App {
 
     pub fn open_session(&self, req: OpenSession) -> Result<SessionInfo> {
         match req.kind {
-            SessionKind::Ssh => {
-                let id = req
-                    .device_id
-                    .as_deref()
-                    .ok_or_else(|| LateError::Message("deviceId required".into()))?;
-                self.open_ssh(
-                    id,
-                    req.accept_unknown_host,
-                    req.replace_host_key,
-                    req.cols,
-                    req.rows,
-                )
-            }
+            SessionKind::Ssh => self.open_ssh(req),
             SessionKind::Serial => {
                 let id = req
                     .device_id
@@ -514,66 +599,112 @@ impl App {
         inner.known.save(&self.paths)
     }
 
-    pub fn open_ssh(
-        &self,
-        device_id: &str,
-        accept_unknown_host: bool,
-        replace_host_key: bool,
-        cols: u32,
-        rows: u32,
-    ) -> Result<SessionInfo> {
-        let device = self.inventory.get(device_id)?;
-        let profile_id = device
-            .auth_profile_id
-            .clone()
-            .ok_or_else(|| LateError::Message(
-                "this SSH session has no username/password — edit the session and save login like SecureCRT".into(),
-            ))?;
-        let profile = self.inventory.get_auth(&profile_id)?;
+    pub fn open_ssh(&self, mut req: OpenSession) -> Result<SessionInfo> {
+        let typed_password = req.password.take();
+        let mut prepared = crate::connect::prepare_ssh(
+            &self.inventory,
+            &self.secrets,
+            req.device_id.as_deref(),
+            req.host.as_deref(),
+            req.port,
+            req.name.as_deref(),
+            req.vendor,
+            crate::connect::ConnectLogin {
+                username: req.username.clone(),
+                password: typed_password,
+                key_path: req.key_path.clone(),
+                save_session: req.save_session,
+                save_password: req.save_password,
+            },
+        )?;
+        let session_password = prepared.session_password.take();
         let mut known = self.inner.lock().known.clone();
-        let (io, _fp) = ssh::open_ssh(
-            &device,
-            &profile,
+        let ssh_pw = session_password.clone();
+        let opened = ssh::open_ssh(
+            &prepared.device,
+            &prepared.profile,
             &self.secrets,
             &mut known,
             &self.paths,
             SshConnectOpts {
-                accept_unknown_host,
-                replace_host_key,
+                accept_unknown_host: req.accept_unknown_host,
+                replace_host_key: req.replace_host_key,
             },
-            cols.max(1),
-            rows.max(1),
-        )?;
+            req.cols.max(1),
+            req.rows.max(1),
+            ssh_pw,
+        );
+        let (io, _fp) = match opened {
+            Ok(v) => v,
+            Err(e) => {
+                if let Some(mut pw) = session_password {
+                    pw.zeroize();
+                }
+                return Err(e);
+            }
+        };
         {
             let mut inner = self.inner.lock();
             inner.known = known;
             inner.known.save(&self.paths)?;
         }
+        if prepared.save_session {
+            prepared.session_password = session_password.clone();
+            match crate::connect::commit_ssh(&self.inventory, &self.secrets, &prepared) {
+                Ok((device, profile)) => {
+                    prepared.device = device;
+                    prepared.profile = profile;
+                }
+                Err(e) => tracing::warn!("SSH is open but Late could not save the session: {e}"),
+            }
+        }
+        let persist_password = prepared.save_password;
+        let in_inventory = prepared.save_session || self.inventory.get(&prepared.device.id).is_ok();
+        let device_id = if in_inventory {
+            Some(prepared.device.id.clone())
+        } else {
+            None
+        };
+        let profile_id = prepared.profile.id.clone();
+        let mut reconnect = OpenSession::empty();
+        reconnect.kind = SessionKind::Ssh;
+        reconnect.device_id = device_id.clone();
+        reconnect.host = prepared.device.host.clone();
+        reconnect.port = prepared.device.port;
+        reconnect.username = Some(prepared.profile.username.clone());
+        reconnect.key_path = prepared.profile.key_path.clone();
+        reconnect.vendor = Some(prepared.device.vendor);
+        reconnect.name = Some(prepared.device.name.clone());
+        reconnect.cols = req.cols;
+        reconnect.rows = req.rows;
+        reconnect.accept_unknown_host = req.accept_unknown_host;
+        reconnect.replace_host_key = req.replace_host_key;
+        reconnect.save_session = false;
+        reconnect.save_password = false;
+        if persist_password {
+            if let Some(mut pw) = session_password {
+                pw.zeroize();
+            }
+            reconnect.password = None;
+        } else {
+            reconnect.password = session_password;
+        }
         let info = self.attach(
-            device.name.clone(),
+            prepared.device.name.clone(),
             SessionKind::Ssh,
-            device.vendor,
-            Some(device.id.clone()),
-            device.accent.clone(),
+            prepared.device.vendor,
+            device_id,
+            prepared.device.accent.clone(),
             Some(io.tx),
             Some(io.resize),
             Some(io.close),
             io.rx,
-            Some(OpenSession {
-                device_id: Some(device.id),
-                kind: SessionKind::Ssh,
-                accept_unknown_host,
-                replace_host_key,
-                cols,
-                rows,
-                shell: None,
-                path: None,
-                iface: None,
-                bpf: None,
-            }),
+            Some(reconnect),
         )?;
-        if let Some(s) = self.inner.lock().sessions.get_mut(&info.id) {
-            s.auth_profile_id = Some(profile_id);
+        if in_inventory {
+            if let Some(s) = self.inner.lock().sessions.get_mut(&info.id) {
+                s.auth_profile_id = Some(profile_id);
+            }
         }
         Ok(info)
     }
@@ -597,17 +728,11 @@ impl App {
             None,
             Some(io.close),
             io.rx,
-            Some(OpenSession {
-                device_id: Some(device.id),
-                kind: SessionKind::Serial,
-                accept_unknown_host: false,
-                replace_host_key: false,
-                cols: 80,
-                rows: 24,
-                shell: None,
-                path: None,
-                iface: None,
-                bpf: None,
+            Some({
+                let mut spec = OpenSession::empty();
+                spec.device_id = Some(device.id);
+                spec.kind = SessionKind::Serial;
+                spec
             }),
         )?;
         if let Some(s) = self.inner.lock().sessions.get_mut(&info.id) {
@@ -636,17 +761,13 @@ impl App {
             Some(r32_tx),
             Some(io.close),
             io.rx,
-            Some(OpenSession {
-                device_id: None,
-                kind: SessionKind::Local,
-                accept_unknown_host: false,
-                replace_host_key: false,
-                cols: cols as u32,
-                rows: rows as u32,
-                shell,
-                path: None,
-                iface: None,
-                bpf: None,
+            Some({
+                let mut spec = OpenSession::empty();
+                spec.kind = SessionKind::Local;
+                spec.cols = cols as u32;
+                spec.rows = rows as u32;
+                spec.shell = shell;
+                spec
             }),
         )
     }
@@ -663,17 +784,11 @@ impl App {
             None,
             None,
             broadcast::channel(8).1,
-            Some(OpenSession {
-                device_id: Some(device.id),
-                kind: SessionKind::Sftp,
-                accept_unknown_host: false,
-                replace_host_key: false,
-                cols: 80,
-                rows: 24,
-                shell: None,
-                path: None,
-                iface: None,
-                bpf: None,
+            Some({
+                let mut spec = OpenSession::empty();
+                spec.device_id = Some(device.id);
+                spec.kind = SessionKind::Sftp;
+                spec
             }),
         )
     }
@@ -863,17 +978,11 @@ impl App {
             None,
             None,
             broadcast::channel(8).1,
-            Some(OpenSession {
-                device_id: None,
-                kind: SessionKind::Pcap,
-                accept_unknown_host: false,
-                replace_host_key: false,
-                cols: 80,
-                rows: 24,
-                shell: None,
-                path: Some(path.clone()),
-                iface: None,
-                bpf: None,
+            Some({
+                let mut spec = OpenSession::empty();
+                spec.kind = SessionKind::Pcap;
+                spec.path = Some(path.clone());
+                spec
             }),
         )?;
         self.inner.lock().pcaps.insert(
@@ -1198,17 +1307,11 @@ impl App {
             None,
             None,
             broadcast::channel(8).1,
-            Some(OpenSession {
-                device_id: Some(device.id),
-                kind: SessionKind::Api,
-                accept_unknown_host: false,
-                replace_host_key: false,
-                cols: 80,
-                rows: 24,
-                shell: None,
-                path: None,
-                iface: None,
-                bpf: None,
+            Some({
+                let mut spec = OpenSession::empty();
+                spec.device_id = Some(device.id);
+                spec.kind = SessionKind::Api;
+                spec
             }),
         )
     }
@@ -1774,28 +1877,50 @@ impl App {
         let events = self.events.clone();
         let sid = id.clone();
         tokio::spawn(async move {
-            while let Ok(buf) = rx.recv().await {
-                let mut g = inner.lock();
-                if let Some(s) = g.sessions.get_mut(&sid) {
-                    s.scrollback.extend_from_slice(&buf);
-                    let max = 2_000_000;
-                    if s.scrollback.len() > max {
-                        s.scrollback.drain(0..s.scrollback.len() - max);
+            let mut pending: Vec<u8> = Vec::new();
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_millis(OUTPUT_COALESCE_MS));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    rec = rx.recv() => {
+                        match rec {
+                            Ok(buf) => {
+                                let mut g = inner.lock();
+                                if let Some(s) = g.sessions.get_mut(&sid) {
+                                    s.scrollback.extend_from_slice(&buf);
+                                    let max = 2_000_000;
+                                    if s.scrollback.len() > max {
+                                        s.scrollback.drain(0..s.scrollback.len() - max);
+                                    }
+                                    if let Some(path) = &s.logging_path {
+                                        let _ = crate::fsutil::append_private(path, &buf);
+                                    }
+                                    let _ = s.output.send(buf.clone());
+                                    drop(g);
+                                    pending.extend_from_slice(&buf);
+                                    if pending.len() >= OUTPUT_COALESCE_MAX {
+                                        emit_session_data(&events, &sid, &pending);
+                                        pending.clear();
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    if let Some(path) = &s.logging_path {
-                        let _ = crate::fsutil::append_private(path, &buf);
+                    _ = ticker.tick() => {
+                        if !pending.is_empty() {
+                            emit_session_data(&events, &sid, &pending);
+                            pending.clear();
+                        }
                     }
-                    let _ = s.output.send(buf.clone());
-                    drop(g);
-                    let _ = events.send(AppEvent {
-                        event: "session.data".into(),
-                        session_id: sid.clone(),
-                        data: Some(STANDARD.encode(&buf)),
-                        reason: None,
-                    });
-                } else {
-                    break;
                 }
+            }
+            if !pending.is_empty() {
+                emit_session_data(&events, &sid, &pending);
             }
             let serial_dropped = {
                 let g = inner.lock();
@@ -1840,6 +1965,25 @@ fn bundled_policy_dirs() -> Vec<PathBuf> {
     }
     dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../policies"));
     dirs
+}
+
+#[cfg(test)]
+mod output_coalesce_tests {
+    use super::*;
+
+    #[test]
+    fn coalesce_budget_covers_several_pty_reads() {
+        assert!(OUTPUT_COALESCE_MAX >= 32_768);
+        assert!(OUTPUT_COALESCE_MS <= 16);
+        let (tx, mut rx) = broadcast::channel(4);
+        emit_session_data(&tx, "id", b"");
+        assert!(rx.try_recv().is_err());
+        emit_session_data(&tx, "a1b2c3d4-e5f6-7890-abcd-ef1234567890", b"hi");
+        let ev = rx.try_recv().unwrap();
+        assert_eq!(ev.event, "session.data");
+        assert_eq!(ev.session_id, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        assert_eq!(ev.data.as_deref(), Some("aGk="));
+    }
 }
 
 pub fn first_bundled_policy_dir() -> PathBuf {
@@ -2084,7 +2228,9 @@ mod stage_push_tests {
                 std::fs::set_permissions(&p, perms).unwrap();
             }
         }
-        let _path = crate::stage::TEST_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path = crate::stage::TEST_PATH_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let old = std::env::var("PATH").ok();
         std::env::set_var("PATH", &bindir);
         let plan = app.stage_plan(
@@ -2292,7 +2438,9 @@ mod stage_push_tests {
             .unwrap();
         assert!(pushed.ok, "{}", pushed.display);
         assert!(pushed.display.contains("2 line"), "{}", pushed.display);
-        let first = rx.try_recv().expect("CLI Push must type into the saved session");
+        let first = rx
+            .try_recv()
+            .expect("CLI Push must type into the saved session");
         assert!(String::from_utf8_lossy(&first).contains("vlan 2500"));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2314,7 +2462,10 @@ mod stage_push_tests {
             .unwrap();
         assert!(art.body.contains("vlan 2000"), "{}", art.body);
         assert!(art.body.contains("name VLAN2000"), "{}", art.body);
-        assert!(!art.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+        assert!(!art
+            .body
+            .to_ascii_lowercase()
+            .contains("replace with vendor syntax"));
         let target = app
             .resolve_push_target(None, Some("ssh-sess-1"), &art)
             .unwrap()
@@ -2340,27 +2491,30 @@ mod stage_push_tests {
             )
             .unwrap();
         assert!(
-            art.body.to_ascii_lowercase().contains("replace with vendor syntax")
+            art.body
+                .to_ascii_lowercase()
+                .contains("replace with vendor syntax")
                 || art.vendor == "generic",
             "{}",
             art.body
         );
-        let filled = app
-            .stage_plan(
-                Some(&art.id),
-                "ansible",
-                "configure VLAN 2000",
-                Some(placeholder),
-                Some(&aruba.id),
-                None,
-            );
+        let filled = app.stage_plan(
+            Some(&art.id),
+            "ansible",
+            "configure VLAN 2000",
+            Some(placeholder),
+            Some(&aruba.id),
+            None,
+        );
         match filled {
             Ok(plan) => {
                 let play = std::path::PathBuf::from(plan.file.unwrap());
                 let body = std::fs::read_to_string(&play).unwrap();
                 assert!(body.contains("vlan 2000"), "{body}");
                 assert!(body.contains("name VLAN2000"), "{body}");
-                assert!(!body.to_ascii_lowercase().contains("replace with vendor syntax"));
+                assert!(!body
+                    .to_ascii_lowercase()
+                    .contains("replace with vendor syntax"));
             }
             Err(e) => {
                 let m = e.to_string();
@@ -2370,7 +2524,10 @@ mod stage_push_tests {
                 );
                 let loaded = app.stage_get(&art.id).unwrap();
                 assert!(loaded.body.contains("vlan 2000"), "{}", loaded.body);
-                assert!(!loaded.body.to_ascii_lowercase().contains("replace with vendor syntax"));
+                assert!(!loaded
+                    .body
+                    .to_ascii_lowercase()
+                    .contains("replace with vendor syntax"));
             }
         }
         let _ = std::fs::remove_dir_all(dir);
@@ -2393,7 +2550,9 @@ mod stage_push_tests {
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("Open the SSH") || err.contains("Nothing to push") || err.contains("placeholder"),
+            err.contains("Open the SSH")
+                || err.contains("Nothing to push")
+                || err.contains("placeholder"),
             "{err}"
         );
 
@@ -2416,8 +2575,14 @@ mod stage_push_tests {
             )
             .unwrap_err()
             .to_string();
-        assert!(err.contains("Permit list") || err.contains("denied"), "{err}");
-        assert!(err.contains("did not send") || err.to_ascii_lowercase().contains("reload"), "{err}");
+        assert!(
+            err.contains("Permit list") || err.contains("denied"),
+            "{err}"
+        );
+        assert!(
+            err.contains("did not send") || err.to_ascii_lowercase().contains("reload"),
+            "{err}"
+        );
 
         let ok = app
             .stage_push(
@@ -2486,7 +2651,9 @@ mod stage_push_tests {
         let linux = app.policy_get(Vendor::Linux);
         assert!(linux.unrestricted);
         assert!(!linux.allow_always_allow);
-        let err = app.policy_set_allow(Vendor::Linux, vec!["ls".into()]).unwrap_err();
+        let err = app
+            .policy_set_allow(Vendor::Linux, vec!["ls".into()])
+            .unwrap_err();
         assert!(err.to_string().contains("Linux has no permit list"));
 
         let mut allow = app.policy_get(Vendor::AosCx).allow;

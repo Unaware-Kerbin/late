@@ -463,6 +463,41 @@ export interface HostKeyPrompt {
   retry: () => Promise<void>;
 }
 
+export interface ConnectFailedPrompt {
+  host: string;
+  reason: string;
+  cause?: string;
+  retry: () => Promise<void>;
+}
+
+export interface ConnectProgress {
+  host: string;
+}
+
+export interface SessionLogin {
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  keyPath?: string | null;
+  saveSession?: boolean;
+  savePassword?: boolean;
+  name?: string;
+  vendor?: Vendor;
+}
+
+export interface ConnectPrompt {
+  device?: Device;
+  kind?: SessionKind;
+  split?: SplitPlacement;
+  host?: string;
+  port?: number;
+  username?: string;
+  hasSavedPassword?: boolean;
+  /** Device editor already collected these; skip the extra dialog. */
+  login?: SessionLogin;
+}
+
 export interface ApprovalPrompt {
   proposalId: string;
   kind: "command" | "api" | "ask";

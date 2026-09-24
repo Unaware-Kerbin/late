@@ -30,6 +30,29 @@ export function textToB64(text: string): string {
   return bytesToB64(new TextEncoder().encode(text));
 }
 
+/** Daemon WS stdin/stdout frame: `sessionId\\0` + raw bytes. */
+export function encodeTermDataFrame(sessionId: string, payload: Uint8Array): Uint8Array {
+  const sid = new TextEncoder().encode(sessionId);
+  const buf = new Uint8Array(sid.length + 1 + payload.length);
+  buf.set(sid, 0);
+  buf[sid.length] = 0;
+  buf.set(payload, sid.length + 1);
+  return buf;
+}
+
+/** Daemon WS stdin frame: `sessionId\\0` + UTF-8 bytes. */
+export function encodeTermInputFrame(sessionId: string, text: string): Uint8Array {
+  return encodeTermDataFrame(sessionId, new TextEncoder().encode(text));
+}
+
+export function parseTermDataFrame(buf: Uint8Array): { sessionId: string; bytes: Uint8Array } | null {
+  const z = buf.indexOf(0);
+  if (z <= 0 || z > 80) return null;
+  const sessionId = new TextDecoder().decode(buf.subarray(0, z));
+  if (![...sessionId].every((c) => /[0-9a-fA-F-]/.test(c))) return null;
+  return { sessionId, bytes: buf.subarray(z + 1) };
+}
+
 export class RpcError extends Error {
   code?: number;
   data?: unknown;
@@ -38,6 +61,43 @@ export class RpcError extends Error {
     this.code = code;
     this.data = data;
   }
+}
+
+export function isCancelled(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /^(cancelled|aborted)$/i.test(msg.trim()) || /rpc cancelled/i.test(msg);
+}
+
+export function isConnectError(err: unknown): { host: string; reason: string; cause: string } | null {
+  if (isHostKeyError(err) || isCancelled(err)) return null;
+  const msg = err instanceof Error ? err.message : String(err);
+  const data = err instanceof RpcError ? (err.data as Record<string, unknown> | undefined) : undefined;
+  const code = String(data?.code ?? data?.kind ?? "");
+  const structured = code === "unable_to_connect" || data?.kind === "unable_to_connect";
+  const rpcOpenTimeout = /rpc timeout:\s*session\.open/i.test(msg);
+  const timeout = /timed out|connection timed out/i.test(msg) || rpcOpenTimeout;
+  const refused = /connection refused/i.test(msg);
+  const unreach = /no route to host|network is unreachable|host is unreachable/i.test(msg);
+  const auth = /permission denied|authentication failed|too many authentication/i.test(msg);
+  const banner = /no ssh banner|unable to connect/i.test(msg);
+  if (!structured && !timeout && !refused && !unreach && !auth && !banner) return null;
+  const cause = String(
+    data?.cause ??
+      (timeout ? "timeout" : refused ? "refused" : unreach ? "unreachable" : auth ? "auth" : "failed"),
+  );
+  const canned =
+    cause === "timeout"
+      ? "connection timed out"
+      : cause === "refused"
+        ? "connection refused"
+        : cause === "unreachable"
+          ? "no route to host"
+          : cause === "auth"
+            ? "authentication failed"
+            : "unable to connect";
+  const reason = String(data?.reason ?? canned);
+  const host = String(data?.host ?? "");
+  return { host, reason, cause };
 }
 
 export function isHostKeyError(err: unknown): { mismatch: boolean; host: string; presented?: string; pinned?: string } | null {
@@ -116,6 +176,7 @@ class DaemonRpc {
           ws.close();
           reject(new Error("daemon websocket timeout"));
         }, 4000);
+        ws.binaryType = "arraybuffer";
         ws.onopen = () => {
           window.clearTimeout(timer);
           this.ws = ws;
@@ -124,7 +185,13 @@ class DaemonRpc {
           this.statusHandlers.forEach((h) => h(true));
           resolve();
         };
-        ws.onmessage = (ev) => this.onMessage(String(ev.data));
+        ws.onmessage = (ev) => {
+          if (typeof ev.data !== "string") {
+            this.onBinary(ev.data);
+            return;
+          }
+          this.onMessage(ev.data);
+        };
         ws.onclose = () => {
           this.ws = null;
           this.opening = null;
@@ -149,6 +216,20 @@ class DaemonRpc {
     return this.opening;
   }
 
+  private dispatchBytes(sessionId: string, bytes: Uint8Array) {
+    if (!sessionId || !bytes.length) return;
+    this.sessionHandlers.forEach((h) => h(sessionId, bytes));
+  }
+
+  private onBinary(data: unknown) {
+    let buf: Uint8Array | null = null;
+    if (data instanceof ArrayBuffer) buf = new Uint8Array(data);
+    else if (data instanceof Uint8Array) buf = data;
+    if (!buf) return;
+    const parsed = parseTermDataFrame(buf);
+    if (parsed) this.dispatchBytes(parsed.sessionId, parsed.bytes);
+  }
+
   private onMessage(raw: string) {
     let msg: Record<string, unknown>;
     try {
@@ -160,10 +241,7 @@ class DaemonRpc {
     if (event === "session.data" || event === "sessionData" || event === "session.output") {
       const sessionId = String(msg.sessionId ?? msg.session_id ?? "");
       const data = String(msg.data ?? (msg as { params?: { data?: string } }).params?.data ?? "");
-      if (sessionId && data) {
-        const bytes = b64ToBytes(data);
-        this.sessionHandlers.forEach((h) => h(sessionId, bytes));
-      }
+      if (sessionId && data) this.dispatchBytes(sessionId, b64ToBytes(data));
       return;
     }
     if (event === "session.closed" || event === "sessionClosed") {
@@ -184,19 +262,54 @@ class DaemonRpc {
     }
   }
 
-  async call<T = unknown>(method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
+  async call<T = unknown>(
+    method: string,
+    params?: unknown,
+    timeoutOrOpts: number | { timeoutMs?: number; signal?: AbortSignal } = 30_000,
+  ): Promise<T> {
+    const timeoutMs = typeof timeoutOrOpts === "number" ? timeoutOrOpts : (timeoutOrOpts.timeoutMs ?? 30_000);
+    const signal = typeof timeoutOrOpts === "number" ? undefined : timeoutOrOpts.signal;
     await this.connect();
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: (v) => resolve(v as T), reject });
-      this.ws!.send(JSON.stringify({ id, method, params: params ?? {} }));
-      window.setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new RpcError(`RPC timeout: ${method}`));
-        }
-      }, timeoutMs);
+    let timer = 0;
+    const finish = (fn: () => void) => {
+      signal?.removeEventListener("abort", onAbort);
+      window.clearTimeout(timer);
+      fn();
+    };
+    const onAbort = () => {
+      if (!this.pending.has(id)) return;
+      this.pending.delete(id);
+      finish(() => reject(new RpcError("cancelled")));
+    };
+    if (signal?.aborted) {
+      reject(new RpcError("cancelled"));
+      return;
+    }
+    this.pending.set(id, {
+      resolve: (v) => finish(() => resolve(v as T)),
+      reject: (e) => finish(() => reject(e)),
     });
+    this.ws!.send(JSON.stringify({ id, method, params: params ?? {} }));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = window.setTimeout(() => {
+      if (this.pending.has(id)) {
+        this.pending.delete(id);
+        finish(() => reject(new RpcError(`RPC timeout: ${method}`)));
+      }
+    }, timeoutMs);
+    });
+  }
+
+  /** Keystroke path: binary WS frame, no JSON-RPC round-trip, no local echo. */
+  async sendTermInput(sessionId: string, text: string): Promise<void> {
+    await this.connect();
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      throw new RpcError("daemon websocket closed");
+    }
+    ws.send(encodeTermInputFrame(sessionId, text));
   }
 }
 
