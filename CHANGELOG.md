@@ -2,6 +2,13 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-09-24
+
+**v0.1.17 installers (Quick Connect and Unable to Connect timeout).**
+
+- GitHub Release v0.1.17 packs from this main. File names Late-0.1.17-*. Tag v0.1.16 stays frozen. Still unsigned.
+- Quick Connect with one-time vs save password, 15s Unable to Connect instead of looping until Cancel, faster terminal I/O.
+
 ## 2026-09-21
 
 **v0.1.16 installers (js-yaml and rustls security pins).**
