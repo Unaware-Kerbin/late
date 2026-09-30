@@ -41,4 +41,6 @@ contextBridge.exposeInMainWorld("lateRuntime", {
       () => false,
     );
   },
+  pickDirectory: (opts) =>
+    ipcRenderer.invoke("late:pick-directory", opts && typeof opts === "object" ? opts : {}),
 });

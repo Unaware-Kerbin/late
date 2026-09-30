@@ -6,6 +6,8 @@ interface LateRuntime {
   clipboardWrite?: (text: string, which?: "clipboard" | "selection") => Promise<boolean>;
   pathForFile?: (file: File) => string;
   isDirectory?: (path: string) => Promise<boolean>;
+  /** Native folder picker (Electron). Returns an absolute path or null if cancelled. */
+  pickDirectory?: (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>;
   updateMeta?: () => Promise<{
     lateVersion: string;
     packaged: boolean;

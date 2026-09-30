@@ -223,20 +223,22 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 .get("enabled")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let path = if enabled {
-                let stem =
-                    late_core::confine::safe_export_stem(&id).unwrap_or_else(|_| "session".into());
-                Some(app.paths.data.join("logs").join(format!("{stem}.log")))
+            if enabled {
+                let override_dir = pstr(&params, &["log_dir", "logDir", "dir"])
+                    .filter(|s| !s.trim().is_empty())
+                    .map(PathBuf::from);
+                let path = app.resolve_session_log_path(&id, override_dir.as_deref())?;
+                app.set_logging(&id, Some(path.clone()))?;
+                Ok(json!({
+                    "ok": true,
+                    "logging": true,
+                    "path": path.display().to_string(),
+                    "log_path": path.display().to_string(),
+                }))
             } else {
-                None
-            };
-            if let Some(p) = &path {
-                if let Some(parent) = p.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
+                app.set_logging(&id, None)?;
+                Ok(json!({"ok": true, "logging": false}))
             }
-            app.set_logging(&id, path)?;
-            Ok(json!({"ok": true}))
         }
         "session.export" => {
             let id = req_str(&params, &["id", "session_id"])?;
@@ -587,6 +589,7 @@ fn parse_open(params: &Value) -> Result<OpenSession, LateError> {
     req.save_password = json_flag(params, &["save_password"]);
     req.vendor = pstr(params, &["vendor"]).map(|s| Vendor::parse(&s));
     req.name = pstr(params, &["name"]);
+    req.log_session = json_flag(params, &["log_session", "logSession", "logging"]);
     Ok(req)
 }
 
@@ -813,12 +816,25 @@ mod tests {
         assert_eq!(req.password.as_deref(), Some("not-for-logs"));
         assert!(!req.save_session);
         assert!(req.save_password); // backend still refuses to persist when save_session is false
+        assert!(!req.log_session);
         assert!(req.device_id.is_none());
         let dbg = format!("{req:?}");
         assert!(
             !dbg.contains("not-for-logs"),
             "OpenSession Debug must redact passwords"
         );
+    }
+
+    #[test]
+    fn parse_open_log_session_flag() {
+        let params = to_snake(json!({
+            "kind": "local",
+            "shell": "/bin/sh",
+            "logSession": true,
+        }));
+        let req = parse_open(&params).unwrap();
+        assert!(req.log_session);
+        assert_eq!(req.kind, late_core::SessionKind::Local);
     }
 
     #[test]

@@ -77,6 +77,8 @@ pub struct OpenSession {
     pub save_password: bool,
     pub vendor: Option<Vendor>,
     pub name: Option<String>,
+    /// Explicit connect flag: start logging this session (Quick Connect checkbox).
+    pub log_session: bool,
 }
 
 impl OpenSession {
@@ -101,6 +103,7 @@ impl OpenSession {
             save_password: false,
             vendor: None,
             name: None,
+            log_session: false,
         }
     }
 }
@@ -127,6 +130,7 @@ impl Clone for OpenSession {
             save_password: self.save_password,
             vendor: self.vendor,
             name: self.name.clone(),
+            log_session: self.log_session,
         }
     }
 }
@@ -514,11 +518,17 @@ impl App {
                     .ok_or_else(|| LateError::Message("deviceId required".into()))?;
                 self.open_serial(id)
             }
-            SessionKind::Local => self.open_local(
-                req.shell.clone(),
-                req.cols.max(1) as u16,
-                req.rows.max(1) as u16,
-            ),
+            SessionKind::Local => {
+                let mut local = req;
+                // Preserve explicit connect flag on the reconnect OpenSession.
+                self.open_local(
+                    local.shell.take(),
+                    local.cols.max(1) as u16,
+                    local.rows.max(1) as u16,
+                    local.device_id.clone(),
+                    local.log_session,
+                )
+            }
             SessionKind::Sftp => {
                 let id = req
                     .device_id
@@ -649,6 +659,9 @@ impl App {
             inner.known.save(&self.paths)?;
         }
         if prepared.save_session {
+            if req.log_session {
+                prepared.device.log_session = true;
+            }
             prepared.session_password = session_password.clone();
             match crate::connect::commit_ssh(&self.inventory, &self.secrets, &prepared) {
                 Ok((device, profile)) => {
@@ -681,6 +694,7 @@ impl App {
         reconnect.replace_host_key = req.replace_host_key;
         reconnect.save_session = false;
         reconnect.save_password = false;
+        reconnect.log_session = req.log_session;
         if persist_password {
             if let Some(mut pw) = session_password {
                 pw.zeroize();
@@ -742,7 +756,14 @@ impl App {
         Ok(info)
     }
 
-    pub fn open_local(&self, shell: Option<String>, cols: u16, rows: u16) -> Result<SessionInfo> {
+    pub fn open_local(
+        &self,
+        shell: Option<String>,
+        cols: u16,
+        rows: u16,
+        device_id: Option<String>,
+        log_session: bool,
+    ) -> Result<SessionInfo> {
         let io = local_pty::open_local(shell.as_deref(), cols.max(1), rows.max(1))?;
         let resize = io.resize;
         let (r32_tx, mut r32_rx) = mpsc::channel::<(u32, u32)>(8);
@@ -751,11 +772,16 @@ impl App {
                 let _ = resize.blocking_send((c as u16, r as u16));
             }
         });
+        let name = device_id
+            .as_deref()
+            .and_then(|id| self.inventory.get(id).ok())
+            .map(|d| d.name)
+            .unwrap_or_else(|| format!("local:{}", shell.as_deref().unwrap_or("shell")));
         self.attach(
-            format!("local:{}", shell.as_deref().unwrap_or("shell")),
+            name,
             SessionKind::Local,
             Vendor::Linux,
-            None,
+            device_id.clone(),
             None,
             Some(io.tx),
             Some(r32_tx),
@@ -767,6 +793,8 @@ impl App {
                 spec.cols = cols as u32;
                 spec.rows = rows as u32;
                 spec.shell = shell;
+                spec.device_id = device_id;
+                spec.log_session = log_session;
                 spec
             }),
         )
@@ -1854,12 +1882,14 @@ impl App {
             connected: true,
             created_at: Utc::now(),
             accent,
+            logging: false,
+            log_path: None,
         };
-        let live = LiveSession {
+        let mut live = LiveSession {
             info: info.clone(),
             kind,
             vendor,
-            device_id,
+            device_id: device_id.clone(),
             auth_profile_id: None,
             input,
             resize,
@@ -1872,6 +1902,28 @@ impl App {
             reconnect,
             serial_break: None,
         };
+        if matches!(
+            kind,
+            SessionKind::Ssh | SessionKind::Serial | SessionKind::Local
+        ) {
+            let open_flag = live.reconnect.as_ref().is_some_and(|r| r.log_session);
+            if let Some(path) = self.resolve_auto_log_path(&device_id, &live.info.name, open_flag) {
+                if let Some(parent) = path.parent() {
+                    let _ = crate::fsutil::mkdir_private(parent);
+                }
+                // Create the file immediately so the path exists before any PTY bytes.
+                let header = format!(
+                    "# Late session log\n# name: {}\n# started: {}\n",
+                    live.info.name,
+                    Utc::now().to_rfc3339()
+                );
+                let _ = crate::fsutil::append_private(&path, header.as_bytes());
+                live.logging_path = Some(path.clone());
+                live.info.logging = true;
+                live.info.log_path = Some(path.display().to_string());
+            }
+        }
+        let info = live.info.clone();
         self.inner.lock().sessions.insert(id.clone(), live);
         let inner = self.inner.clone();
         let events = self.events.clone();
@@ -1947,8 +1999,74 @@ impl App {
             .sessions
             .get_mut(session_id)
             .ok_or_else(|| LateError::NotFound(session_id.into()))?;
+        if let Some(ref p) = path {
+            if let Some(parent) = p.parent() {
+                crate::fsutil::mkdir_private(parent)?;
+            }
+            // Create the file immediately; flush scrollback if any so mid-session start is useful.
+            if s.scrollback.is_empty() {
+                let header = format!(
+                    "# Late session log\n# name: {}\n# started: {}\n",
+                    s.info.name,
+                    Utc::now().to_rfc3339()
+                );
+                let _ = crate::fsutil::append_private(p, header.as_bytes());
+            } else {
+                let _ = crate::fsutil::append_private(p, &s.scrollback);
+            }
+            s.info.logging = true;
+            s.info.log_path = Some(p.display().to_string());
+        } else {
+            s.info.logging = false;
+            s.info.log_path = None;
+        }
         s.logging_path = path;
         Ok(())
+    }
+
+    /// Build a log path under Settings `log_dir` (or an optional override dir).
+    pub fn resolve_session_log_path(
+        &self,
+        session_id: &str,
+        override_dir: Option<&Path>,
+    ) -> Result<PathBuf> {
+        let settings = self.settings();
+        let name = {
+            let inner = self.inner.lock();
+            let s = inner
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| LateError::NotFound(session_id.into()))?;
+            s.info.name.clone()
+        };
+        let dir = override_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                crate::session_log::effective_log_dir(&settings.log_dir, &self.paths.data)
+            });
+        crate::session_log::resolve_log_path(&dir, &name, &self.operator_fs_roots())
+    }
+
+    fn resolve_auto_log_path(
+        &self,
+        device_id: &Option<String>,
+        session_name: &str,
+        open_flag: bool,
+    ) -> Option<PathBuf> {
+        let settings = self.settings();
+        let device = device_id
+            .as_deref()
+            .and_then(|id| self.inventory.get(id).ok());
+        let device_flag = device.as_ref().is_some_and(|d| d.log_session);
+        if !crate::session_log::should_auto_log(
+            device_flag,
+            settings.log_sessions_by_default,
+            open_flag,
+        ) {
+            return None;
+        }
+        let dir = crate::session_log::effective_log_dir(&settings.log_dir, &self.paths.data);
+        crate::session_log::resolve_log_path(&dir, session_name, &self.operator_fs_roots()).ok()
     }
 }
 
@@ -2108,6 +2226,8 @@ mod stage_push_tests {
             connected: true,
             created_at: Utc::now(),
             accent: None,
+            logging: false,
+            log_path: None,
         }
     }
 
@@ -2121,6 +2241,8 @@ mod stage_push_tests {
             connected: true,
             created_at: Utc::now(),
             accent: None,
+            logging: false,
+            log_path: None,
         }
     }
 
@@ -2803,6 +2925,156 @@ os.close(slave)
         app.close_session(&s2.id).expect("second close");
         let s3 = app.open_serial(&d.id).expect("third open");
         app.close_session(&s3.id).expect("third close");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod session_logging_tests {
+    use super::*;
+    use crate::types::{Device, DeviceKind, Vendor};
+    use std::time::Duration;
+
+    fn isolated_app() -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("late-sess-log-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        (app, dir)
+    }
+
+    #[test]
+    fn default_off_does_not_choose_path() {
+        let (app, dir) = isolated_app();
+        assert!(app
+            .resolve_auto_log_path(&None, "local", false)
+            .is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn device_flag_or_global_chooses_path_under_log_dir() {
+        let (app, dir) = isolated_app();
+        let logs = dir.join("transcripts");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut settings = app.settings();
+        settings.log_dir = logs.clone();
+        settings.log_sessions_by_default = true;
+        app.set_settings(settings).unwrap();
+        let path = app
+            .resolve_auto_log_path(&None, "core-sw1", false)
+            .expect("global default should pick a path");
+        assert!(path.starts_with(&logs));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("core-sw1_"));
+
+        let mut settings = app.settings();
+        settings.log_sessions_by_default = false;
+        app.set_settings(settings).unwrap();
+        assert!(app
+            .resolve_auto_log_path(&None, "core-sw1", false)
+            .is_none());
+
+        let mut d = Device::new_ssh("lab", "10.0.0.1", Vendor::Generic);
+        d.log_session = true;
+        let d = app.inventory.upsert_device(d).unwrap();
+        let path = app
+            .resolve_auto_log_path(&Some(d.id.clone()), "lab", false)
+            .expect("device flag should pick a path");
+        assert!(path.starts_with(&logs));
+
+        let mut d2 = Device::new_ssh("quiet", "10.0.0.2", Vendor::Generic);
+        d2.kind = DeviceKind::Ssh;
+        d2.log_session = false;
+        let d2 = app.inventory.upsert_device(d2).unwrap();
+        let path = app
+            .resolve_auto_log_path(&Some(d2.id), "quiet", true)
+            .expect("explicit open flag should pick a path");
+        assert!(path.starts_with(&logs));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn local_pty_log_session_creates_file_immediately() {
+        let (app, dir) = isolated_app();
+        // Confine allows home / Late data / config — keep the folder under the isolated Late data root.
+        let logs = dir.join("session-logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut settings = app.settings();
+        settings.log_dir = logs.clone();
+        settings.log_sessions_by_default = false;
+        app.set_settings(settings).unwrap();
+
+        let info = match app.open_local(Some("/bin/sh".into()), 80, 24, None, true) {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("skip: local PTY unavailable ({e})");
+                let _ = std::fs::remove_dir_all(dir);
+                return;
+            }
+        };
+        assert!(info.logging);
+        let path = info.log_path.expect("log_path returned");
+        let path_buf = PathBuf::from(&path);
+        assert!(
+            path_buf.starts_with(&logs),
+            "log path {path} should be under {}",
+            logs.display()
+        );
+        assert!(
+            path_buf.is_file(),
+            "log file must exist before first PTY byte: {path}"
+        );
+        let header = std::fs::read_to_string(&path_buf).unwrap();
+        assert!(
+            header.contains("# Late session log"),
+            "expected header in {path}: {header:?}"
+        );
+
+        app.write(&info.id, b"echo late-log-probe\n").ok();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(path_buf.metadata().unwrap().len() > 0);
+        app.close_session(&info.id).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn set_logging_creates_file_when_scrollback_empty() {
+        let (app, dir) = isolated_app();
+        let logs = dir.join("session-logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let mut settings = app.settings();
+        settings.log_dir = logs.clone();
+        settings.log_sessions_by_default = false;
+        app.set_settings(settings).unwrap();
+
+        let info = match app.open_local(Some("/bin/sh".into()), 80, 24, None, false) {
+            Ok(info) => info,
+            Err(e) => {
+                eprintln!("skip: local PTY unavailable ({e})");
+                let _ = std::fs::remove_dir_all(dir);
+                return;
+            }
+        };
+        assert!(!info.logging);
+        let path = app
+            .resolve_session_log_path(&info.id, None)
+            .expect("resolve path");
+        app.set_logging(&info.id, Some(path.clone())).unwrap();
+        assert!(
+            path.is_file(),
+            "set_logging must create the file: {}",
+            path.display()
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# Late session log"));
+        app.close_session(&info.id).ok();
         let _ = std::fs::remove_dir_all(dir);
     }
 }

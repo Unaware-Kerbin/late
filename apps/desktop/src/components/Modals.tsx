@@ -912,7 +912,17 @@ function SettingsModal() {
   const [mcpCommand, setMcpCommand] = useState(settings?.mcp_command ?? "");
   const [mcpArgs, setMcpArgs] = useState(settings?.mcp_args ?? "");
   const [mcpUrl, setMcpUrl] = useState(settings?.mcp_url ?? "");
+  const [logDir, setLogDir] = useState(settings?.log_dir ?? "");
+  const [logByDefault, setLogByDefault] = useState(Boolean(settings?.log_sessions_by_default));
   const [checks, setChecks] = useState<Partial<Record<ProbeKind, ProbeState>>>({});
+
+  async function browseLogDir() {
+    const picked = await window.lateRuntime?.pickDirectory?.({
+      title: "Session log folder",
+      defaultPath: logDir || undefined,
+    });
+    if (picked) setLogDir(picked);
+  }
 
   async function checkUrl(kind: ProbeKind, base: string) {
     setChecks((c) => ({ ...c, [kind]: { busy: true, message: "Checking…" } }));
@@ -1188,6 +1198,33 @@ function SettingsModal() {
           The folder must stay under your home directory. Blank command uses that folder&apos;s{" "}
           <code>tsx</code> plus <code>src/index.ts</code> (or <code>dist/index.js</code>).
         </p>
+        <h3>Session logging</h3>
+        <p className="hint">
+          Optional SecureCRT-style transcripts on your computer. Files are named{" "}
+          <code>name_YYYYMMDD_HHMMSS.log</code> under the folder below (empty = Late data logs).
+          The pane <strong>Log</strong> button still starts or stops logging for one session.
+        </p>
+        <div className="url-check">
+          <label>
+            Log folder
+            <input
+              value={logDir}
+              onChange={(e) => setLogDir(e.target.value)}
+              placeholder="~/.local/share/late/logs"
+            />
+          </label>
+          <button type="button" className="ghost" onClick={() => void browseLogDir()}>
+            Browse…
+          </button>
+        </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={logByDefault}
+            onChange={(e) => setLogByDefault(e.target.checked)}
+          />
+          Start logging when a session connects
+        </label>
         <PermitListSection />
         {defaultBackend === "cursor" && (
           <p className="hint">
@@ -1399,7 +1436,8 @@ function SettingsModal() {
                 turn_timeout_secs: settings?.turn_timeout_secs ?? 90,
                 max_agent_rounds: settings?.max_agent_rounds ?? 50,
                 pcap_dir: settings?.pcap_dir,
-                log_dir: settings?.log_dir,
+                log_dir: logDir.trim() || settings?.log_dir,
+                log_sessions_by_default: logByDefault,
                 api_insecure_tls: insecureTls,
                 cloud_chat_enabled: cloudChat,
                 private_inference_hosts: privateHosts,
@@ -1759,6 +1797,7 @@ function ConnectModal() {
   const [password, setPassword] = useState("");
   const [persist, setPersist] = useState<"one-time" | "save">(saved ? "one-time" : "one-time");
   const [savePassword, setSavePassword] = useState(false);
+  const [logThisSession, setLogThisSession] = useState(Boolean(saved?.log_session));
   const [busy, setBusy] = useState(false);
   const portNum = Number(port) || 22;
   const match = matchingSshDevice(host, portNum, devices);
@@ -1792,6 +1831,7 @@ function ConnectModal() {
       saveSession,
       savePassword: saveSession && savePassword,
       name: saved?.name || match?.name || h,
+      logSession: logThisSession,
     };
     setBusy(true);
     try {
@@ -1898,6 +1938,14 @@ function ConnectModal() {
             </label>
           )}
         </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={logThisSession}
+            onChange={(e) => setLogThisSession(e.target.checked)}
+          />
+          Log this session
+        </label>
         <div className="actions">
           <button
             type="button"
@@ -1971,6 +2019,7 @@ function DeviceModal({ device }: { device: Device }) {
       tags: d.tags,
       accent: d.accent,
       vendor: kind === "local" ? "linux" : d.vendor,
+      log_session: d.log_session,
     });
   }
 
@@ -2232,6 +2281,17 @@ function DeviceModal({ device }: { device: Device }) {
           </label>
         )}
 
+        {(d.kind === "ssh" || d.kind === "serial" || d.kind === "local") && (
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={Boolean(d.log_session)}
+              onChange={(e) => patch({ log_session: e.target.checked })}
+            />
+            Log this session
+          </label>
+        )}
+
         <button type="button" className="linkish" onClick={() => setMore((m) => !m)}>
           {more ? "Hide extra options" : "Vendor, tags, color…"}
         </button>
@@ -2365,12 +2425,23 @@ function DeviceModal({ device }: { device: Device }) {
                   savePassword: saveSession && savePassword,
                   name,
                   vendor: d.vendor,
+                  logSession: Boolean(d.log_session),
                 });
                 return;
               }
               if (d.kind === "local") {
-                void openLocal(d.shell ?? undefined);
-                setState({ deviceEditor: null });
+                const go = async () => {
+                  if (persist === "save") {
+                    await upsertDevice(body);
+                  }
+                  await openLocal(d.shell ?? undefined, {
+                    deviceId: persist === "save" ? body.id : undefined,
+                    logSession: Boolean(d.log_session),
+                    name: body.name,
+                  });
+                  setState({ deviceEditor: null });
+                };
+                void go();
                 return;
               }
               void upsertDevice(body).then(() => void openSession(body));

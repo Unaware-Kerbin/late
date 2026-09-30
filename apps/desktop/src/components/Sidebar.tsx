@@ -18,6 +18,16 @@ import {
   useApp,
 } from "../store";
 import { onShellDragEnd, onShellDragStart } from "../shellDnD";
+import {
+  deviceDropFolder,
+  folderDropDestination,
+  readSidebarDrag,
+  sameDeviceFolder,
+  sidebarDropAllowed,
+  writeSidebarDrag,
+  type SidebarDrag,
+  type SidebarDropTarget,
+} from "../lib/sidebarDnD";
 import { folderPathIsUnder, normalizeFolderPath, type Device, type SessionKind, type SplitPlacement } from "../types";
 
 type FolderNode = {
@@ -243,6 +253,9 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<SidebarDrag | null>(null);
+  const draggingRef = useRef<SidebarDrag | null>(null);
+  const expandTimer = useRef<number | null>(null);
   const [activeFolder, setActiveFolder] = useState("");
   const [folderDlg, setFolderDlg] = useState<
     | { mode: "create"; parent: string }
@@ -257,6 +270,12 @@ export function Sidebar() {
 
   const filtering = Boolean(q.trim());
   const toolsOpen = filtering || !collapsed.has(TOOLS_COLLAPSE);
+
+  useEffect(() => {
+    return () => {
+      if (expandTimer.current != null) window.clearTimeout(expandTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (folderDlg?.mode === "create" || folderDlg?.mode === "rename") {
@@ -542,12 +561,97 @@ export function Sidebar() {
     setFolderDlg(null);
   }
 
-  function onDropFolder(path: string | null, e: DragEvent) {
+  function clearExpandTimer() {
+    if (expandTimer.current != null) {
+      window.clearTimeout(expandTimer.current);
+      expandTimer.current = null;
+    }
+  }
+
+  function armExpand(path: string) {
+    clearExpandTimer();
+    if (!path || folderOpen(path)) return;
+    expandTimer.current = window.setTimeout(() => {
+      setCollapsed((cur) => {
+        if (!cur.has(path)) return cur;
+        const next = new Set(cur);
+        next.delete(path);
+        saveCollapsed(next);
+        return next;
+      });
+    }, 450);
+  }
+
+  function beginSidebarDrag(e: DragEvent, drag: SidebarDrag) {
+    e.stopPropagation();
+    writeSidebarDrag(e.dataTransfer, drag);
+    draggingRef.current = drag;
+    setDragging(drag);
+  }
+
+  function endSidebarDrag() {
+    draggingRef.current = null;
+    setDragging(null);
+    setDragOver(null);
+    clearExpandTimer();
+  }
+
+  function acceptSidebarDrag(e: DragEvent, target: SidebarDropTarget): boolean {
+    const types = Array.from(e.dataTransfer.types);
+    const drag = draggingRef.current;
+    const looksLikeInventory =
+      Boolean(drag) || types.includes("text/late-device") || types.includes("text/late-folder");
+    if (!looksLikeInventory) return false;
+    if (target.type === "tools" || (drag && !sidebarDropAllowed(drag, target))) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "none";
+      return false;
+    }
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    return true;
+  }
+
+  async function dropOnFolder(path: string | null, e: DragEvent) {
     e.preventDefault();
     e.stopPropagation();
-    setDragOver(null);
-    const id = e.dataTransfer.getData("text/late-device");
-    if (id) void moveDeviceToFolder(id, path);
+    const drag = readSidebarDrag(e.dataTransfer) ?? draggingRef.current;
+    endSidebarDrag();
+    if (!drag) return;
+    if (drag.kind === "device") {
+      const dest = deviceDropFolder({ type: "folder", path: path ?? "" });
+      const device = inventory.devices.find((d) => d.id === drag.id);
+      if (!device || sameDeviceFolder(device.folder, dest)) return;
+      await moveDeviceToFolder(drag.id, dest);
+      return;
+    }
+    const dest = folderDropDestination(drag.path, path);
+    if (!dest || dest === drag.path) return;
+    if (!(await renameFolder(drag.path, dest))) return;
+    setActiveFolder(dest);
+    expandPaths(ancestorPaths(dest));
+  }
+
+  async function dropOnDevice(device: Device, e: DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const drag = readSidebarDrag(e.dataTransfer) ?? draggingRef.current;
+    endSidebarDrag();
+    if (!drag) return;
+    const dest = deviceDropFolder({ type: "device", folder: device.folder });
+    if (drag.kind === "device") {
+      if (drag.id === device.id) return;
+      const src = inventory.devices.find((d) => d.id === drag.id);
+      if (!src || sameDeviceFolder(src.folder, dest)) return;
+      await moveDeviceToFolder(drag.id, dest);
+      return;
+    }
+    const next = folderDropDestination(drag.path, dest);
+    if (!next || next === drag.path) return;
+    if (!(await renameFolder(drag.path, next))) return;
+    setActiveFolder(next);
+    expandPaths(ancestorPaths(next));
   }
 
   function openMenu(next: CtxMenu, e: MouseEvent) {
@@ -646,27 +750,37 @@ export function Sidebar() {
       return (
         <div
           key={row.key}
-          className={`tree-row folder ${dragOver === dropKey ? "drop" : ""} ${active ? "active" : ""}`}
+          className={`tree-row folder ${dragOver === dropKey ? "drop" : ""} ${active ? "active" : ""} ${dragging?.kind === "folder" && dragging.path === row.path ? "dragging" : ""}`}
           style={pad}
           role="treeitem"
           tabIndex={-1}
           aria-expanded={open}
           aria-selected={active}
+          draggable={Boolean(row.path)}
           onClick={(e) => {
             e.currentTarget.focus();
             selectFolder(row.path, false);
           }}
           onDoubleClick={() => toggle(row.path)}
           onContextMenu={(e) => openMenu({ kind: "folder", path: row.path, x: 0, y: 0 }, e)}
+          onDragStart={(e) => {
+            if (!row.path) {
+              e.preventDefault();
+              return;
+            }
+            beginSidebarDrag(e, { kind: "folder", path: row.path });
+          }}
+          onDragEnd={endSidebarDrag}
           onDragOver={(e) => {
-            e.preventDefault();
+            if (!acceptSidebarDrag(e, row.path ? { type: "folder", path: row.path } : { type: "root" })) return;
             setDragOver(dropKey);
+            armExpand(row.path);
           }}
           onDragLeave={(e) => {
             if (e.currentTarget.contains(e.relatedTarget as Node)) return;
             setDragOver((cur) => (cur === dropKey ? null : cur));
           }}
-          onDrop={(e) => onDropFolder(row.path || null, e)}
+          onDrop={(e) => void dropOnFolder(row.path || null, e)}
         >
           <button
             type="button"
@@ -700,6 +814,14 @@ export function Sidebar() {
             setState({ selectedDeviceId: null });
           }}
           onDoubleClick={() => toggle(TOOLS_COLLAPSE)}
+          onDragOver={(e) => {
+            acceptSidebarDrag(e, { type: "tools" });
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            endSidebarDrag();
+          }}
         >
           <button
             type="button"
@@ -733,6 +855,14 @@ export function Sidebar() {
             else if (row.id === "stage") openStagePane();
             else openPcapPane();
           }}
+          onDragOver={(e) => {
+            acceptSidebarDrag(e, { type: "tools" });
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            endSidebarDrag();
+          }}
         >
           <span className="chev spacer" />
           <span className="tree-ico host">
@@ -748,22 +878,28 @@ export function Sidebar() {
     return (
       <div
         key={row.key}
-        className={`tree-row device ${selected === d.id ? "selected" : ""}`}
+        className={`tree-row device ${selected === d.id ? "selected" : ""} ${dragOver === `d:${d.id}` ? "drop" : ""} ${dragging?.kind === "device" && dragging.id === d.id ? "dragging" : ""}`}
         style={pad}
         role="treeitem"
         tabIndex={-1}
         aria-selected={selected === d.id}
         draggable
         title={host || d.name}
-        onDragStart={(e) => {
-          e.dataTransfer.setData("text/late-device", d.id);
-          e.dataTransfer.effectAllowed = "move";
+        onDragStart={(e) => beginSidebarDrag(e, { kind: "device", id: d.id })}
+        onDragEnd={endSidebarDrag}
+        onDragOver={(e) => {
+          if (!acceptSidebarDrag(e, { type: "device", folder: d.folder })) return;
+          setDragOver(`d:${d.id}`);
         }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+          setDragOver((cur) => (cur === `d:${d.id}` ? null : cur));
+        }}
+        onDrop={(e) => void dropOnDevice(d, e)}
         onClick={(e) => {
           e.preventDefault();
           selectDevice(d);
         }}
-        onMouseDown={(e) => e.preventDefault()}
         onDoubleClick={() => connect(d)}
         onContextMenu={(e) => openMenu({ kind: "device", id: d.id, x: 0, y: 0 }, e)}
       >
@@ -1041,20 +1177,20 @@ export function Sidebar() {
           document.body,
         )}
       <div
-        className="tree"
+        className={`tree${dragging ? " dnd" : ""}`}
         role="tree"
         onContextMenu={(e) => {
           if ((e.target as HTMLElement).closest(".tree-row")) return;
           openMenu({ kind: "folder", path: "", x: 0, y: 0 }, e);
         }}
         onDragOver={(e) => {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
+          if (!acceptSidebarDrag(e, { type: "root" })) return;
         }}
         onDrop={(e) => {
           if ((e.target as HTMLElement).closest(".tree-row")) return;
-          onDropFolder(null, e);
+          void dropOnFolder(null, e);
         }}
+        onDragEnd={endSidebarDrag}
       >
         {rows.map(renderRow)}
       </div>

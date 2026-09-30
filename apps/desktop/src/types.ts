@@ -77,6 +77,8 @@ export interface Device {
   jump_host?: string | null;
   shell?: string | null;
   notes?: string | null;
+  /** When true, start logging on connect even if Settings default is off. */
+  log_session?: boolean;
 }
 
 export interface AuthProfile {
@@ -102,6 +104,8 @@ export interface SessionInfo {
   connected: boolean;
   created_at: string;
   accent?: string | null;
+  logging?: boolean;
+  log_path?: string | null;
 }
 
 export interface PolicyDecision {
@@ -195,6 +199,8 @@ export interface AppSettings {
   max_agent_rounds: number;
   pcap_dir?: string;
   log_dir?: string;
+  /** When true, new SSH/serial/local sessions start writing a transcript under log_dir. */
+  log_sessions_by_default?: boolean;
   api_insecure_tls?: boolean;
   cloud_chat_enabled?: boolean;
   /** Extra hostnames for air-gapped OpenAI-compatible servers (not RFC1918 / .internal). */
@@ -409,6 +415,7 @@ export function coerceSettings(raw: unknown): AppSettings | null {
     max_agent_rounds: num("max_agent_rounds", "maxAgentRounds") ?? 50,
     pcap_dir: str("pcap_dir", "pcapDir"),
     log_dir: str("log_dir", "logDir"),
+    log_sessions_by_default: flag("log_sessions_by_default", "logSessionsByDefault") ?? false,
     api_insecure_tls: flag("api_insecure_tls", "apiInsecureTls") ?? false,
     cloud_chat_enabled: flag("cloud_chat_enabled", "cloudChatEnabled") ?? false,
     private_inference_hosts: str("private_inference_hosts", "privateInferenceHosts") ?? "",
@@ -484,6 +491,8 @@ export interface SessionLogin {
   savePassword?: boolean;
   name?: string;
   vendor?: Vendor;
+  /** Start a SecureCRT-style transcript for this connect. */
+  logSession?: boolean;
 }
 
 export interface ConnectPrompt {
@@ -587,6 +596,7 @@ export function coerceDevice(raw: unknown): Device {
     jump_host: pickStr(d, "jump_host", "jumpHost"),
     shell: pickStr(d, "shell") ?? base.shell,
     notes: pickStr(d, "notes"),
+    log_session: Boolean(pickRaw(d, "log_session", "logSession", "session_log", "sessionLog") ?? false),
   };
 }
 
@@ -611,6 +621,8 @@ export function coerceSession(raw: unknown): SessionInfo {
     device_id: pickStr(s, "device_id", "deviceId"),
     name: String(s.name ?? ""),
     kind,
+    logging: Boolean(pickRaw(s, "logging") ?? false),
+    log_path: pickStr(s, "log_path", "logPath"),
   };
 }
 
@@ -667,5 +679,6 @@ export function emptyDevice(kind: DeviceKind = "ssh"): Device {
     jump_host: null,
     shell: kind === "local" ? "/bin/bash" : null,
     notes: null,
+    log_session: false,
   };
 }

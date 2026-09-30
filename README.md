@@ -105,12 +105,12 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 
 ## After it opens
 
-1. **Quick Connect** (left toolbar plug, or **+** → Quick Connect): host, port (22), username, password, Connect. Choose **One-time connection** (password is forgotten when the session closes) or **Save session** / **Save password**. If the host does not answer in 15 seconds, Late shows **Unable to Connect** (it does not keep looping until you Cancel). The first time, click **Trust** for the host key (not Enter). Saved sessions in the list still Connect in one click; right-click **Connect with login…** to type a password this time. Serial: Disconnect releases the port lock so you can reopen the same port without quitting Late (see [Serial disconnect / reconnect](#serial-disconnect--reconnect)).
+1. **Quick Connect** (left toolbar plug, or **+** → Quick Connect): host, port (22), username, password, Connect. Choose **One-time connection** (password is forgotten when the session closes) or **Save session** / **Save password**. Optional **Log this session** writes a transcript on your computer (choose the folder in Settings; pane **Log** still starts/stops). If the host does not answer in 15 seconds, Late shows **Unable to Connect** (it does not keep looping until you Cancel). The first time, click **Trust** for the host key (not Enter). Saved sessions in the list still Connect in one click; right-click **Connect with login…** to type a password this time. Drag a session onto a folder (or onto another session in that folder) to file it; drop on **Sessions** to take it out. Folders drag the same way. Serial: Disconnect releases the port lock so you can reopen the same port without quitting Late (see [Serial disconnect / reconnect](#serial-disconnect--reconnect)).
 2. Helper is optional. See [The helper](#the-helper) — easiest on this computer: pick **Late**, click **Local**, **Start** (first time compiles a Hub snapshot on your computer; weights are not in the installer). Ollama / llama.cpp / vLLM stay in the same menu if you want them.
 3. **Staging** (Tools) is a scratch pad for CLI / Ansible drafts. **Push** is a click. The helper cannot Push.
 4. **Packet capture** (Tools) is live traffic on this computer. Click **Live**, then **Stop**. **Ask agent** (or a `.pcap` path you type) can analyze headers. **More** → **Wireshark** opens the file in Wireshark.
 5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
-6. Settings has **Keyword highlights** (`down` / `up` colors) and **Terminal font** / size.
+6. Settings has **Keyword highlights** (`down` / `up` colors), **Terminal font** / size, and **Session logging** (optional SecureCRT-style transcripts: pick a folder, optionally start logging when a session connects; device **Log this session**; pane **Log** still toggles one session).
 
 ## On your computer (short how-tos)
 
@@ -270,7 +270,7 @@ Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go
 
 Agent tools call these same session/policy/pcap/api methods. The daemon does not talk to LLMs.
 
-Config lives in the platform config directory named `late`: Linux `~/.config/late/`, macOS `~/Library/Application Support/late/`, Windows `%APPDATA%\late` (inventory, auth profiles, known hosts, settings, collections, `sidecar.token`, `secrets.json`). On Unix, secrets and tokens are mode 0600 and config/data dirs are 0700; Windows uses default NTFS ACLs on the config/data dirs. Session logs, captures, pcap, and `audit.jsonl` live in the platform data directory: Linux `~/.local/share/late/`, macOS `~/Library/Application Support/late/`, Windows `%APPDATA%\late`. Vendor permit lists ship in `policies/*.yaml` and are copied into the config `policies/` folder on first boot.
+Config lives in the platform config directory named `late`: Linux `~/.config/late/`, macOS `~/Library/Application Support/late/`, Windows `%APPDATA%\late` (inventory, auth profiles, known hosts, settings, collections, `sidecar.token`, `secrets.json`). On Unix, secrets and tokens are mode 0600 and config/data dirs are 0700; Windows uses default NTFS ACLs on the config/data dirs. Session logs (Settings **Log folder**, default `logs/` under the data dir), captures, pcap, and `audit.jsonl` live in the platform data directory: Linux `~/.local/share/late/`, macOS `~/Library/Application Support/late/`, Windows `%APPDATA%\late`. Vendor permit lists ship in `policies/*.yaml` and are copied into the config `policies/` folder on first boot.
 
 Session export with a passphrase is XOR obfuscation (`*.log.xor`), not age encryption. Encrypt the plaintext `.log` with the `age` CLI if you need real secrecy.
 

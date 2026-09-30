@@ -33,8 +33,12 @@ pub struct AppSettings {
     /// Serialized in Settings. Live capture always writes under Late `data/pcap`.
     /// The value is confined on save and is not an extra jail root.
     pub pcap_dir: PathBuf,
-    /// Serialized in Settings. Not used as a session-log root.
+    /// Folder for SecureCRT-style session transcripts. Empty = Late data/logs.
     pub log_dir: PathBuf,
+    /// When true, new SSH/serial/local sessions start logging into `log_dir`.
+    /// Default false. A device with `log_session` still logs when this is off.
+    #[serde(default)]
+    pub log_sessions_by_default: bool,
     /// Lab gear with private PKI. Default false — verify TLS.
     pub api_insecure_tls: bool,
     /// Cursor and public-internet OpenAI-compatible chat. Default false.
@@ -84,6 +88,7 @@ impl Default for AppSettings {
             max_agent_rounds: 50,
             pcap_dir: dirs.data.join("pcap"),
             log_dir: dirs.data.join("logs"),
+            log_sessions_by_default: false,
             api_insecure_tls: false,
             cloud_chat_enabled: false,
             private_inference_hosts: String::new(),
@@ -296,6 +301,7 @@ log_dir = "/tmp/logs"
         assert_eq!(s.mcp_args, "");
         assert_eq!(s.mcp_url, "");
         assert!(s.use_all_gpus);
+        assert!(!s.log_sessions_by_default);
     }
 
     #[test]

@@ -373,13 +373,18 @@ button { cursor: pointer; }
   text-align: left;
   cursor: pointer;
   appearance: none;
+  user-select: none;
 }
+.tree-row[draggable="true"] { cursor: grab; }
+.tree-row .sess-ico, .tree-row svg { -webkit-user-drag: none; }
 button.tree-row { color: inherit; }
 .tree-row:hover { background: var(--panel); }
 .tree-row.active, .tree-row.selected, .tree-row:focus-visible {
   background: var(--panel-2);
 }
 .tree-row.drop { background: var(--accent-dim); }
+.tree-row.dragging { opacity: 0.45; }
+.tree.dnd .tree-row { cursor: grabbing; }
 .tree-row .chev {
   width: 14px;
   min-width: 14px;

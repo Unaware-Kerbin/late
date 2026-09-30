@@ -270,6 +270,9 @@ pub struct Device {
     pub shell: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// When true, start logging on connect even if Settings `log_sessions_by_default` is off.
+    #[serde(default, alias = "session_log", alias = "sessionLog")]
+    pub log_session: bool,
 }
 
 impl Device {
@@ -295,6 +298,7 @@ impl Device {
             jump_host: None,
             shell: None,
             notes: None,
+            log_session: false,
         }
     }
 }
@@ -317,6 +321,12 @@ pub struct SessionInfo {
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub accent: Option<String>,
+    /// True while a SecureCRT-style session log file is open.
+    #[serde(default)]
+    pub logging: bool,
+    /// Absolute path of the live session log, when logging.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

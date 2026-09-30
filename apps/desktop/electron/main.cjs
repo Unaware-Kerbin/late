@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, ipcMain, Menu, clipboard, session } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, Menu, clipboard, session, dialog } = require("electron");
 const { spawn } = require("node:child_process");
 const http = require("node:http");
 const fs = require("node:fs");
@@ -401,6 +401,25 @@ app.whenReady().then(async () => {
     } catch {
       return false;
     }
+  });
+  ipcMain.handle("late:pick-directory", async (event, opts) => {
+    if (!ipcAllowed(event)) return null;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const title =
+      opts && typeof opts === "object" && typeof opts.title === "string" && opts.title.trim()
+        ? opts.title.trim()
+        : "Choose folder";
+    const defaultPath =
+      opts && typeof opts === "object" && typeof opts.defaultPath === "string" && opts.defaultPath.trim()
+        ? opts.defaultPath.trim()
+        : undefined;
+    const result = await dialog.showOpenDialog(win ?? undefined, {
+      title,
+      defaultPath,
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || !result.filePaths?.[0]) return null;
+    return result.filePaths[0];
   });
   const update = require("./update.cjs");
   ipcMain.handle("late:update-meta", (event) => {

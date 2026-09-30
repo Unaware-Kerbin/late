@@ -122,6 +122,7 @@ function SplitGutter({ dir, onRatio }: { dir: string; onRatio: (r: number) => vo
 function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
   const focused = useApp((s) => s.focusedPaneId === pane.id);
   const devices = useApp((s) => s.inventory.devices);
+  const logDir = useApp((s) => s.settings?.log_dir);
   const accent =
     pane.session?.accent ?? devices.find((d) => d.id === pane.deviceId)?.accent ?? undefined;
   let body: JSX.Element;
@@ -141,6 +142,13 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
     );
   } else body = <TerminalPane pane={pane} visible={visible} />;
 
+  const logTitle =
+    pane.logging && pane.session?.log_path
+      ? `Logging to ${pane.session.log_path}`
+      : logDir
+        ? `Log this session to ${logDir}`
+        : "Log this session (folder in Settings)";
+
   return (
     <section
       className={`pane ${focused ? "focused" : ""}`}
@@ -154,7 +162,7 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
           <button
             type="button"
             className={`ghost ${pane.logging ? "on" : ""}`}
-            title="Log this session to ~/.local/share/late/logs"
+            title={logTitle}
             onClick={(e) => {
               e.stopPropagation();
               void setLogging(pane.session!.id, !pane.logging);

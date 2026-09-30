@@ -23,6 +23,7 @@ pub mod remote_pcap;
 pub mod secrets;
 pub mod serial;
 pub mod session;
+pub mod session_log;
 pub mod sftp;
 pub mod ssh;
 pub mod stage;

@@ -633,7 +633,9 @@ export async function deleteFolder(path: string): Promise<boolean> {
 export async function moveDeviceToFolder(deviceId: string, folder: string | null) {
   const device = getState().inventory.devices.find((d) => d.id === deviceId);
   if (!device) return;
-  const next = persistDevice({ ...device, folder: normalizeFolderPath(folder) });
+  const dest = normalizeFolderPath(folder);
+  if ((normalizeFolderPath(device.folder) ?? "") === (dest ?? "")) return;
+  const next = persistDevice({ ...device, folder: dest });
   try {
     await rpc.call("inventory.upsert", { device: next, ...next });
     await refreshAll();
@@ -700,6 +702,7 @@ function attachSession(
         deviceId,
         disconnected: false,
         disconnectReason: undefined,
+        logging: Boolean(info.logging),
       },
     },
     tabs: s.tabs.map((t) =>
@@ -771,6 +774,8 @@ export async function openSession(
         save_session: Boolean(login?.saveSession),
         savePassword: Boolean(login?.savePassword),
         save_password: Boolean(login?.savePassword),
+        logSession: Boolean(login?.logSession),
+        log_session: Boolean(login?.logSession),
         acceptUnknownHost: hostKeyFlags?.acceptUnknownHost,
         replaceHostKey: hostKeyFlags?.replaceHostKey,
         accept_unknown_host: hostKeyFlags?.acceptUnknownHost,
@@ -892,10 +897,20 @@ export function connectDevice(device: Device, kind?: SessionKind, split?: SplitP
   void openSession(device, kind, split ? { split } : undefined);
 }
 
-export async function openLocal(shell?: string) {
+export async function openLocal(shell?: string, opts?: { deviceId?: string; logSession?: boolean; name?: string }) {
   try {
-    const info = await rpc.call<SessionInfo>("session.open", { kind: "local", shell, cols: 120, rows: 36 });
-    attachSession(info, undefined, "local");
+    const info = await rpc.call<SessionInfo>("session.open", {
+      kind: "local",
+      shell,
+      cols: 120,
+      rows: 36,
+      deviceId: opts?.deviceId,
+      device_id: opts?.deviceId,
+      name: opts?.name,
+      logSession: Boolean(opts?.logSession),
+      log_session: Boolean(opts?.logSession),
+    });
+    attachSession(info, opts?.deviceId, "local");
   } catch (err) {
     toast("error", errText(err));
   }
@@ -1048,16 +1063,35 @@ export async function exportSession(sessionId: string, passphrase?: string) {
 
 export async function setLogging(sessionId: string, enabled: boolean) {
   try {
-    await rpc.call("session.setLogging", { sessionId, session_id: sessionId, enabled });
+    const r = await rpc.call<{ ok?: boolean; logging?: boolean; path?: string; log_path?: string }>(
+      "session.setLogging",
+      { sessionId, session_id: sessionId, enabled },
+    );
+    const path = r?.path || r?.log_path || undefined;
     setState((s) => ({
       panes: Object.fromEntries(
         Object.entries(s.panes).map(([id, p]) => [
           id,
-          p.session?.id === sessionId ? { ...p, logging: enabled } : p,
+          p.session?.id === sessionId
+            ? {
+                ...p,
+                logging: enabled,
+                session: p.session
+                  ? { ...p.session, logging: enabled, log_path: enabled ? path ?? p.session.log_path : null }
+                  : p.session,
+              }
+            : p,
         ]),
       ),
     }));
-    toast("info", enabled ? "session logging on" : "session logging off");
+    toast(
+      "info",
+      enabled
+        ? path
+          ? `session logging on → ${path}`
+          : "session logging on"
+        : "session logging off",
+    );
   } catch (err) {
     toast("error", errText(err));
   }

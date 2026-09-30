@@ -2,6 +2,14 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-09-30
+
+**Session logging (SecureCRT-style).**
+
+- Settings: choose a **Log folder** (Browse…), optional **Start logging when a session connects**.
+- Device editor: **Log this session** starts logging on connect even when the Settings default is off.
+- Pane **Log** still toggles one session; files are named `name_YYYYMMDD_HHMMSS.log` under the chosen folder (confined under home / Late data) and are created as soon as logging starts.
+
 ## 2026-09-24
 
 **v0.1.17 installers (Quick Connect and Unable to Connect timeout).**
