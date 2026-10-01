@@ -60,6 +60,21 @@ pub struct AppSettings {
     pub use_all_gpus: bool,
 }
 
+impl AppSettings {
+    /// First-run settings for a specific Late config/data pair.
+    ///
+    /// `Default` uses `LatePaths::discover()` (this computer's Late folders).
+    /// Tests and any other `boot_with` caller pass their own folders, and
+    /// capture/log paths must live there so saving settings does not require
+    /// the discovered data directory to already exist.
+    pub fn for_paths(paths: &LatePaths) -> Self {
+        let mut settings = Self::default();
+        settings.pcap_dir = paths.data.join("pcap");
+        settings.log_dir = paths.data.join("logs");
+        settings
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         let dirs = LatePaths::discover();
@@ -169,6 +184,21 @@ pub fn load_settings(path: &Path) -> Result<AppSettings> {
         save_settings(path, &s)?;
         return Ok(s);
     }
+    load_settings_file(path)
+}
+
+/// Load settings for `paths`, creating them on first run under that data dir.
+pub fn load_settings_for(paths: &LatePaths) -> Result<AppSettings> {
+    let path = paths.settings();
+    if !path.exists() {
+        let s = AppSettings::for_paths(paths);
+        save_settings(&path, &s)?;
+        return Ok(s);
+    }
+    load_settings_file(&path)
+}
+
+fn load_settings_file(path: &Path) -> Result<AppSettings> {
     let raw = fs::read_to_string(path)?;
     let mut s: AppSettings = toml::from_str(&raw).map_err(|e| LateError::Config(e.to_string()))?;
     remember_remote_inference_urls(&mut s);
@@ -264,6 +294,23 @@ pub fn save_settings(path: &Path, settings: &AppSettings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_settings_follow_boot_paths_not_discovered_data_dir() {
+        let dir = std::env::temp_dir().join(format!("late-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.join("config"),
+            data: dir.join("data"),
+        };
+        paths.ensure().unwrap();
+        let s = load_settings_for(&paths).unwrap();
+        assert_eq!(s.pcap_dir, paths.data.join("pcap"));
+        assert_eq!(s.log_dir, paths.data.join("logs"));
+        assert!(s.pcap_dir.is_dir());
+        assert!(s.log_dir.is_dir());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn missing_ollama_fields_use_defaults() {

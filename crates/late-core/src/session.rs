@@ -1,6 +1,6 @@
 use crate::capture::{self, CaptureStore, DiffLine};
 use crate::collections;
-use crate::config::{load_settings, save_settings, AppSettings, LatePaths};
+use crate::config::{save_settings, AppSettings, LatePaths};
 use crate::confine;
 use crate::error::{LateError, Result};
 use crate::http_api::{self, ApiRequest, ApiResponse};
@@ -214,7 +214,7 @@ impl App {
     pub fn boot_with(paths: LatePaths) -> Result<Self> {
         paths.ensure()?;
         seed_bundled_policies(&paths)?;
-        let settings = load_settings(&paths.settings())?;
+        let settings = crate::config::load_settings_for(&paths)?;
         let bundled = first_bundled_policy_dir();
         let mut policy = PolicyEngine::load_dir(&bundled)?;
         policy.merge_dir(&paths.config.join("policies"))?;
