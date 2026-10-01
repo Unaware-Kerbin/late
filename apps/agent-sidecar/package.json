@@ -11,16 +11,16 @@
     "test": "tsx --test src/chat-target.test.ts src/native-loop.test.ts src/mcp-format.test.ts src/mcp-http.test.ts src/mcp-discover.test.ts src/mcp-loop.test.ts src/mcp-transport.test.ts src/mcp-grant-dir.test.ts src/mcp-rpc-queue.test.ts src/tools.test.ts src/orch-rest.test.ts src/openai-loop.test.ts"
   },
   "dependencies": {
-    "ws": "^8.18.3"
+    "ws": "^8.22.0"
   },
   "optionalDependencies": {
-    "@cursor/sdk": "^1.0.6",
-    "undici": "6.28.1"
+    "@cursor/sdk": "^1.0.32",
+    "undici": "8.11.2"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
+    "@types/node": "^26.6.3",
     "@types/ws": "^8.18.1",
-    "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
   }
 }
