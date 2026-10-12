@@ -4,6 +4,14 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-10-12
 
+**v0.1.20 installers (Enter-to-reconnect after SSH/local drop).**
+
+- GitHub Release v0.1.20 packs from this main. File names Late-0.1.20-*. Tag v0.1.19 stays frozen. Still unsigned.
+- After timeout or drop on SSH/local (and serial as before), the pane shows disconnected and Enter reconnects.
+- Intentional close still reports closed, not dropped.
+
+## 2026-10-12
+
 **v0.1.19 installers (Agent chat polish and SSH pcap readiness).**
 
 - GitHub Release v0.1.19 packs from this main. File names Late-0.1.19-*. Tag v0.1.18 stays frozen. Still unsigned.
