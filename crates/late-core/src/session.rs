@@ -17,8 +17,6 @@ use crate::serial;
 use crate::sftp::{self, SftpEntry};
 use crate::ssh::{self, SshConnectOpts};
 use crate::types::*;
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -29,21 +27,63 @@ use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-/// Flush PTY output to the UI at least this often (typing echo stays in the ~10ms class).
-const OUTPUT_COALESCE_MS: u64 = 8;
-/// …or sooner when a burst fills this many bytes (`cat`, `show running-config`, `top`).
+/// Interactive echo / short prompts: flush to the UI immediately (no timer wait).
+/// Native terminals do not sit on a coalesce budget for single-key echo.
+const OUTPUT_INTERACTIVE_MAX: usize = 1024;
+/// Large dumps (`cat`, `show running-config`, `top`): batch up to this many bytes.
 const OUTPUT_COALESCE_MAX: usize = 65_536;
+/// Only used while a large dump is in flight (above interactive size, below max).
+const OUTPUT_COALESCE_MS: u64 = 2;
 
-fn emit_session_data(events: &broadcast::Sender<AppEvent>, session_id: &str, buf: &[u8]) {
+/// Move pending PTY bytes onto the event bus as raw octets (no base64 on the hot path).
+fn emit_session_data(events: &broadcast::Sender<AppEvent>, session_id: &str, buf: Vec<u8>) {
     if buf.is_empty() {
         return;
     }
     let _ = events.send(AppEvent {
         event: "session.data".into(),
         session_id: session_id.into(),
-        data: Some(STANDARD.encode(buf)),
+        data: None,
+        bytes: Some(buf),
         reason: None,
     });
+}
+
+/// Append PTY bytes to scrollback / session log / fan-out, then to the UI pending buffer.
+/// Session-log disk I/O runs after the mutex so a slow write cannot stall other sessions.
+fn ingest_pty_chunk(
+    inner: &Mutex<Inner>,
+    sid: &str,
+    buf: &[u8],
+    pending: &mut Vec<u8>,
+) -> bool {
+    let (log_path, out_tx) = {
+        let mut g = inner.lock();
+        let Some(s) = g.sessions.get_mut(sid) else {
+            return false;
+        };
+        s.scrollback.extend_from_slice(buf);
+        let max = 2_000_000;
+        if s.scrollback.len() > max {
+            s.scrollback.drain(0..s.scrollback.len() - max);
+        }
+        let log_path = s.logging_path.clone();
+        // API fan-out is rare; skip the extra Vec when nobody is subscribed.
+        let out_tx = if s.output.receiver_count() > 0 {
+            Some(s.output.clone())
+        } else {
+            None
+        };
+        (log_path, out_tx)
+    };
+    if let Some(path) = log_path {
+        let _ = crate::fsutil::append_private(&path, buf);
+    }
+    if let Some(tx) = out_tx {
+        let _ = tx.send(buf.to_vec());
+    }
+    pending.extend_from_slice(buf);
+    true
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,8 +91,12 @@ fn emit_session_data(events: &broadcast::Sender<AppEvent>, session_id: &str, buf
 pub struct AppEvent {
     pub event: String,
     pub session_id: String,
+    /// Legacy JSON/base64 payload (unused on the binary WS hot path).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// Raw PTY octets for `session.data` — not serialized (WS binary frame only).
+    #[serde(skip)]
+    pub bytes: Option<Vec<u8>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -393,6 +437,7 @@ impl App {
                     event: "session.closed".into(),
                     session_id: session_id.into(),
                     data: None,
+                    bytes: None,
                     reason: Some("closed".into()),
                 });
                 (s.close, s.serial_join, s.input, s.serial_break)
@@ -1933,46 +1978,52 @@ impl App {
             let mut ticker =
                 tokio::time::interval(std::time::Duration::from_millis(OUTPUT_COALESCE_MS));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // First tick completes immediately; skip so bulk dumps actually wait OUTPUT_COALESCE_MS.
             ticker.tick().await;
             loop {
                 tokio::select! {
                     rec = rx.recv() => {
                         match rec {
                             Ok(buf) => {
-                                let mut g = inner.lock();
-                                if let Some(s) = g.sessions.get_mut(&sid) {
-                                    s.scrollback.extend_from_slice(&buf);
-                                    let max = 2_000_000;
-                                    if s.scrollback.len() > max {
-                                        s.scrollback.drain(0..s.scrollback.len() - max);
+                                if !ingest_pty_chunk(&inner, &sid, &buf, &mut pending) {
+                                    break;
+                                }
+                                let mut alive = true;
+                                // Drain anything already queued from the PTY reader (no wait).
+                                while pending.len() < OUTPUT_COALESCE_MAX {
+                                    match rx.try_recv() {
+                                        Ok(more) => {
+                                            if !ingest_pty_chunk(&inner, &sid, &more, &mut pending)
+                                            {
+                                                alive = false;
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
                                     }
-                                    if let Some(path) = &s.logging_path {
-                                        let _ = crate::fsutil::append_private(path, &buf);
-                                    }
-                                    let _ = s.output.send(buf.clone());
-                                    drop(g);
-                                    pending.extend_from_slice(&buf);
-                                    if pending.len() >= OUTPUT_COALESCE_MAX {
-                                        emit_session_data(&events, &sid, &pending);
-                                        pending.clear();
-                                    }
-                                } else {
+                                }
+                                // Keystroke echo / short prompts: flush now.
+                                // Large dumps: flush at MAX, else wait briefly for more chunks.
+                                if !pending.is_empty()
+                                    && (pending.len() <= OUTPUT_INTERACTIVE_MAX
+                                        || pending.len() >= OUTPUT_COALESCE_MAX)
+                                {
+                                    emit_session_data(&events, &sid, std::mem::take(&mut pending));
+                                }
+                                if !alive {
                                     break;
                                 }
                             }
                             Err(_) => break,
                         }
                     }
-                    _ = ticker.tick() => {
-                        if !pending.is_empty() {
-                            emit_session_data(&events, &sid, &pending);
-                            pending.clear();
-                        }
+                    _ = ticker.tick(), if !pending.is_empty() => {
+                        emit_session_data(&events, &sid, std::mem::take(&mut pending));
                     }
                 }
             }
             if !pending.is_empty() {
-                emit_session_data(&events, &sid, &pending);
+                emit_session_data(&events, &sid, std::mem::take(&mut pending));
             }
             let serial_dropped = {
                 let g = inner.lock();
@@ -1986,6 +2037,7 @@ impl App {
                     event: "session.closed".into(),
                     session_id: sid,
                     data: None,
+                    bytes: None,
                     reason: Some("dropped".into()),
                 });
             }
@@ -2092,15 +2144,30 @@ mod output_coalesce_tests {
     #[test]
     fn coalesce_budget_covers_several_pty_reads() {
         assert!(OUTPUT_COALESCE_MAX >= 32_768);
-        assert!(OUTPUT_COALESCE_MS <= 16);
+        assert!(OUTPUT_COALESCE_MS <= 4);
+        assert!(OUTPUT_INTERACTIVE_MAX <= 2048);
+        assert!(OUTPUT_INTERACTIVE_MAX < OUTPUT_COALESCE_MAX);
         let (tx, mut rx) = broadcast::channel(4);
-        emit_session_data(&tx, "id", b"");
+        emit_session_data(&tx, "id", Vec::new());
         assert!(rx.try_recv().is_err());
-        emit_session_data(&tx, "a1b2c3d4-e5f6-7890-abcd-ef1234567890", b"hi");
+        emit_session_data(
+            &tx,
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            b"hi".to_vec(),
+        );
         let ev = rx.try_recv().unwrap();
         assert_eq!(ev.event, "session.data");
         assert_eq!(ev.session_id, "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
-        assert_eq!(ev.data.as_deref(), Some("aGk="));
+        assert!(ev.data.is_none());
+        assert_eq!(ev.bytes.as_deref(), Some(b"hi".as_slice()));
+    }
+
+    #[test]
+    fn interactive_sizes_flush_without_bulk_timer() {
+        // Single-key echo and short prompts must not wait on OUTPUT_COALESCE_MS.
+        assert!(1 <= OUTPUT_INTERACTIVE_MAX);
+        assert!(64 <= OUTPUT_INTERACTIVE_MAX);
+        assert!(OUTPUT_COALESCE_MS < 8 || OUTPUT_INTERACTIVE_MAX >= 512);
     }
 }
 

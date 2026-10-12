@@ -9,6 +9,10 @@ type Pending = {
 };
 
 export type SessionBytesHandler = (sessionId: string, bytes: Uint8Array) => void;
+export type SessionPayloadHandler = (bytes: Uint8Array) => void;
+
+const utf8Enc = new TextEncoder();
+const utf8Dec = new TextDecoder();
 
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -27,12 +31,25 @@ export function bytesToB64(bytes: Uint8Array): string {
 }
 
 export function textToB64(text: string): string {
-  return bytesToB64(new TextEncoder().encode(text));
+  return bytesToB64(utf8Enc.encode(text));
+}
+
+function isSessionIdChars(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    const ok =
+      (c >= 48 && c <= 57) || // 0-9
+      (c >= 65 && c <= 70) || // A-F
+      (c >= 97 && c <= 102) || // a-f
+      c === 45; // -
+    if (!ok) return false;
+  }
+  return s.length > 0;
 }
 
 /** Daemon WS stdin/stdout frame: `sessionId\\0` + raw bytes. */
 export function encodeTermDataFrame(sessionId: string, payload: Uint8Array): Uint8Array {
-  const sid = new TextEncoder().encode(sessionId);
+  const sid = utf8Enc.encode(sessionId);
   const buf = new Uint8Array(sid.length + 1 + payload.length);
   buf.set(sid, 0);
   buf[sid.length] = 0;
@@ -42,14 +59,14 @@ export function encodeTermDataFrame(sessionId: string, payload: Uint8Array): Uin
 
 /** Daemon WS stdin frame: `sessionId\\0` + UTF-8 bytes. */
 export function encodeTermInputFrame(sessionId: string, text: string): Uint8Array {
-  return encodeTermDataFrame(sessionId, new TextEncoder().encode(text));
+  return encodeTermDataFrame(sessionId, utf8Enc.encode(text));
 }
 
 export function parseTermDataFrame(buf: Uint8Array): { sessionId: string; bytes: Uint8Array } | null {
   const z = buf.indexOf(0);
   if (z <= 0 || z > 80) return null;
-  const sessionId = new TextDecoder().decode(buf.subarray(0, z));
-  if (![...sessionId].every((c) => /[0-9a-fA-F-]/.test(c))) return null;
+  const sessionId = utf8Dec.decode(buf.subarray(0, z));
+  if (!isSessionIdChars(sessionId)) return null;
   return { sessionId, bytes: buf.subarray(z + 1) };
 }
 
@@ -124,7 +141,10 @@ class DaemonRpc {
   private ws: WebSocket | null = null;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  /** Broadcast handlers (rare). Prefer onSessionBytes for the xterm hot path. */
   private sessionHandlers = new Set<SessionBytesHandler>();
+  /** Per-session PTY stdout — O(1) dispatch instead of waking every pane. */
+  private sessionPayload = new Map<string, Set<SessionPayloadHandler>>();
   private statusHandlers = new Set<(ok: boolean, err?: string) => void>();
   private closedHandlers = new Set<(sessionId: string, reason?: string) => void>();
   private opening: Promise<void> | null = null;
@@ -134,6 +154,20 @@ class DaemonRpc {
   onBytes(h: SessionBytesHandler): () => void {
     this.sessionHandlers.add(h);
     return () => this.sessionHandlers.delete(h);
+  }
+
+  /** Keystroke-path stdout: only the matching pane runs. */
+  onSessionBytes(sessionId: string, h: SessionPayloadHandler): () => void {
+    let set = this.sessionPayload.get(sessionId);
+    if (!set) {
+      set = new Set();
+      this.sessionPayload.set(sessionId, set);
+    }
+    set.add(h);
+    return () => {
+      set!.delete(h);
+      if (!set!.size) this.sessionPayload.delete(sessionId);
+    };
   }
 
   onStatus(h: (ok: boolean, err?: string) => void): () => void {
@@ -218,7 +252,13 @@ class DaemonRpc {
 
   private dispatchBytes(sessionId: string, bytes: Uint8Array) {
     if (!sessionId || !bytes.length) return;
-    this.sessionHandlers.forEach((h) => h(sessionId, bytes));
+    const targeted = this.sessionPayload.get(sessionId);
+    if (targeted) {
+      for (const h of targeted) h(bytes);
+    }
+    if (this.sessionHandlers.size) {
+      this.sessionHandlers.forEach((h) => h(sessionId, bytes));
+    }
   }
 
   private onBinary(data: unknown) {
@@ -303,13 +343,22 @@ class DaemonRpc {
   }
 
   /** Keystroke path: binary WS frame, no JSON-RPC round-trip, no local echo. */
-  async sendTermInput(sessionId: string, text: string): Promise<void> {
-    await this.connect();
+  sendTermInput(sessionId: string, text: string): void {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      throw new RpcError("daemon websocket closed");
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(encodeTermInputFrame(sessionId, text));
+      return;
     }
-    ws.send(encodeTermInputFrame(sessionId, text));
+    // Rare: WS not up yet. Do not block the keystroke path on a cold connect().
+    void this.connect()
+      .then(() => {
+        const open = this.ws;
+        if (!open || open.readyState !== WebSocket.OPEN) {
+          throw new RpcError("daemon websocket closed");
+        }
+        open.send(encodeTermInputFrame(sessionId, text));
+      })
+      .catch(() => undefined);
   }
 }
 

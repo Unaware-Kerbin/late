@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState, type DragEvent, type MouseEvent, type ReactNode } from "react";
 import { vllmDockerHint, vllmStartVisible } from "../lib/inferenceUi";
-import { isProposalDismissed } from "../lib/approvals-ui";
+import {
+  approvalIntentLabel,
+  approvalPrimaryText,
+  approvalProposedCommand,
+  approvalSessionId,
+  isProposalDismissed,
+} from "../lib/approvals-ui";
+import { renderChatMarkdown } from "../lib/chatMarkdown";
+import {
+  backendBlockedWhenCloudOff,
+  cloudOffOptionSuffix,
+} from "../lib/cloudGate";
 import {
   sidecarHealth,
   sidecarGrantDir,
@@ -72,6 +83,31 @@ function whereServer(t?: ChatTargetMeta): string {
   if (t.egress === "private") return `your network · ${t.base}`;
   if (t.egress === "cloud") return `public internet · ${t.base}`;
   return `this computer · ${t.base}`;
+}
+
+function msgRoleLabel(role: ChatMsg["role"], nickname?: string, label?: string): string {
+  const named = (nickname || label || "").trim();
+  if (named) return named;
+  if (role === "user") return "You";
+  if (role === "system") return "System";
+  return "Agent";
+}
+
+function cloudBlockHint(backend: ChatBackend): string {
+  if (backend === "cursor") return "Cloud AI is off. Turn it on in Settings to use Cursor.";
+  return `Cloud AI is off. Turn it on in Settings to use ${backendLabel(backend)} on the public internet, or point the URL at your private network.`;
+}
+
+function settingsBaseUrl(settings: AppSettings | null | undefined, backend: ChatBackend): string {
+  if (!settings) return "";
+  if (backend === "local") return settings.vllm_base_url || "";
+  if (backend === "ollama") return settings.ollama_base_url || "";
+  if (backend === "llamacpp") return settings.llama_cpp_base_url || "";
+  if (backend === "anthropic") return settings.anthropic_base_url || "";
+  if (backend === "gemini") return settings.gemini_base_url || "";
+  if (backend === "azure") return settings.azure_base_url || "";
+  if (backend === "mcp") return settings.mcp_url || "";
+  return "";
 }
 
 /** Never show orchestrator thread JSON or Late SYSTEM wrap after “Agent stopped:”. */
@@ -811,7 +847,14 @@ export function ChatPane() {
     settingsApplied.current = true;
     const next = coerceChatBackend(settings.default_backend);
     const cloudOk = Boolean(settings.cloud_chat_enabled);
-    const backendNext = next === "cursor" && !cloudOk ? "local" : next;
+    const blocked =
+      !cloudOk &&
+      backendBlockedWhenCloudOff(next, false, targetOf(models, next), {
+        baseUrl: settingsBaseUrl(settings, next),
+        privateHosts: settings.private_inference_hosts,
+        mcpStdio: next === "mcp" && !settings.mcp_url?.trim(),
+      });
+    const backendNext = blocked ? "local" : next;
     setBackend(backendNext);
     if (backendNext === "ollama") setModel(settings.ollama_model || models.ollama[0] || "");
     else if (backendNext === "llamacpp") setModel(settings.llama_cpp_model || models.llamacpp[0] || "");
@@ -872,8 +915,14 @@ export function ChatPane() {
   async function sendText(raw: string) {
     const text = raw.trim();
     if (!text || busyRef.current) return;
-    if (backend === "cursor" && !settings?.cloud_chat_enabled) {
-      setStatus("Cloud AI is off. Turn it on in Settings to use Cursor.");
+    if (
+      backendBlockedWhenCloudOff(backend, Boolean(settings?.cloud_chat_enabled), targetOf(models, backend), {
+        baseUrl: settingsBaseUrl(settings, backend),
+        privateHosts: settings?.private_inference_hosts,
+        mcpStdio: backend === "mcp" && !settings?.mcp_url?.trim(),
+      })
+    ) {
+      setStatus(cloudBlockHint(backend));
       setState({ settingsOpen: true });
       return;
     }
@@ -1187,8 +1236,15 @@ export function ChatPane() {
           value={backend}
           onChange={(e) => {
             const next = coerceChatBackend(e.target.value);
-            if (next === "cursor" && !settings?.cloud_chat_enabled) {
-              setStatus("Turn on Cloud AI in Settings to use Cursor.");
+            const cloudOk = Boolean(settings?.cloud_chat_enabled);
+            if (
+              backendBlockedWhenCloudOff(next, cloudOk, targetOf(models, next), {
+                baseUrl: settingsBaseUrl(settings, next),
+                privateHosts: settings?.private_inference_hosts,
+                mcpStdio: next === "mcp" && !settings?.mcp_url?.trim(),
+              })
+            ) {
+              setStatus(cloudBlockHint(next));
               setState({ settingsOpen: true });
               return;
             }
@@ -1208,16 +1264,29 @@ export function ChatPane() {
             resetChat({ backend: next, label: backendLabel(next) });
           }}
         >
-          <option value="local">vLLM</option>
-          <option value="llamacpp">llama.cpp</option>
-          <option value="ollama">Ollama</option>
-          <option value="mcp">MCP</option>
-          <option value="anthropic">Anthropic Claude</option>
-          <option value="gemini">Gemini</option>
-          <option value="azure">Azure</option>
-          <option value="cursor" disabled={!settings?.cloud_chat_enabled}>
-            Cursor SDK{settings?.cloud_chat_enabled ? "" : " — Cloud AI is off"}
-          </option>
+          {([
+            ["local", "vLLM"],
+            ["llamacpp", "llama.cpp"],
+            ["ollama", "Ollama"],
+            ["mcp", "MCP"],
+            ["anthropic", "Anthropic Claude"],
+            ["gemini", "Gemini"],
+            ["azure", "Azure"],
+            ["cursor", "Cursor SDK"],
+          ] as const).map(([value, label]) => {
+            const cloudOk = Boolean(settings?.cloud_chat_enabled);
+            const blocked = backendBlockedWhenCloudOff(value, cloudOk, targetOf(models, value), {
+              baseUrl: settingsBaseUrl(settings, value),
+              privateHosts: settings?.private_inference_hosts,
+              mcpStdio: value === "mcp" && !settings?.mcp_url?.trim(),
+            });
+            return (
+              <option key={value} value={value} disabled={blocked}>
+                {label}
+                {cloudOffOptionSuffix(blocked, cloudOk)}
+              </option>
+            );
+          })}
         </select>
         {isInferenceEngine(backend) ? (
           <InferenceServerPick
@@ -1550,19 +1619,40 @@ export function ChatPane() {
                   {String(m.nickname || m.label || "?").trim().charAt(0).toUpperCase()}
                 </span>
               ) : null}
-              <div className="meta">{m.nickname || m.label || m.role}</div>
+              <div className="meta">{msgRoleLabel(m.role, m.nickname, m.label)}</div>
             </div>
-            {m.content}
+            {m.role === "assistant" && !m.skipped ? (
+              <div className="msg-body">{renderChatMarkdown(m.content)}</div>
+            ) : (
+              <div className="msg-body msg-plain">{m.content}</div>
+            )}
           </div>
         ))}
         {approval && (
-          <div className="banner">
-            Agent proposed a command to {approval.detail?.intent === "remediate" ? "implement a fix" : "answer your question"} — Approve to run it
+          <div className="chat-pending" role="status">
+            <div className="chat-pending-head">
+              <span className="chat-pending-label">Needs Approve</span>
+              <span className="chat-pending-intent">{approvalIntentLabel(approval.detail)}</span>
+            </div>
+            {approvalSessionId(approval.detail) ? (
+              <div className="chat-pending-meta">
+                Target session: {approvalSessionId(approval.detail)}
+              </div>
+            ) : null}
+            {typeof approval.detail?.reason === "string" && approval.detail.reason ? (
+              <div className="chat-pending-reason">{String(approval.detail.reason)}</div>
+            ) : null}
+            {approvalProposedCommand(approval.detail) &&
+            approvalPrimaryText(approval) !== approvalProposedCommand(approval.detail) ? (
+              <div className="chat-pending-meta">As proposed: {approvalProposedCommand(approval.detail)}</div>
+            ) : null}
+            <pre className="chat-pending-cmd">{approvalPrimaryText(approval)}</pre>
+            <div className="chat-pending-foot">Review the dialog, then Approve to run — Cancel leaves it unsent.</div>
           </div>
         )}
         {busy && (
           <div className="msg assistant thinking" aria-live="polite">
-            <div className="meta">assistant</div>
+            <div className="meta">Agent</div>
             <div className="think-row">
               <span className="think-dots" aria-hidden>
                 <i />

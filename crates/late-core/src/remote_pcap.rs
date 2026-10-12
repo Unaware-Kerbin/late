@@ -425,7 +425,12 @@ pub fn start_live(
     pcap::validate_bpf(bpf)?;
     match start_unix_stream(device, profile, secrets, iface, bpf, outfile.clone()) {
         Ok(cap) => Ok(cap),
-        Err(_unix_err) => start_cli_worker(device, profile, secrets, iface, bpf, outfile),
+        Err(unix_err) => match start_cli_worker(device, profile, secrets, iface, bpf, outfile) {
+            Ok(cap) => Ok(cap),
+            Err(cli_err) => Err(LateError::Pcap(format!(
+                "{cli_err} (unix tcpdump stream: {unix_err})"
+            ))),
+        },
     }
 }
 
@@ -478,6 +483,8 @@ fn start_unix_stream(
     let _ = child.kill();
     let _ = child.wait();
     let _ = pump.join();
+    // Leave no 0-byte stub for the CLI fallback (or a failed start) to trip over.
+    let _ = std::fs::remove_file(&outfile);
     let err = err_buf.lock().unwrap_or_else(|p| p.into_inner()).clone();
     Err(LateError::Pcap(if err.trim().is_empty() {
         "remote unix tcpdump did not stream a pcap".into()
@@ -485,6 +492,12 @@ fn start_unix_stream(
         err
     }))
 }
+
+/// How long `start_cli_worker` waits for the capture thread to set `running`
+/// (login + `show version` + start-shell probes + "listening on"). Returning
+/// success before that made the UI show Stop while the worker was still in
+/// `wait_prompt`, so Stop looked hung and then failed with a banner/prompt error.
+const CLI_CAPTURE_READY_WAIT: Duration = Duration::from_secs(60);
 
 fn start_cli_worker(
     device: &Device,
@@ -514,28 +527,67 @@ fn start_cli_worker(
         }
         res
     });
-    for _ in 0..80 {
-        if running.load(Ordering::SeqCst) {
-            break;
-        }
-        if worker.is_finished() {
+    let deadline = std::time::Instant::now() + CLI_CAPTURE_READY_WAIT;
+    while std::time::Instant::now() < deadline {
+        if running.load(Ordering::SeqCst) || worker.is_finished() {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     if let Some(e) = fail.lock().unwrap_or_else(|p| p.into_inner()).clone() {
         let _ = worker.join();
+        let _ = std::fs::remove_file(&outfile);
         return Err(LateError::Pcap(e));
     }
     if worker.is_finished() {
         return match worker.join() {
-            Ok(Ok(())) => Ok(LiveCapture::remote(
+            Ok(Ok(())) => {
+                if path_is_pcap(&outfile) {
+                    Ok(LiveCapture::remote(
+                        iface.into(),
+                        outfile,
+                        None,
+                        None,
+                        Some(tx),
+                        None,
+                    ))
+                } else {
+                    let _ = std::fs::remove_file(&outfile);
+                    Err(LateError::Pcap(
+                        "SSH capture finished before any packets were written".into(),
+                    ))
+                }
+            }
+            Ok(Err(e)) => {
+                let _ = std::fs::remove_file(&outfile);
+                Err(e)
+            }
+            Err(_) => {
+                let _ = std::fs::remove_file(&outfile);
+                Err(LateError::Pcap("SSH capture worker panicked".into()))
+            }
+        };
+    }
+    if !running.load(Ordering::SeqCst) {
+        // Still preparing after the budget — do not hand the UI a fake "live" id.
+        let _ = tx.send(());
+        let joined = worker.join();
+        if path_is_pcap(&outfile) {
+            // Rare: became ready and finished during join — return a stopped capture handle.
+            return Ok(LiveCapture::remote(
                 iface.into(),
                 outfile,
                 None,
                 None,
                 Some(tx),
                 None,
+            ));
+        }
+        let _ = std::fs::remove_file(&outfile);
+        return match joined {
+            Ok(Ok(())) => Err(LateError::Pcap(
+                "SSH capture did not become ready in time (no traffic listener on the device)"
+                    .into(),
             )),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(LateError::Pcap("SSH capture worker panicked".into())),
@@ -764,5 +816,11 @@ mod tests {
             "echo LATEB64_START; base64 /tmp/x; echo LATEB64_END\nLATEB64_START\n{b64}\nLATEB64_END\n$ "
         );
         assert!(decode_marked(&echoed).is_some());
+    }
+
+    #[test]
+    fn cli_ready_wait_covers_prompt_and_shell_probes() {
+        // Must outlast CliSession::wait_prompt (20s) plus start-shell / listening probes.
+        assert!(CLI_CAPTURE_READY_WAIT >= Duration::from_secs(45));
     }
 }

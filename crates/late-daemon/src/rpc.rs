@@ -64,16 +64,17 @@ pub fn is_rpc_notification(id: &Value) -> bool {
 }
 
 /// Fast-path terminal stdin: `sessionId\0raw-bytes` (not JSON, not base64).
-pub fn parse_term_input_frame(buf: &[u8]) -> Option<(String, Vec<u8>)> {
+/// Returns borrowed slices so `App::write` copies into the channel once — not twice.
+pub fn parse_term_input_frame(buf: &[u8]) -> Option<(&str, &[u8])> {
     let z = buf.iter().position(|&b| b == 0)?;
     if z == 0 || z > 80 {
         return None;
     }
     let id = std::str::from_utf8(&buf[..z]).ok()?;
-    if !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+    if !id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
         return None;
     }
-    Some((id.to_string(), buf[z + 1..].to_vec()))
+    Some((id, &buf[z + 1..]))
 }
 
 /// PTY stdout WS frame — same layout as stdin (`sessionId\\0` + raw bytes).
@@ -83,6 +84,11 @@ pub fn encode_term_data_frame(session_id: &str, data: &[u8]) -> Vec<u8> {
     buf.push(0);
     buf.extend_from_slice(data);
     buf
+}
+
+/// Legacy JSON `session.data` fallback only.
+pub fn decode_b64(b64: &str) -> Result<Vec<u8>, ()> {
+    STANDARD.decode(b64).map_err(|_| ())
 }
 
 async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateError> {

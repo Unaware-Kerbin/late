@@ -337,16 +337,20 @@ export function setTermHighlights(next: TermHighlightSettings | null) {
 }
 
 export function setShellWidth(id: "side" | "chat", px: number) {
+  const nextPx = clampShellWidth(id, px);
+  if ((id === "chat" ? state.chatW : state.sideW) === nextPx) return;
   setState((s) => {
-    const next = id === "chat" ? { ...s, chatW: clampShellWidth("chat", px) } : { ...s, sideW: clampShellWidth("side", px) };
+    const next = id === "chat" ? { ...s, chatW: nextPx } : { ...s, sideW: nextPx };
     persistShell(next);
     return next;
   });
 }
 
 export function setChatHeight(px: number) {
+  const chatH = clampChatHeight(px);
+  if (state.chatH === chatH) return;
   setState((s) => {
-    const next = { ...s, chatH: clampChatHeight(px) };
+    const next = { ...s, chatH };
     persistShell(next);
     return next;
   });
@@ -884,9 +888,33 @@ export function startConnectPrompt(device: Device, kind?: SessionKind, split?: S
   });
 }
 
+/** Show a pane that already has this device, so a second Connect does not open another login. */
+function focusOpenSession(deviceId: string, kind: SessionKind): boolean {
+  const s = getState();
+  let fallback: { tabId: string; paneId: string } | null = null;
+  for (const tab of s.tabs) {
+    for (const paneId of paneIdsIn(tab.tree)) {
+      const pane = s.panes[paneId];
+      if (!pane?.session || pane.deviceId !== deviceId || pane.kind !== kind) continue;
+      if (!pane.disconnected) {
+        activateTab(tab.id);
+        setState({ focusedPaneId: paneId });
+        return true;
+      }
+      fallback ??= { tabId: tab.id, paneId };
+    }
+  }
+  if (!fallback) return false;
+  activateTab(fallback.tabId);
+  setState({ focusedPaneId: fallback.paneId });
+  return true;
+}
+
 /** Saved SSH: one click when a password, key, or agent is already stored; otherwise prompt. */
 export function connectDevice(device: Device, kind?: SessionKind, split?: SplitPlacement) {
-  if ((kind ?? kindForDevice(device)) === "ssh") {
+  const sessionKind = kindForDevice(device, kind);
+  if (!split && focusOpenSession(device.id, sessionKind)) return;
+  if (sessionKind === "ssh") {
     const auth = getState().auth.find((p) => p.id === (device.auth_profile_id ?? ""));
     const hasLogin = Boolean(auth?.has_password || auth?.key_path || auth?.use_agent);
     if (!hasLogin) {
@@ -1004,8 +1032,8 @@ export async function closePaneSession(paneId: string) {
   await closePane(paneId);
 }
 
-export async function sendInput(sessionId: string, text: string) {
-  await rpc.sendTermInput(sessionId, text);
+export function sendInput(sessionId: string, text: string) {
+  rpc.sendTermInput(sessionId, text);
 }
 
 const pendingResize = new Map<string, { cols: number; rows: number }>();
@@ -1154,7 +1182,7 @@ export async function runCollection(id: string) {
   }
   try {
     for (const cmd of cmds) {
-      await sendInput(sessionId, `${cmd}\r`);
+      sendInput(sessionId, `${cmd}\r`);
       await new Promise((r) => window.setTimeout(r, 60));
     }
     toast("ok", `sent ${cmds.length} command${cmds.length === 1 ? "" : "s"} to ${pane.session?.name ?? "session"}`);
@@ -1445,8 +1473,17 @@ export function splitKey(node: SplitNode): string {
   return `${node.dir}:${splitKey(node.a)}/${splitKey(node.b)}`;
 }
 
+function splitRatioAt(node: SplitNode, key: string): number | undefined {
+  if (node.type !== "split") return undefined;
+  if (splitKey(node) === key) return node.ratio;
+  return splitRatioAt(node.a, key) ?? splitRatioAt(node.b, key);
+}
+
 export function setSplitRatio(tabId: string, key: string, ratio: number) {
   const r = Math.min(0.82, Math.max(0.18, ratio));
+  const tab = state.tabs.find((t) => t.id === tabId);
+  const cur = tab ? splitRatioAt(tab.tree, key) : undefined;
+  if (cur !== undefined && Math.abs(cur - r) < 0.001) return;
   setState((s) => ({
     tabs: s.tabs.map((t) => {
       if (t.id !== tabId) return t;
@@ -1669,7 +1706,10 @@ export function startDeviceEditor(device?: Device, kind?: Device["kind"], folder
 }
 
 rpc.onStatus((ok, err) => {
-  setState({ daemonOk: ok, daemonError: ok ? null : err ?? "offline" });
+  const daemonError = ok ? null : err ?? "offline";
+  const s = getState();
+  if (s.daemonOk === ok && s.daemonError === daemonError) return;
+  setState({ daemonOk: ok, daemonError });
 });
 
 rpc.onClosed((sessionId, reason) => {
@@ -1716,11 +1756,22 @@ export function boot() {
   void refreshAll();
   window.setInterval(() => {
     void rpc.health().then((ok) => {
-      if (ok && !getState().daemonOk) void refreshAll();
-      if (!ok) setState({ daemonOk: false, daemonError: getState().daemonError ?? "daemon unreachable" });
+      const s = getState();
+      if (ok) {
+        // Recover after a drop — do not emit on every healthy tick.
+        if (!s.daemonOk) void refreshAll();
+        return;
+      }
+      if (s.daemonOk || s.daemonError !== "daemon unreachable") {
+        setState({ daemonOk: false, daemonError: "daemon unreachable" });
+      }
     });
-    void sidecarHealth().then((ok) => setState({ sidecarOk: ok }));
+    void sidecarHealth().then((ok) => {
+      if (getState().sidecarOk !== ok) setState({ sidecarOk: ok });
+    });
   }, 4000);
-  void sidecarHealth().then((ok) => setState({ sidecarOk: ok }));
+  void sidecarHealth().then((ok) => {
+    if (getState().sidecarOk !== ok) setState({ sidecarOk: ok });
+  });
 }
 

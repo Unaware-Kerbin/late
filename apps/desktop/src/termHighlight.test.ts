@@ -74,6 +74,12 @@ test("disabled highlighter is a passthrough", () => {
   assert.equal(hl.feed("is down"), "is down");
 });
 
+test("keystroke echo without keyword first-chars stays a passthrough", () => {
+  const hl = new StreamHighlighter({ enabled: true, schemes: DEFAULT_TERM_HIGHLIGHTS.schemes, rules: [down] });
+  assert.equal(hl.feed("x"), "x");
+  assert.equal(hl.feed("yz"), "yz");
+});
+
 test("sanitize drops junk and caps length", () => {
   const s = sanitizeHighlights({
     enabled: true,

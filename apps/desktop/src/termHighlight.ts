@@ -239,8 +239,15 @@ function compile(rules: TermHighlightRule[]): Compiled[] {
 
 function findMatches(text: string, rules: Compiled[]): { start: number; end: number; rule: Compiled }[] {
   const hits: { start: number; end: number; rule: Compiled }[] = [];
+  // Bulk dumps hit many case-insensitive rules — lower once, not per rule.
+  let lowered: string | null = null;
+  const hayFor = (caseSensitive: boolean) => {
+    if (caseSensitive) return text;
+    if (lowered === null) lowered = text.toLowerCase();
+    return lowered;
+  };
   for (const rule of rules) {
-    const hay = rule.caseSensitive ? text : text.toLowerCase();
+    const hay = hayFor(rule.caseSensitive);
     const needle = rule.needle;
     if (!needle) continue;
     let from = 0;
@@ -271,8 +278,19 @@ export function colorPlain(text: string, rules: TermHighlightRule[]): string {
   return colorPlainCompiled(text, compile(rules));
 }
 
-function colorPlainCompiled(text: string, compiled: Compiled[]): string {
+/** True if `text` might contain a rule start (avoids full scans on keystroke echo). */
+function mayContainRuleStart(text: string, firstChars: Set<string>): boolean {
+  if (!text || !firstChars.size) return false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (firstChars.has(ch) || firstChars.has(ch.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function colorPlainCompiled(text: string, compiled: Compiled[], firstChars?: Set<string>): string {
   if (!compiled.length || !text) return text;
+  if (firstChars && !mayContainRuleStart(text, firstChars)) return text;
   const hits = findMatches(text, compiled);
   if (!hits.length) return text;
   let out = "";
@@ -331,34 +349,34 @@ export function colorAnsiAware(s: string, rules: TermHighlightRule[]): string {
   return colorAnsiAwareCompiled(s, compile(rules));
 }
 
-function colorAnsiAwareCompiled(s: string, compiled: Compiled[]): string {
+function colorAnsiAwareCompiled(s: string, compiled: Compiled[], firstChars?: Set<string>): string {
   if (!compiled.length || !s) return s;
+  if (firstChars && !s.includes("\x1b") && !mayContainRuleStart(s, firstChars)) return s;
   let out = "";
   let i = 0;
-  let plain = "";
-  const flushPlain = () => {
-    if (plain) {
-      out += colorPlainCompiled(plain, compiled);
-      plain = "";
-    }
+  let plainStart = -1;
+  const flushPlain = (end: number) => {
+    if (plainStart < 0 || plainStart >= end) return;
+    out += colorPlainCompiled(s.slice(plainStart, end), compiled, firstChars);
+    plainStart = -1;
   };
   while (i < s.length) {
     if (s[i] === "\x1b") {
       const end = consumeEscape(s, i);
       if (end < 0) {
-        flushPlain();
+        flushPlain(i);
         out += s.slice(i);
         return out;
       }
-      flushPlain();
+      flushPlain(i);
       out += s.slice(i, end);
       i = end;
       continue;
     }
-    plain += s[i];
+    if (plainStart < 0) plainStart = i;
     i++;
   }
-  flushPlain();
+  flushPlain(i);
   return out;
 }
 
@@ -411,6 +429,7 @@ function holdPlainSuffixCompiled(ready: string, compiled: Compiled[]): { flush: 
 
 export class StreamHighlighter {
   private compiled: Compiled[] = [];
+  private firstChars = new Set<string>();
   private enabled = true;
   private buf = "";
 
@@ -422,10 +441,16 @@ export class StreamHighlighter {
     const clean = sanitizeHighlights(s);
     this.enabled = clean.enabled;
     this.compiled = compile(resolvedRules(clean));
+    this.firstChars = new Set();
+    for (const r of this.compiled) {
+      const ch = r.needle[0];
+      if (ch) this.firstChars.add(ch);
+    }
   }
 
   feed(chunk: string): string {
-    if (!this.enabled) {
+    // Disabled or no rules: do not scan / hold — write path stays a thin pass-through.
+    if (!this.enabled || !this.compiled.length) {
       const all = this.buf + chunk;
       this.buf = "";
       return all;
@@ -434,16 +459,27 @@ export class StreamHighlighter {
     const incompleteAt = this.incompleteEscapeAt(this.buf);
     const ready = incompleteAt >= 0 ? this.buf.slice(0, incompleteAt) : this.buf;
     const restEsc = incompleteAt >= 0 ? this.buf.slice(incompleteAt) : "";
+    // Keystroke echo often cannot start any keyword — skip hold + match scans.
+    if (
+      !restEsc &&
+      ready.length <= 4 &&
+      !ready.includes("\x1b") &&
+      !mayContainRuleStart(ready, this.firstChars) &&
+      !isPatternPrefix(ready, this.compiled)
+    ) {
+      this.buf = "";
+      return ready;
+    }
     const { flush, hold } = holdPlainSuffixCompiled(ready, this.compiled);
     this.buf = hold + restEsc;
-    return colorAnsiAwareCompiled(flush, this.compiled);
+    return colorAnsiAwareCompiled(flush, this.compiled, this.firstChars);
   }
 
   flush(): string {
     const left = this.buf;
     this.buf = "";
-    if (!this.enabled) return left;
-    return colorAnsiAwareCompiled(left, this.compiled);
+    if (!this.enabled || !this.compiled.length) return left;
+    return colorAnsiAwareCompiled(left, this.compiled, this.firstChars);
   }
 
   private incompleteEscapeAt(s: string): number {

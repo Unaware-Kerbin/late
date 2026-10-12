@@ -8,8 +8,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::serve::ListenerExt;
 use axum::{Json, Router};
-use base64::engine::general_purpose::STANDARD;
-use base64::Engine;
 use clap::Parser;
 use late_core::origin::{is_allowed_origin, is_loopback_host_header};
 use late_core::App;
@@ -259,10 +257,18 @@ async fn ws_loop(mut socket: WebSocket, app: App) {
             }
             ev = events.recv() => {
                 match ev {
-                    Ok(e) => {
+                    Ok(mut e) => {
                         if e.event == "session.data" {
-                            if let Some(ref b64) = e.data {
-                                if let Ok(raw) = STANDARD.decode(b64) {
+                            // Prefer raw octets from the core (no base64 round-trip).
+                            if let Some(raw) = e.bytes.take() {
+                                let frame = rpc::encode_term_data_frame(&e.session_id, &raw);
+                                if socket.send(Message::Binary(frame.into())).await.is_err() {
+                                    break;
+                                }
+                                continue;
+                            }
+                            if let Some(b64) = e.data.take() {
+                                if let Ok(raw) = rpc::decode_b64(&b64) {
                                     let frame = rpc::encode_term_data_frame(&e.session_id, &raw);
                                     if socket.send(Message::Binary(frame.into())).await.is_err() {
                                         break;

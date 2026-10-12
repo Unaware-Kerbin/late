@@ -53,11 +53,10 @@ export function ShellLayout() {
                   className="shell-head"
                   draggable
                   title="Drag to move the terminal pane"
+                  aria-label="Drag to move the terminal pane"
                   onDragStart={(e) => onShellDragStart(e, "main")}
                   onDragEnd={onShellDragEnd}
-                >
-                  Terminal
-                </div>
+                />
                 <Workspace />
               </>
             )}
@@ -96,6 +95,26 @@ function slotStyle(
   return { flex: "1 1 auto", minWidth: 160 };
 }
 
+function trackPointer(apply: (ev: globalThis.MouseEvent) => void) {
+  let frame = 0;
+  let last: globalThis.MouseEvent | null = null;
+  const move = (ev: globalThis.MouseEvent) => {
+    last = ev;
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (last) apply(last);
+    });
+  };
+  const up = () => {
+    if (frame) cancelAnimationFrame(frame);
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
+
 function ShellGutter({
   axis,
   left,
@@ -111,13 +130,7 @@ function ShellGutter({
       const startY = e.clientY;
       const slot = e.currentTarget.previousElementSibling as HTMLElement | null;
       const startH = slot?.getBoundingClientRect().height ?? 280;
-      const move = (ev: globalThis.MouseEvent) => setChatHeight(startH + (ev.clientY - startY));
-      const up = () => {
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
+      trackPointer((ev) => setChatHeight(startH + (ev.clientY - startY)));
       return;
     }
     const gutter = e.currentTarget;
@@ -129,7 +142,7 @@ function ShellGutter({
     const rightW = next.getBoundingClientRect().width;
     const leftFixed = left !== "main";
     const rightFixed = right !== "main";
-    const move = (ev: globalThis.MouseEvent) => {
+    trackPointer((ev) => {
       const dx = ev.clientX - startX;
       if (leftFixed && rightFixed) {
         setShellWidth(left as "side" | "chat", leftW + dx);
@@ -139,13 +152,7 @@ function ShellGutter({
       } else if (rightFixed) {
         setShellWidth(right as "side" | "chat", rightW - dx);
       }
-    };
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    });
   }
   return <div className={`shell-gutter ${axis === "y" ? "row" : "col"}`} onMouseDown={onMouseDown} />;
 }

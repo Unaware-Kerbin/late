@@ -67,6 +67,20 @@ export function App() {
     const offMenu = window.lateRuntime?.onUpdateMenuCheck?.(() => {
       void checkForUpdates({ reason: "manual" });
     });
+    const onTab = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab")) return;
+      if (document.querySelector(".modal-root, .folder-dlg")) return;
+      const target = e.target instanceof Element ? e.target : null;
+      if (target?.closest("input, textarea, select") && !target.closest(".xterm")) return;
+      const tabsNow = getState().tabs;
+      if (tabsNow.length < 2) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const cur = tabsNow.findIndex((t) => t.id === getState().activeTabId);
+      const step = e.shiftKey ? -1 : 1;
+      const next = tabsNow[(cur + step + tabsNow.length) % tabsNow.length];
+      if (next) activateTab(next.id);
+    };
     const onKey = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       if (meta && e.key.toLowerCase() === "k") {
@@ -127,11 +141,13 @@ export function App() {
       bumpUiScale(dir * 0.05);
       bumpTermFont(dir);
     };
+    window.addEventListener("keydown", onTab, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       window.clearTimeout(startup);
       offMenu?.();
+      window.removeEventListener("keydown", onTab, true);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("wheel", onWheel);
     };
@@ -249,8 +265,8 @@ export function App() {
         >
           ▾
         </button>
-        <button className="icon-btn" onClick={() => setState((s) => ({ ...s, paletteOpen: true }))} title="Command palette">
-          ⌘K
+        <button className="icon-btn" onClick={() => setState((s) => ({ ...s, paletteOpen: true }))} title="Command palette (Ctrl+K)">
+          Ctrl+K
         </button>
         <button className="icon-btn" onClick={() => { bumpUiScale(-0.1); bumpTermFont(-1); }} title="Smaller text (Ctrl+-)">
           A−

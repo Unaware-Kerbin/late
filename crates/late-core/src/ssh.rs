@@ -681,6 +681,13 @@ impl CliSession {
             cmd.arg("PreferredAuthentications=keyboard-interactive,password");
             cmd.arg("-o");
             cmd.arg("NumberOfPasswordPrompts=1");
+        } else {
+            // Agent/key only: never block on an interactive password prompt (that
+            // made SSH packet capture look "live" while wait_prompt spun 20s).
+            cmd.arg("-o");
+            cmd.arg("BatchMode=yes");
+            cmd.arg("-o");
+            cmd.arg("NumberOfPasswordPrompts=0");
         }
         let _askpass = if let Some(ref pw) = password {
             let (wrapped, guard) = wrap_pty_password(cmd, pw)?;
@@ -780,6 +787,17 @@ impl CliSession {
             if looks_like_cli_prompt(&t) {
                 return Ok(());
             }
+            if let Some(msg) = ssh_auth_failure_message(&t) {
+                return Err(LateError::Ssh(msg));
+            }
+            // ssh exited without a prompt (BatchMode auth fail, etc.)
+            if self.child.try_wait().ok().flatten().is_some() {
+                break;
+            }
+        }
+        let t = String::from_utf8_lossy(&self.acc);
+        if let Some(msg) = ssh_auth_failure_message(&t) {
+            return Err(LateError::Ssh(msg));
         }
         Err(LateError::Ssh(
             "no CLI prompt from SSH target (login banner only?)".into(),
@@ -834,6 +852,29 @@ pub(crate) fn looks_like_more_prompt(text: &str) -> bool {
     l.contains("--more--") || l.contains("-- more --")
 }
 
+fn ssh_auth_failure_message(text: &str) -> Option<String> {
+    let l = text.to_ascii_lowercase();
+    if l.contains("permission denied") {
+        return Some(
+            "SSH auth failed (permission denied — check key/agent or saved password)".into(),
+        );
+    }
+    // Interactive password prompt with no askpass / BatchMode should not sit here.
+    let line = text
+        .lines()
+        .rev()
+        .find(|ln| !ln.trim().is_empty())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if line.contains("password:") || line.contains("'s password") {
+        return Some(
+            "SSH asked for a password but this login has no saved password (agent/key failed)"
+                .into(),
+        );
+    }
+    None
+}
+
 #[cfg(test)]
 mod prompt_tests {
     use super::*;
@@ -846,6 +887,17 @@ mod prompt_tests {
         assert!(looks_like_more_prompt("--More--"));
         assert!(!looks_like_cli_prompt("-- MORE --"));
         assert!(looks_like_cli_prompt("6200F#"));
+    }
+
+    #[test]
+    fn auth_failure_from_banner() {
+        assert!(ssh_auth_failure_message("Permission denied (publickey).")
+            .unwrap()
+            .contains("permission denied"));
+        assert!(ssh_auth_failure_message("random@10.1.0.10's password: ")
+            .unwrap()
+            .contains("no saved password"));
+        assert!(ssh_auth_failure_message("6200F#").is_none());
     }
 }
 
@@ -1167,10 +1219,18 @@ fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &Path, algo: &str) {
     cmd.arg("UpdateHostKeys=no");
     cmd.arg("-o");
     cmd.arg("IPQoS=lowdelay");
+    // Interactive PTY: never pay zlib latency even if the user's ssh_config enables it.
+    cmd.arg("-o");
+    cmd.arg("Compression=no");
+    cmd.arg("-o");
+    cmd.arg("TCPKeepAlive=yes");
     cmd.arg("-o");
     cmd.arg("ServerAliveInterval=15");
     cmd.arg("-o");
     cmd.arg("ServerAliveCountMax=3");
+    // GUI terminal owns the session; disable OpenSSH ~. escape scanning.
+    cmd.arg("-o");
+    cmd.arg("EscapeChar=none");
     cmd.arg("-o");
     cmd.arg(format!("ConnectTimeout={}", SSH_CONNECT_TIMEOUT.as_secs()));
     cmd.arg("-o");

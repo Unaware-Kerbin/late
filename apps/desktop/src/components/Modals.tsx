@@ -1,5 +1,14 @@
-import { useEffect, useState } from "react";
-import { dismissProposal } from "../lib/approvals-ui";
+import { useEffect, useRef, useState } from "react";
+import {
+  approvalPrimaryText,
+  approvalProposedCommand,
+  approvalSessionId as approvalSessionIdOf,
+  dismissProposal,
+} from "../lib/approvals-ui";
+import {
+  backendBlockedWhenCloudOff,
+  cloudOffOptionSuffix,
+} from "../lib/cloudGate";
 import { approve, sidecarDiscoverMcp, sidecarProbe } from "../lib/sidecar";
 import { TermHighlightEditor } from "./TermHighlightEditor";
 import {
@@ -68,6 +77,7 @@ import {
   normalizeFolderPath,
   vendorLabel,
   type AuthProfile,
+  type ChatBackend,
   type Device,
   type DeviceKind,
   type SessionLogin,
@@ -235,9 +245,27 @@ function HostKeyModal() {
     cancelInFlightConnect();
     setState({ hostKey: null });
   }
+  const acceptRef = useRef(accept);
+  const cancelRef = useRef(cancel);
+  acceptRef.current = accept;
+  cancelRef.current = cancel;
   useEffect(() => {
-    window.addEventListener("keydown", trap, true);
-    return () => window.removeEventListener("keydown", trap, true);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelRef.current();
+        return;
+      }
+      if (e.key !== "Enter") return;
+      const el = e.target as HTMLElement | null;
+      if (el?.tagName === "BUTTON" && !el.classList.contains("primary")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void acceptRef.current();
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
   return (
     <div className="modal-root hostkey" onMouseDown={(e) => e.stopPropagation()}>
@@ -315,12 +343,26 @@ function ConnectFailedModal() {
       setBusy(false);
     }
   }
+  const retryBtn = useRef<HTMLButtonElement>(null);
+  const okRef = useRef(ok);
+  const retryRef = useRef(retry);
+  okRef.current = ok;
+  retryRef.current = retry;
   useEffect(() => {
+    retryBtn.current?.focus();
     function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        okRef.current();
+        return;
+      }
+      if (e.key !== "Enter") return;
+      const el = e.target as HTMLElement | null;
+      if (el?.tagName === "BUTTON" && el !== retryBtn.current) return;
       e.preventDefault();
       e.stopPropagation();
-      ok();
+      void retryRef.current();
     }
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -338,37 +380,13 @@ function ConnectFailedModal() {
           <button type="button" className="ghost" onClick={ok} disabled={busy}>
             OK
           </button>
-          <button type="button" className="primary" onClick={() => void retry()} disabled={busy}>
+          <button ref={retryBtn} type="button" className="primary" onClick={() => void retry()} disabled={busy}>
             {busy ? "Connecting…" : "Retry"}
           </button>
         </div>
       </div>
     </div>
   );
-}
-
-function approvalSessionId(detail: Record<string, unknown>): string {
-  const v = detail.sessionId ?? detail.session_id;
-  return typeof v === "string" && v.trim() ? v : "";
-}
-
-function approvalPrimary(approval: {
-  kind: string;
-  expanded?: string;
-  detail: Record<string, unknown>;
-}): string {
-  if (approval.kind === "ask" && typeof approval.detail.question === "string") {
-    return approval.detail.question;
-  }
-  if (typeof approval.expanded === "string" && approval.expanded.trim()) return approval.expanded;
-  const d = approval.detail;
-  if (typeof d.expanded === "string" && d.expanded.trim()) return d.expanded;
-  if (typeof d.command === "string" && d.command.trim()) return d.command;
-  if (typeof d.path === "string") {
-    const method = typeof d.method === "string" ? d.method : "GET";
-    return `${method} ${d.path}`;
-  }
-  return JSON.stringify({ ...d, expanded: approval.expanded }, null, 2);
 }
 
 function ApprovalModal() {
@@ -388,15 +406,12 @@ function ApprovalModal() {
   }, []);
   const blocked = approval.policyAllowed === false;
   const canAlways = !linux && !blocked && approval.kind !== "ask" && approval.allowAlwaysAllow !== false;
-  const primary = approvalPrimary({ ...approval, detail });
-  const sessionId = approvalSessionId(detail);
+  const primary = approvalPrimaryText({ ...approval, detail });
+  const sessionId = approvalSessionIdOf(detail);
   const target = sessions.find((s) => s.id === sessionId);
   const focused = focusedPaneId ? panes[focusedPaneId] : undefined;
   const mismatch = Boolean(sessionId && focused?.session?.id && focused.session.id !== sessionId);
-  const proposed = typeof detail.command === "string" ? detail.command : "";
-  const expanded =
-    (typeof approval.expanded === "string" && approval.expanded) ||
-    (typeof detail.expanded === "string" ? detail.expanded : "");
+  const proposed = approvalProposedCommand(detail);
   async function decide(allow: boolean) {
     try {
       await approve(approval.proposalId, allow, allow ? { alwaysAllow: always && canAlways, answer } : undefined);
@@ -407,7 +422,7 @@ function ApprovalModal() {
     }
   }
   return (
-    <div className="modal-root" onMouseDown={(e) => e.stopPropagation()}>
+    <div className="modal-root approval" onMouseDown={(e) => e.stopPropagation()}>
       <div className="modal" role="dialog" aria-modal="true">
         <h2>{approval.title}</h2>
         {linux && <div className="banner linux">Linux session — no permit list, no always-allow. Every command needs an explicit click.</div>}
@@ -437,7 +452,7 @@ function ApprovalModal() {
         {detail.intent === "investigate" && (
           <p className="hint">Read-only gather step so the agent can answer your question. Still requires Approve.</p>
         )}
-        {proposed && expanded && proposed !== expanded && (
+        {proposed && primary && proposed !== primary && (
           <p className="hint">As proposed: {proposed}</p>
         )}
         <div className="fp-toolbar">
@@ -484,6 +499,7 @@ function ApprovalModal() {
 
 function Palette() {
   const [q, setQ] = useState("");
+  const [hi, setHi] = useState(0);
   const devices = useApp((s) => s.inventory.devices);
   const items = [
     { id: "local", label: "Open local PTY", run: () => void openLocal() },
@@ -518,18 +534,47 @@ function Palette() {
       .filter((d) => d.kind === "ssh")
       .map((d) => ({ id: `scp-${d.id}`, label: `SCP ${d.name}`, run: () => void openSession(d, "sftp") })),
   ].filter((i) => i.label.toLowerCase().includes(q.toLowerCase()));
+  const shown = items.slice(0, 20);
+  const active = shown.length ? Math.min(hi, shown.length - 1) : 0;
+  function runItem(item: (typeof shown)[number] | undefined) {
+    if (!item) return;
+    item.run();
+    setState({ paletteOpen: false });
+  }
   return (
     <div className="modal-root" onMouseDown={() => setState({ paletteOpen: false })}>
       <div className="palette" onMouseDown={(e) => e.stopPropagation()}>
-        <input autoFocus placeholder="Command palette" value={q} onChange={(e) => setQ(e.target.value)} />
-        {items.slice(0, 20).map((i) => (
+        <input
+          autoFocus
+          placeholder="Command palette"
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setHi(0);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              setState({ paletteOpen: false });
+            } else if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setHi((n) => Math.min(shown.length - 1, n + 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHi((n) => Math.max(0, n - 1));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              runItem(shown[active]);
+            }
+          }}
+        />
+        {shown.map((i, idx) => (
           <button
             key={i.id}
-            className="item"
-            onClick={() => {
-              i.run();
-              setState({ paletteOpen: false });
-            }}
+            className={`item${idx === active ? " active" : ""}`}
+            onMouseEnter={() => setHi(idx)}
+            onClick={() => runItem(i)}
           >
             {i.label}
           </button>
@@ -908,7 +953,36 @@ function SettingsModal() {
   const [azureUrl, setAzureUrl] = useState(settings?.azure_base_url ?? "");
   const [azureDeployment, setAzureDeployment] = useState(settings?.azure_deployment ?? "");
   const [azureApiVersion, setAzureApiVersion] = useState(settings?.azure_api_version ?? "2024-10-21");
-  const [defaultBackend, setDefaultBackend] = useState(() => coerceChatBackend(settings?.default_backend));
+  const [defaultBackend, setDefaultBackend] = useState(() => {
+    const next = coerceChatBackend(settings?.default_backend);
+    const cloud = Boolean(settings?.cloud_chat_enabled);
+    if (
+      !cloud &&
+      backendBlockedWhenCloudOff(next, false, undefined, {
+        baseUrl:
+          next === "anthropic"
+            ? settings?.anthropic_base_url
+            : next === "gemini"
+              ? settings?.gemini_base_url
+              : next === "azure"
+                ? settings?.azure_base_url
+                : next === "mcp"
+                  ? settings?.mcp_url
+                  : next === "ollama"
+                    ? settings?.ollama_base_url
+                    : next === "llamacpp"
+                      ? settings?.llama_cpp_base_url
+                      : next === "local"
+                        ? settings?.vllm_base_url
+                        : "",
+        privateHosts: settings?.private_inference_hosts,
+        mcpStdio: next === "mcp" && !settings?.mcp_url?.trim(),
+      })
+    ) {
+      return "local" as ChatBackend;
+    }
+    return next;
+  });
   const [insecureTls, setInsecureTls] = useState(Boolean(settings?.api_insecure_tls));
   const [cloudChat, setCloudChat] = useState(Boolean(settings?.cloud_chat_enabled));
   const [privateHosts, setPrivateHosts] = useState(settings?.private_inference_hosts ?? "");
@@ -920,6 +994,25 @@ function SettingsModal() {
   const [logDir, setLogDir] = useState(settings?.log_dir ?? "");
   const [logByDefault, setLogByDefault] = useState(Boolean(settings?.log_sessions_by_default));
   const [checks, setChecks] = useState<Partial<Record<ProbeKind, ProbeState>>>({});
+
+  function settingsBaseFor(backend: ChatBackend): string {
+    if (backend === "local") return vllm;
+    if (backend === "ollama") return ollama;
+    if (backend === "llamacpp") return llamaCpp;
+    if (backend === "anthropic") return anthropicUrl;
+    if (backend === "gemini") return geminiUrl;
+    if (backend === "azure") return azureUrl;
+    if (backend === "mcp") return mcpUrl;
+    return "";
+  }
+
+  function settingsBackendBlocked(backend: ChatBackend): boolean {
+    return backendBlockedWhenCloudOff(backend, cloudChat, undefined, {
+      baseUrl: settingsBaseFor(backend),
+      privateHosts,
+      mcpStdio: backend === "mcp" && !mcpUrl.trim(),
+    });
+  }
 
   async function browseLogDir() {
     const picked = await window.lateRuntime?.pickDirectory?.({
@@ -971,20 +1064,28 @@ function SettingsModal() {
             value={defaultBackend}
             onChange={(e) => {
               const next = coerceChatBackend(e.target.value);
-              if (next === "cursor" && !cloudChat) return;
+              if (settingsBackendBlocked(next)) return;
               setDefaultBackend(next);
             }}
           >
-            <option value="local">vLLM</option>
-            <option value="llamacpp">llama.cpp</option>
-            <option value="ollama">Ollama</option>
-            <option value="mcp">MCP</option>
-            <option value="anthropic">Anthropic Claude</option>
-            <option value="gemini">Gemini</option>
-            <option value="azure">Azure</option>
-            <option value="cursor" disabled={!cloudChat}>
-              Cursor SDK{cloudChat ? "" : " — Cloud AI is off"}
-            </option>
+            {([
+              ["local", "vLLM"],
+              ["llamacpp", "llama.cpp"],
+              ["ollama", "Ollama"],
+              ["mcp", "MCP"],
+              ["anthropic", "Anthropic Claude"],
+              ["gemini", "Gemini"],
+              ["azure", "Azure"],
+              ["cursor", "Cursor SDK"],
+            ] as const).map(([value, label]) => {
+              const blocked = settingsBackendBlocked(value);
+              return (
+                <option key={value} value={value} disabled={blocked}>
+                  {label}
+                  {cloudOffOptionSuffix(blocked, cloudChat)}
+                </option>
+              );
+            })}
           </select>
         </label>
         <div className={cloudChat ? "setting-switch on" : "setting-switch"}>
@@ -1005,7 +1106,16 @@ function SettingsModal() {
               onChange={(e) => {
                 const on = e.target.checked;
                 setCloudChat(on);
-                if (!on && defaultBackend === "cursor") setDefaultBackend("local");
+                if (
+                  !on &&
+                  backendBlockedWhenCloudOff(defaultBackend, false, undefined, {
+                    baseUrl: settingsBaseFor(defaultBackend),
+                    privateHosts,
+                    mcpStdio: defaultBackend === "mcp" && !mcpUrl.trim(),
+                  })
+                ) {
+                  setDefaultBackend("local");
+                }
               }}
             />
           </label>
@@ -1815,6 +1925,18 @@ function ConnectModal() {
     setUsername(matchAuth.username);
   }, [matchAuth?.username, username]);
 
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      cancelInFlightConnect();
+      setState({ connectPrompt: null });
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
+
   async function connect(e?: { preventDefault(): void }) {
     e?.preventDefault();
     if (busy) return;
@@ -2002,6 +2124,7 @@ function DeviceModal({ device }: { device: Device }) {
   const [persist, setPersist] = useState<"one-time" | "save">("save");
   const [savePassword, setSavePassword] = useState(false);
 
+  const connectBtn = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (d.kind !== "serial") return;
     void rpc
@@ -2009,6 +2132,25 @@ function DeviceModal({ device }: { device: Device }) {
       .then((list) => setPorts(Array.isArray(list) ? list : []))
       .catch(() => setPorts(["/dev/ttyUSB0", "/dev/ttyACM0"]));
   }, [d.kind]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setState({ deviceEditor: null });
+        return;
+      }
+      if (e.key !== "Enter" || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el?.tagName === "TEXTAREA" || el?.tagName === "BUTTON" || el?.tagName === "SELECT") return;
+      e.preventDefault();
+      e.stopPropagation();
+      connectBtn.current?.click();
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   function patch(p: Partial<Device>) {
     setD((cur) => ({ ...cur, ...p }));
@@ -2404,6 +2546,8 @@ function DeviceModal({ device }: { device: Device }) {
             </button>
           )}
           <button
+            ref={connectBtn}
+            type="button"
             className="primary"
             onClick={() => {
               const name = d.name.trim() || (d.kind === "serial" ? serialPath || "serial" : d.host || "session");

@@ -41,6 +41,15 @@ function createWritePump(term: Terminal) {
   };
   return (text: string) => {
     if (!text) return;
+    // Interactive echo: skip the queue when the terminal is idle.
+    if (!writing && !q.length) {
+      writing = true;
+      term.write(text, () => {
+        writing = false;
+        pump();
+      });
+      return;
+    }
     q.push(text);
     if (q.length > 48) q.splice(0, q.length, q.join(""));
     pump();
@@ -63,8 +72,9 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   const termHighlights = useApp((s) => s.termHighlights);
   const hlRef = useRef(new StreamHighlighter(termHighlights));
   const decRef = useRef(new TextDecoder("utf-8"));
-  const activeTabId = useApp((s) => s.activeTabId);
   const focusedPaneId = useApp((s) => s.focusedPaneId);
+  const focusedRef = useRef(false);
+  focusedRef.current = visible && focusedPaneId === pane.id;
   const [query, setQuery] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -99,9 +109,16 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
         try {
           const el = host.current;
           if (!el || el.clientWidth < 8 || el.clientHeight < 8) return;
+          const prevCols = term.cols;
+          const prevRows = term.rows;
           fit.fit();
-          const sid = paneRef.current.session?.id;
-          if (sid) void resizeSession(sid, term.cols, term.rows);
+          if (term.cols !== prevCols || term.rows !== prevRows) {
+            const sid = paneRef.current.session?.id;
+            if (sid) void resizeSession(sid, term.cols, term.rows);
+          }
+          if (focusedRef.current && !paneRef.current.searchOpen && !document.querySelector(".modal-root, .folder-dlg")) {
+            term.focus();
+          }
         } catch {
           /* ignore */
         }
@@ -125,8 +142,8 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     searchRef.current = search;
     fitRef.current = fit;
 
-    const unsub = rpc.onBytes((sessionId, bytes) => {
-      if (sessionId !== paneRef.current.session?.id) return;
+    const unsub = rpc.onSessionBytes(sid, (bytes) => {
+      if (paneRef.current.session?.id !== sid) return;
       const text = decRef.current.decode(bytes, { stream: true });
       if (text) writePump(hlRef.current.feed(text));
     });
@@ -189,6 +206,9 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        if (!focusedRef.current) return;
+        const target = e.target as HTMLElement | null;
+        if (target?.closest("input, textarea, select, .modal-root")) return;
         e.preventDefault();
         setState((s) => ({
           ...s,
@@ -234,19 +254,22 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     term.options.fontSize = termFontSize;
     term.options.fontFamily = termFontCss(termFont, termFontCustom);
     term.options.theme = xtermTheme(theme);
+    const prevCols = term.cols;
+    const prevRows = term.rows;
     try {
       fit.fit();
     } catch {
       /* ignore */
     }
-    if (pane.session) {
+    if (pane.session && (term.cols !== prevCols || term.rows !== prevRows)) {
       void resizeSession(pane.session.id, term.cols, term.rows);
     }
-  }, [visible, termFontSize, termFont, termFontCustom, theme, pane.session?.id, activeTabId, focusedPaneId]);
+  }, [visible, termFontSize, termFont, termFontCustom, theme, pane.session?.id]);
 
   useEffect(() => {
     if (!visible || pane.searchOpen) return;
     if (focusedPaneId !== pane.id) return;
+    if (document.querySelector(".modal-root, .folder-dlg")) return;
     termRef.current?.focus();
   }, [visible, focusedPaneId, pane.id, pane.searchOpen, pane.session?.id, pane.disconnected]);
 

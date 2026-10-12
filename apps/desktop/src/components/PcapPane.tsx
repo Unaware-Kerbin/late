@@ -253,7 +253,12 @@ export function PcapPane({ pane }: { pane: PaneState }) {
     const file = capturePathOf(r) || fallbackPath;
     if ((!r.packets || r.packets.length === 0) && file) {
       const opened = await rpc.call<PcapOpen>("pcap.open", { path: file, file });
-      applyOpen({ ...opened, path: capturePathOf(opened) || file, file }, doneMsg);
+      const n = opened.total ?? opened.packets?.length ?? 0;
+      const msg =
+        n === 0
+          ? `${doneMsg} — 0 packets (quiet interface, filter matched nothing, or the device only mirrors CPU traffic)`
+          : doneMsg;
+      applyOpen({ ...opened, path: capturePathOf(opened) || file, file }, msg);
       return;
     }
     applyOpen({ ...r, path: file || r.path, file: file || r.file }, r.error ? String(r.error) : doneMsg);
@@ -631,11 +636,11 @@ export function PcapPane({ pane }: { pane: PaneState }) {
           />
         )}
         {localCaptureId ? (
-          <button type="button" className="danger" onClick={() => void stopLive()}>
+          <button type="button" className="danger" onClick={() => void stopLive()} disabled={!!busy}>
             Stop live
           </button>
         ) : (
-          <button type="button" className="primary" onClick={() => void live()} disabled={!!sshCaptureId}>
+          <button type="button" className="primary" onClick={() => void live()} disabled={!!sshCaptureId || !!busy}>
             Live
           </button>
         )}
@@ -646,6 +651,7 @@ export function PcapPane({ pane }: { pane: PaneState }) {
           value={sshTarget}
           onChange={(e) => setSshTarget(e.target.value)}
           title="SSH session or saved device"
+          disabled={!!busy || !!sshCaptureId}
         >
           <option value="">{sshSessions.length || sshDevices.length ? "session or device…" : "open SSH first…"}</option>
           {sshSessions.map((s) => (
@@ -666,13 +672,14 @@ export function PcapPane({ pane }: { pane: PaneState }) {
           value={remoteIface}
           onChange={(e) => setRemoteIface(e.target.value)}
           title="Remote interface"
+          disabled={!!busy || !!sshCaptureId}
         />
         {sshCaptureId ? (
-          <button type="button" className="danger" onClick={() => void stopSsh()}>
+          <button type="button" className="danger" onClick={() => void stopSsh()} disabled={!!busy}>
             Stop SSH
           </button>
         ) : (
-          <button type="button" className="primary" disabled={!!localCaptureId} onClick={() => void captureSsh()}>
+          <button type="button" className="primary" disabled={!!localCaptureId || !!busy} onClick={() => void captureSsh()}>
             Capture
           </button>
         )}
@@ -759,11 +766,11 @@ export function PcapPane({ pane }: { pane: PaneState }) {
             {packets.length === 0 ? (
               <div className="pcap-empty">
                 <div className="pcap-cards">
-                  <button type="button" className="pcap-card" onClick={() => void live()} disabled={!!sshCaptureId}>
+                  <button type="button" className="pcap-card" onClick={() => void live()} disabled={!!sshCaptureId || !!busy}>
                     <strong>Local live</strong>
                     <span>dumpcap on {iface || "any"}. Stop from the toolbar when you have enough traffic.</span>
                   </button>
-                  <button type="button" className="pcap-card" onClick={() => void captureSsh()} disabled={!sshTarget || !!localCaptureId}>
+                  <button type="button" className="pcap-card" onClick={() => void captureSsh()} disabled={!sshTarget || !!localCaptureId || !!busy}>
                     <strong>SSH capture</strong>
                     <span>
                       {sshTarget

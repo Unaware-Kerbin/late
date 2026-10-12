@@ -909,7 +909,7 @@ export function Sidebar() {
         </span>
         <span className="tree-name">{d.name}</span>
         {host ? <span className="tree-host">{host}</span> : null}
-        <span className="tree-kind">{kindLabel(d.kind)}</span>
+        {d.kind !== "ssh" ? <span className="tree-kind">{kindLabel(d.kind)}</span> : null}
       </div>
     );
   }
@@ -968,6 +968,15 @@ export function Sidebar() {
               strokeWidth="1.4"
             />
           </svg>
+        </button>
+        <button
+          type="button"
+          className="sess-tb wide"
+          title="SCP / SFTP"
+          disabled={!selectedDevice || selectedDevice.kind !== "ssh"}
+          onClick={() => selectedDevice && connect(selectedDevice, "sftp")}
+        >
+          SCP
         </button>
         <button
           type="button"
@@ -1194,18 +1203,6 @@ export function Sidebar() {
       >
         {rows.map(renderRow)}
       </div>
-      {selectedDevice && (
-        <div className="sess-connect">
-          <button className="primary" type="button" onClick={() => connect(selectedDevice)}>
-            Connect
-          </button>
-          {selectedDevice.kind === "ssh" && (
-            <button className="ghost" type="button" onClick={() => connect(selectedDevice, "sftp")}>
-              SCP / SFTP
-            </button>
-          )}
-        </div>
-      )}
       <div className="side-actions">
         <button className="ghost" type="button" onClick={() => setState({ keysOpen: true })}>
           Keys

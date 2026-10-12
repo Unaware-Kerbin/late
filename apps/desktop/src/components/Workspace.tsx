@@ -13,7 +13,6 @@ import {
   setLogging,
   setSplitRatio,
   setState,
-  splitFocused,
   splitKey,
   startQuickConnect,
   useApp,
@@ -101,12 +100,21 @@ function SplitGutter({ dir, onRatio }: { dir: string; onRatio: (r: number) => vo
       const parent = el.parentElement;
       if (!parent) return;
       const rect = parent.getBoundingClientRect();
+      let frame = 0;
+      let last: MouseEvent | null = null;
       const move = (ev: MouseEvent) => {
-        const r =
-          dir === "row" ? (ev.clientX - rect.left) / rect.width : (ev.clientY - rect.top) / rect.height;
-        onRatio(r);
+        last = ev;
+        if (frame) return;
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          if (!last) return;
+          const r =
+            dir === "row" ? (last.clientX - rect.left) / rect.width : (last.clientY - rect.top) / rect.height;
+          onRatio(r);
+        });
       };
       const up = () => {
+        if (frame) cancelAnimationFrame(frame);
         window.removeEventListener("mousemove", move);
         window.removeEventListener("mouseup", up);
       };
@@ -157,7 +165,6 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
       <div className="pane-bar" style={accent ? { boxShadow: `inset 3px 0 0 ${accent}` } : undefined}>
         <span className="kind-pill">{pane.kind === "sftp" ? "scp" : pane.kind}</span>
         <span className="pane-title">{pane.session?.name ?? pane.kind}</span>
-        <span style={{ flex: 1 }} />
         {pane.session && pane.kind !== "pcap" && pane.kind !== "empty" && pane.kind !== "stage" && (
           <button
             type="button"
@@ -224,54 +231,6 @@ function PaneView({ pane, visible }: { pane: PaneState; visible: boolean }) {
           >
             Send Break
           </button>
-        )}
-        {pane.kind !== "empty" && (
-          <>
-            <button
-              type="button"
-              className="ghost"
-              title="Split this pane left"
-              onClick={(e) => {
-                e.stopPropagation();
-                splitFocused("left", pane.id);
-              }}
-            >
-              ◂
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              title="Split this pane right"
-              onClick={(e) => {
-                e.stopPropagation();
-                splitFocused("right", pane.id);
-              }}
-            >
-              ▸
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              title="Split this pane up"
-              onClick={(e) => {
-                e.stopPropagation();
-                splitFocused("up", pane.id);
-              }}
-            >
-              ▴
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              title="Split this pane down"
-              onClick={(e) => {
-                e.stopPropagation();
-                splitFocused("down", pane.id);
-              }}
-            >
-              ▾
-            </button>
-          </>
         )}
         <button
           className="ghost"
