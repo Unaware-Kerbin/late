@@ -4,6 +4,14 @@ Dates and times are from git commits (America/New_York). Newest first.
 
 ## 2026-10-12
 
+**v0.1.19 installers (Agent chat polish and SSH pcap readiness).**
+
+- GitHub Release v0.1.19 packs from this main. File names Late-0.1.19-*. Tag v0.1.18 stays frozen. Still unsigned.
+- Agent chat markdown and Approve UX polish; Cloud AI gating stays off for loopback and private helper URLs.
+- SSH packet capture no longer looks live before auth or capture is ready.
+
+## 2026-10-12
+
 **v0.1.18 installers (update check sees the latest GitHub release).**
 
 - GitHub Release v0.1.18 packs from this main. File names Late-0.1.18-*. Tag v0.1.17 stays frozen. Still unsigned.
