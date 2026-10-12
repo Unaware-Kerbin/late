@@ -2025,14 +2025,17 @@ impl App {
             if !pending.is_empty() {
                 emit_session_data(&events, &sid, std::mem::take(&mut pending));
             }
-            let serial_dropped = {
+            // PTY/SSH EOF while the session is still mapped (not session.close).
+            // Serial already did this; SSH/local must too so the UI can Enter-reconnect.
+            // Skip SFTP/API: they attach a dead broadcast and would "drop" immediately.
+            let emit_dropped = {
                 let g = inner.lock();
                 g.sessions
                     .get(&sid)
-                    .map(|s| s.kind == SessionKind::Serial)
+                    .map(|s| matches!(s.kind, SessionKind::Ssh | SessionKind::Serial | SessionKind::Local))
                     .unwrap_or(false)
             };
-            if serial_dropped {
+            if emit_dropped {
                 let _ = events.send(AppEvent {
                     event: "session.closed".into(),
                     session_id: sid,
@@ -2992,6 +2995,93 @@ os.close(slave)
         app.close_session(&s2.id).expect("second close");
         let s3 = app.open_serial(&d.id).expect("third open");
         app.close_session(&s3.id).expect("third close");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod drop_reconnect_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn isolated_app() -> (App, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("late-drop-reconnect-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        (app, dir)
+    }
+
+    async fn wait_closed(
+        rx: &mut broadcast::Receiver<AppEvent>,
+        session_id: &str,
+        timeout: Duration,
+    ) -> Option<AppEvent> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        while tokio::time::Instant::now() < deadline {
+            let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remain, rx.recv()).await {
+                Ok(Ok(ev)) if ev.event == "session.closed" && ev.session_id == session_id => {
+                    return Some(ev);
+                }
+                Ok(Ok(_)) => continue,
+                Ok(Err(_)) => return None,
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn local_shell_exit_emits_dropped_and_reconnects() {
+        let (app, dir) = isolated_app();
+        let mut rx = app.events.subscribe();
+        let info = match app.open_local(None, 80, 24, None, false) {
+            Ok(i) => i,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(dir);
+                eprintln!("skip: local PTY unavailable: {e}");
+                return;
+            }
+        };
+        app.write(&info.id, b"exit\n").expect("write exit");
+        let ev = wait_closed(&mut rx, &info.id, Duration::from_secs(8))
+            .await
+            .expect("session.closed after local exit");
+        assert_eq!(
+            ev.reason.as_deref(),
+            Some("dropped"),
+            "EOF must be dropped (not closed) so Enter can reconnect"
+        );
+        let again = app
+            .reconnect(&info.id)
+            .expect("reconnect after local drop");
+        assert_ne!(again.id, info.id);
+        app.close_session(&again.id).ok();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn intentional_close_emits_closed_not_dropped() {
+        let (app, dir) = isolated_app();
+        let mut rx = app.events.subscribe();
+        let info = match app.open_local(None, 80, 24, None, false) {
+            Ok(i) => i,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(dir);
+                eprintln!("skip: local PTY unavailable: {e}");
+                return;
+            }
+        };
+        while rx.try_recv().is_ok() {}
+        app.close_session(&info.id).expect("close");
+        let ev = wait_closed(&mut rx, &info.id, Duration::from_secs(3))
+            .await
+            .expect("session.closed after close_session");
+        assert_eq!(ev.reason.as_deref(), Some("closed"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

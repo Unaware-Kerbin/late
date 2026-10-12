@@ -953,8 +953,9 @@ function noteUserClosed(sessionId: string | undefined) {
 
 export async function reconnectPane(paneId: string) {
   const pane = state.panes[paneId];
-  if (!pane?.session) return;
+  if (!pane?.session || !pane.disconnected) return;
   const oldId = pane.session.id;
+  if (reconnectingSessions.has(oldId)) return;
   reconnectingSessions.add(oldId);
   try {
     const info = await rpc.call<SessionInfo>("session.reconnect", {

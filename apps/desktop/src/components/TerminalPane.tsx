@@ -205,6 +205,22 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
         void sendBreak(p.session.id);
         return;
       }
+      // Banner / lost xterm focus: Enter still reconnects when this pane is focused and dead.
+      if (
+        focusedRef.current &&
+        disconnectedRef.current &&
+        e.key === "Enter" &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest("input, textarea, select, .modal-root")) return;
+        e.preventDefault();
+        void reconnectPane(p.id);
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         if (!focusedRef.current) return;
         const target = e.target as HTMLElement | null;
