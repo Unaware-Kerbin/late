@@ -2,6 +2,14 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-10-12
+
+**v0.1.18 installers (update check sees the latest GitHub release).**
+
+- GitHub Release v0.1.18 packs from this main. File names Late-0.1.18-*. Tag v0.1.17 stays frozen. Still unsigned.
+- Check for updates compares the installed Late version on your computer with the latest GitHub release. A packaged app was reading a missing checkout package.json, so a newer release looked like no update.
+- Includes sidebar drag-and-drop, session logging, and Dependabot npm pins already on main since v0.1.17.
+
 ## 2026-09-30
 
 **Session logging (SecureCRT-style).**

@@ -33,6 +33,27 @@ test("gatherContext lateLocal is package.json, not Electron 44", () => {
   assert.notEqual(ctx.lateLocal, "44.0.0");
 });
 
+test("packaged check uses the installer version when the git checkout is missing", () => {
+  const missing = path.join(os.tmpdir(), `late-no-checkout-${process.pid}`);
+  const installed = update.gatherContext(missing, true, "", "0.1.16");
+  assert.equal(installed.lateLocal, "0.1.16");
+  const electron = update.gatherContext(missing, true, "", "44.0.0");
+  const desktop = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+  assert.equal(electron.lateLocal, desktop.version);
+  assert.notEqual(electron.lateLocal, "44.0.0");
+  const unpackaged = update.gatherContext(missing, false, "", "44.0.0");
+  assert.equal(unpackaged.lateLocal, desktop.version);
+  assert.notEqual(unpackaged.lateLocal, "44.0.0");
+});
+
+test("semver treats the installed build as current only when the GitHub release is not newer", () => {
+  assert.equal(update.isNewerRelease("v0.1.18", "0.1.17"), true);
+  assert.equal(update.isNewerRelease("v0.1.17", "0.1.17"), false);
+  assert.equal(update.isNewerRelease("v0.1.17", "0.1.18"), false);
+  assert.equal(update.isNewerRelease("v0.1.18", "44.0.0"), false);
+  assert.equal(update.isNewerRelease("v0.1.18", ""), false);
+});
+
 test("usableProductVersion rejects Electron 44 and env override cannot skip", () => {
   assert.equal(update.usableProductVersion("44.0.0"), "");
   assert.equal(update.usableProductVersion("28.3.1"), "");

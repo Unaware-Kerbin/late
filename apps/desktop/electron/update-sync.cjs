@@ -518,13 +518,23 @@ async function applyOne(app, asset) {
   };
 }
 
-function gatherContext(repoRoot, isPackaged, mcpCwd) {
+function treePackageVersion(repoRoot) {
+  // electron/ sits next to the app package.json in dev and inside the asar.
+  // A packaged install has no git checkout at repoRoot (three levels above electron/).
+  return (
+    usableProductVersion(readPackageVersion(path.join(__dirname, ".."), "")) ||
+    usableProductVersion(readPackageVersion(path.join(repoRoot, "apps", "desktop"), "")) ||
+    usableProductVersion(readPackageVersion(repoRoot, ""))
+  );
+}
+
+function gatherContext(repoRoot, isPackaged, mcpCwd, packagedVersion) {
   const lateInstall = discoverLateInstall(repoRoot, isPackaged);
   const orchInstall = discoverOrchInstall(mcpCwd, repoRoot);
-  const lateLocal =
-    usableProductVersion(process.env.UPDATE_SYNC_LATE_LOCAL) ||
-    usableProductVersion(readPackageVersion(path.join(repoRoot, "apps", "desktop"), "")) ||
-    usableProductVersion(readPackageVersion(repoRoot, ""));
+  const fromFiles = treePackageVersion(repoRoot);
+  // Packaged app.getVersion() is the installer version. Electron 28–44 is not Late.
+  const fromInstaller = isPackaged ? usableProductVersion(packagedVersion) : "";
+  const lateLocal = usableProductVersion(process.env.UPDATE_SYNC_LATE_LOCAL) || fromInstaller || fromFiles;
   const orchLocal =
     usableProductVersion(process.env.UPDATE_SYNC_ORCH_LOCAL) ||
     usableProductVersion(orchInstall.path ? readPackageVersion(orchInstall.path, "") : "");
@@ -549,8 +559,8 @@ async function fetchRelease(app) {
   return { ok: true, status: res.status, release: res.body };
 }
 
-async function fetchBoth(repoRoot, isPackaged, mcpCwd) {
-  const ctx = gatherContext(repoRoot, isPackaged, mcpCwd);
+async function fetchBoth(repoRoot, isPackaged, mcpCwd, packagedVersion) {
+  const ctx = gatherContext(repoRoot, isPackaged, mcpCwd, packagedVersion);
   const [late, orch] = await Promise.all([fetchRelease("late"), fetchRelease("orchestrator")]);
   return {
     ...ctx,
@@ -568,7 +578,7 @@ async function applyConfirmed(opts) {
   const which = opts.which;
   const targets = which === "both" ? ["late", "orchestrator"] : which === "late" || which === "orchestrator" ? [which] : [];
   if (!targets.length) return { ok: false, steps: [], error: "Choose Late, Orchestrator, or both." };
-  const both = await fetchBoth(opts.repoRoot, opts.isPackaged, opts.mcpCwd);
+  const both = await fetchBoth(opts.repoRoot, opts.isPackaged, opts.mcpCwd, opts.packagedVersion);
   const steps = [];
   for (const app of targets) {
     const release = app === "late" ? both.lateRelease : both.orchRelease;
@@ -631,4 +641,5 @@ module.exports = {
   sha256HexMatches,
   verifyFileDigest,
   usableProductVersion,
+  isNewerRelease,
 };

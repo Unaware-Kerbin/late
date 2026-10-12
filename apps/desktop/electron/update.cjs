@@ -10,11 +10,13 @@ function repoRoot() {
   return path.join(__dirname, "..", "..", "..");
 }
 
+function packagedProductVersion() {
+  if (!app.isPackaged) return "";
+  return typeof app.getVersion === "function" ? app.getVersion() : "";
+}
+
 function latePackageVersion() {
-  const ctx = updateSync.gatherContext(repoRoot(), app.isPackaged, "");
-  if (!app.isPackaged) return ctx.lateLocal;
-  const packed = updateSync.usableProductVersion(typeof app.getVersion === "function" ? app.getVersion() : "");
-  return packed || ctx.lateLocal;
+  return updateSync.gatherContext(repoRoot(), app.isPackaged, "", packagedProductVersion()).lateLocal;
 }
 
 function updateMeta() {
@@ -27,7 +29,12 @@ function updateMeta() {
 }
 
 async function checkUpdates(mcpCwd) {
-  return updateSync.fetchBoth(repoRoot(), app.isPackaged, typeof mcpCwd === "string" ? mcpCwd : "");
+  return updateSync.fetchBoth(
+    repoRoot(),
+    app.isPackaged,
+    typeof mcpCwd === "string" ? mcpCwd : "",
+    packagedProductVersion(),
+  );
 }
 
 async function applyUpdates(payload) {
@@ -39,6 +46,7 @@ async function applyUpdates(payload) {
     which: payload.which,
     repoRoot: repoRoot(),
     isPackaged: app.isPackaged,
+    packagedVersion: packagedProductVersion(),
     mcpCwd: typeof payload.mcpCwd === "string" ? payload.mcpCwd : "",
   });
 }

@@ -695,9 +695,9 @@ function InferenceUrlRow(props: {
 
 function productLine(p: AppUpdateStatus): string {
   const local = p.localVersion || "unknown";
-  const remote = p.remoteVersion ? `GitHub ${p.remoteVersion}` : "no GitHub release";
-  if (p.newer) return `${local} on your computer → ${remote}`;
-  return `${local} on your computer · ${remote}`;
+  const remote = p.remoteVersion ? `latest GitHub release ${p.remoteVersion}` : "no GitHub release";
+  if (p.newer) return `installed ${local} on your computer → ${remote}`;
+  return `installed ${local} on your computer · ${remote}`;
 }
 
 function UpdateSettingsSection() {
@@ -714,7 +714,7 @@ function UpdateSettingsSection() {
     <div className="setting-switch">
       <h3 className="hint" style={{ margin: 0 }}>Updates</h3>
       <p className="hint" style={{ margin: 0 }}>
-        Late {version || "…"} on your computer. Checks GitHub for Late and Agent Orchestrator.
+        Late {version || "…"} on your computer. Compares that installed version with the latest GitHub release for Late and Agent Orchestrator.
         Does not need Cloud AI. Sidecar stays on 127.0.0.1. Confirm before any download.
       </p>
       <label className="setting-switch-row">
@@ -818,8 +818,8 @@ function UpdateModal({ snapshot }: { snapshot: UpdateCheck }) {
         {phase === "choose" ? (
           <>
             <p>
-              GitHub releases for Late and Agent Orchestrator. Nothing downloads until you confirm.
-              This check does not need Cloud AI.
+              Compares the installed version on your computer with the latest GitHub release for Late and Agent Orchestrator.
+              Nothing downloads until you confirm. This check does not need Cloud AI.
             </p>
             <div className="update-products">
               <div className={late.newer ? "kind-card active" : "kind-card"}>
@@ -833,8 +833,13 @@ function UpdateModal({ snapshot }: { snapshot: UpdateCheck }) {
                 {orch.error ? <small className="hint warn">{orch.error}</small> : null}
               </div>
             </div>
-            {!snapshot.anyNewer ? (
-              <p className="hint">Late and Orchestrator on your computer match GitHub. You can still pick Late, Orchestrator, or both.</p>
+            {!snapshot.anyNewer && !late.error && !orch.error && late.remoteVersion ? (
+              <p className="hint">
+                Installed Late {late.localVersion || "unknown"} on your computer matches the latest GitHub release ({late.remoteVersion}).
+                {orch.remoteVersion
+                  ? ` Orchestrator ${orch.localVersion || "unknown"} matches the latest GitHub release (${orch.remoteVersion}).`
+                  : ""}
+              </p>
             ) : null}
             {snapshot.unsignedNote ? <p className="hint warn">{snapshot.unsignedNote}</p> : null}
             <div className="actions update-actions">

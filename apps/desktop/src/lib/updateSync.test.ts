@@ -224,6 +224,55 @@ test("first hop and CDN redirect stay on the chosen asset", () => {
   assert.throws(() => parseAssetDigest("md5:abc"), /SHA-256/);
 });
 
+test("installed 0.1.17 is older than GitHub release v0.1.18", () => {
+  const name = "Late-0.1.18-linux-amd64.deb";
+  const status = buildAppStatus({
+    id: "late",
+    localVersion: "0.1.17",
+    release: {
+      tag_name: "v0.1.18",
+      html_url: "https://github.com/Unaware-Kerbin/late/releases/tag/v0.1.18",
+      assets: [asset(name, "v0.1.18")],
+    },
+    error: null,
+    platform: "linux",
+    arch: "x64",
+    prefer: "deb",
+  });
+  assert.equal(status.newer, true);
+  assert.equal(status.error, null);
+  assert.equal(status.localVersion, "0.1.17");
+  assert.equal(status.remoteVersion, "0.1.18");
+  assert.equal(status.remoteTag, "v0.1.18");
+  assert.equal(status.asset?.name, name);
+  assert.equal(status.asset?.url, `https://github.com/Unaware-Kerbin/late/releases/download/v0.1.18/${name}`);
+});
+
+test("a newer local build is not an update, and a missing local version is an error", () => {
+  const ahead = buildAppStatus({
+    id: "late",
+    localVersion: "0.1.18",
+    release: { tag_name: "v0.1.17", assets: lateAssets("v0.1.17") },
+    error: null,
+    platform: "linux",
+    arch: "x64",
+  });
+  assert.equal(ahead.newer, false);
+  assert.equal(ahead.error, null);
+  assert.equal(ahead.remoteVersion, "0.1.17");
+
+  const blank = buildAppStatus({
+    id: "late",
+    localVersion: "",
+    release: { tag_name: "v0.1.18", assets: [asset("Late-0.1.18-linux-amd64.deb", "v0.1.18")] },
+    error: null,
+    platform: "linux",
+    arch: "x64",
+  });
+  assert.equal(blank.newer, false);
+  assert.match(blank.error ?? "", /version/);
+});
+
 test("Electron 44 is not Late: do not skip or force a GitHub update", () => {
   const lie = buildAppStatus({
     id: "late",
