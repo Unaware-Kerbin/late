@@ -49,15 +49,16 @@ fn emit_session_data(events: &broadcast::Sender<AppEvent>, session_id: &str, buf
     });
 }
 
-/// Append PTY bytes to scrollback / session log / fan-out, then to the UI pending buffer.
-/// Session-log disk I/O runs after the mutex so a slow write cannot stall other sessions.
+/// Append PTY bytes to scrollback / fan-out, then to the UI pending buffer.
+/// Session-log disk I/O happens in `flush_session_output` *after* the UI event is
+/// queued so a slow append cannot delay interactive echo.
 fn ingest_pty_chunk(
     inner: &Mutex<Inner>,
     sid: &str,
     buf: &[u8],
     pending: &mut Vec<u8>,
 ) -> bool {
-    let (log_path, out_tx) = {
+    let out_tx = {
         let mut g = inner.lock();
         let Some(s) = g.sessions.get_mut(sid) else {
             return false;
@@ -67,23 +68,38 @@ fn ingest_pty_chunk(
         if s.scrollback.len() > max {
             s.scrollback.drain(0..s.scrollback.len() - max);
         }
-        let log_path = s.logging_path.clone();
         // API fan-out is rare; skip the extra Vec when nobody is subscribed.
-        let out_tx = if s.output.receiver_count() > 0 {
+        if s.output.receiver_count() > 0 {
             Some(s.output.clone())
         } else {
             None
-        };
-        (log_path, out_tx)
+        }
     };
-    if let Some(path) = log_path {
-        let _ = crate::fsutil::append_private(&path, buf);
-    }
     if let Some(tx) = out_tx {
         let _ = tx.send(buf.to_vec());
     }
     pending.extend_from_slice(buf);
     true
+}
+
+fn flush_session_output(
+    inner: &Mutex<Inner>,
+    events: &broadcast::Sender<AppEvent>,
+    sid: &str,
+    pending: &mut Vec<u8>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let buf = std::mem::take(pending);
+    emit_session_data(events, sid, buf.clone());
+    let log_path = {
+        let g = inner.lock();
+        g.sessions.get(sid).and_then(|s| s.logging_path.clone())
+    };
+    if let Some(path) = log_path {
+        let _ = crate::fsutil::append_private(&path, &buf);
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2008,7 +2024,7 @@ impl App {
                                     && (pending.len() <= OUTPUT_INTERACTIVE_MAX
                                         || pending.len() >= OUTPUT_COALESCE_MAX)
                                 {
-                                    emit_session_data(&events, &sid, std::mem::take(&mut pending));
+                                    flush_session_output(&inner, &events, &sid, &mut pending);
                                 }
                                 if !alive {
                                     break;
@@ -2018,12 +2034,12 @@ impl App {
                         }
                     }
                     _ = ticker.tick(), if !pending.is_empty() => {
-                        emit_session_data(&events, &sid, std::mem::take(&mut pending));
+                        flush_session_output(&inner, &events, &sid, &mut pending);
                     }
                 }
             }
             if !pending.is_empty() {
-                emit_session_data(&events, &sid, std::mem::take(&mut pending));
+                flush_session_output(&inner, &events, &sid, &mut pending);
             }
             // PTY/SSH EOF while the session is still mapped (not session.close).
             // Serial already did this; SSH/local must too so the UI can Enter-reconnect.

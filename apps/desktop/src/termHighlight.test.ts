@@ -60,13 +60,18 @@ test("does not rewrite CSI sequences", () => {
   assert.match(out, /\x1b\[38;2;255;92;122mdown\x1b\[39m/);
 });
 
-test("hold-back joins down across chunks", () => {
+test("colors down inside a single bulk chunk", () => {
   const hl = new StreamHighlighter({ enabled: true, schemes: DEFAULT_TERM_HIGHLIGHTS.schemes, rules: [down] });
-  const a = hl.feed("protocol is do");
-  assert.equal(a.includes("down"), false);
-  const b = hl.feed("wn\r\n");
-  const all = a + b + hl.flush();
-  assert.match(all, /\x1b\[38;2;255;92;122mdown\x1b\[39m/);
+  const out = hl.feed("protocol is down\r\n");
+  assert.match(out, /\x1b\[38;2;255;92;122mdown\x1b\[39m/);
+});
+
+test("keystroke echo never holds a keyword prefix (no flicker)", () => {
+  const hl = new StreamHighlighter({ enabled: true, schemes: DEFAULT_TERM_HIGHLIGHTS.schemes, rules: [down] });
+  // "d" starts "down" — must still paint immediately, not wait for the next byte.
+  assert.equal(hl.feed("d"), "d");
+  assert.equal(hl.feed("o"), "o");
+  assert.equal(hl.flush(), "");
 });
 
 test("disabled highlighter is a passthrough", () => {

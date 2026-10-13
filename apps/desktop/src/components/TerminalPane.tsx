@@ -27,32 +27,30 @@ function ptyPaste(text: string) {
   return text.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
 }
 
+/** Coalesce PTY frames onto xterm without per-chunk write callbacks.
+ * Callback serialization waited for each parse/paint before the next glyph,
+ * so remote echo felt laggy and could flicker under bursty SSH output. */
 function createWritePump(term: Terminal) {
-  const q: string[] = [];
-  let writing = false;
-  const pump = () => {
-    if (writing || !q.length) return;
-    const chunk = q.length > 4 ? q.splice(0).join("") : q.shift()!;
-    writing = true;
-    term.write(chunk, () => {
-      writing = false;
-      pump();
-    });
+  let pending = "";
+  let scheduled = false;
+  const flush = () => {
+    scheduled = false;
+    if (!pending) return;
+    const chunk = pending;
+    pending = "";
+    term.write(chunk);
   };
   return (text: string) => {
     if (!text) return;
-    // Interactive echo: skip the queue when the terminal is idle.
-    if (!writing && !q.length) {
-      writing = true;
-      term.write(text, () => {
-        writing = false;
-        pump();
-      });
+    // Idle + small: paint immediately (keystroke echo).
+    if (!scheduled && !pending && text.length <= 64) {
+      term.write(text);
       return;
     }
-    q.push(text);
-    if (q.length > 48) q.splice(0, q.length, q.join(""));
-    pump();
+    pending += text;
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(flush);
   };
 }
 

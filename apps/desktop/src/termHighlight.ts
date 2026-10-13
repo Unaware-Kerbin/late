@@ -459,20 +459,19 @@ export class StreamHighlighter {
     const incompleteAt = this.incompleteEscapeAt(this.buf);
     const ready = incompleteAt >= 0 ? this.buf.slice(0, incompleteAt) : this.buf;
     const restEsc = incompleteAt >= 0 ? this.buf.slice(incompleteAt) : "";
-    // Keystroke echo often cannot start any keyword — skip hold + match scans.
+    // Only hold incomplete CSI/OSC. Never hold a keyword prefix across chunks:
+    // SSH keystroke echo is often one byte per frame, and hiding "e"/"d"/"up"…
+    // until the *next* echo arrives makes letters vanish then pop back (lag).
+    this.buf = restEsc;
     if (
       !restEsc &&
       ready.length <= 4 &&
       !ready.includes("\x1b") &&
-      !mayContainRuleStart(ready, this.firstChars) &&
-      !isPatternPrefix(ready, this.compiled)
+      !mayContainRuleStart(ready, this.firstChars)
     ) {
-      this.buf = "";
       return ready;
     }
-    const { flush, hold } = holdPlainSuffixCompiled(ready, this.compiled);
-    this.buf = hold + restEsc;
-    return colorAnsiAwareCompiled(flush, this.compiled, this.firstChars);
+    return colorAnsiAwareCompiled(ready, this.compiled, this.firstChars);
   }
 
   flush(): string {
