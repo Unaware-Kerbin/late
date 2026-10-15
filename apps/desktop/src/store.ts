@@ -793,7 +793,8 @@ export async function openSession(
     }
     attachSession(info, device?.id ?? info.device_id ?? undefined, sessionKind, hostKeyFlags?.split);
     setState({ connectPrompt: null, deviceEditor: null, connectProgress: null, connectFailed: null });
-    await refreshAll();
+    // Do not await: inventory refresh floods the same WS and can delay first banner/login paint.
+    void refreshAll();
   } catch (err) {
     if (epoch !== connectEpoch || isCancelled(err)) {
       setState({ connectProgress: null });
@@ -1128,8 +1129,9 @@ export async function setLogging(sessionId: string, enabled: boolean) {
 
 export async function saveCapture(name: string, sessionId: string) {
   try {
-    const sb = await rpc.call<{ text?: string }>("session.scrollback", { sessionId, session_id: sessionId });
-    await rpc.call("capture.save", { name, sessionId, session_id: sessionId, output: sb?.text ?? "" });
+    // Daemon reads scrollback server-side; never ferry the ring through the renderer.
+    // (capture.save ignores any client `output` and returns a metadata-only record.)
+    await rpc.call("capture.save", { name, sessionId, session_id: sessionId });
     toast("ok", "capture saved");
     await refreshAll();
   } catch (err) {

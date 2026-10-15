@@ -154,7 +154,8 @@ export interface CaptureRecord {
   name: string;
   device_id?: string | null;
   command: string;
-  output: string;
+  /** Omitted/empty on `capture.list` / `capture.save` responses (bodies stay on disk). */
+  output?: string;
   created_at: string;
 }
 

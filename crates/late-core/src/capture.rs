@@ -39,18 +39,38 @@ pub struct DiffLine {
     pub text: String,
 }
 
+/// Cap diff payload so capture.diff cannot push multi‑MiB JSON into the renderer.
+const DIFF_MAX_LINES: usize = 4_000;
+const DIFF_MAX_LINE_CHARS: usize = 2_000;
+
 pub fn diff_outputs(a: &str, b: &str) -> Vec<DiffLine> {
     let diff = TextDiff::from_lines(a, b);
     let mut lines = Vec::new();
     for change in diff.iter_all_changes() {
+        if lines.len() >= DIFF_MAX_LINES {
+            lines.push(DiffLine {
+                tag: "eq".into(),
+                text: format!("…[diff truncated after {DIFF_MAX_LINES} lines]"),
+            });
+            break;
+        }
         let tag = match change.tag() {
             ChangeTag::Delete => "del",
             ChangeTag::Insert => "ins",
             ChangeTag::Equal => "eq",
         };
+        let mut text = change.to_string();
+        if text.len() > DIFF_MAX_LINE_CHARS {
+            let omitted = text.len() - DIFF_MAX_LINE_CHARS;
+            let mut end = DIFF_MAX_LINE_CHARS;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text = format!("{}…[truncated {omitted} chars]", &text[..end]);
+        }
         lines.push(DiffLine {
             tag: tag.into(),
-            text: change.to_string(),
+            text,
         });
     }
     lines
@@ -82,5 +102,32 @@ pub fn export_session(
     } else {
         crate::fsutil::write_private(&path, body)?;
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_outputs_caps_line_count() {
+        let a: String = (0..6_000).map(|i| format!("line-{i}-aaaa\n")).collect();
+        let b: String = (0..6_000).map(|i| format!("line-{i}-bbbb\n")).collect();
+        let lines = diff_outputs(&a, &b);
+        assert!(lines.len() <= DIFF_MAX_LINES + 1);
+        assert!(
+            lines
+                .last()
+                .map(|l| l.text.contains("truncated"))
+                .unwrap_or(false),
+            "expected truncation marker"
+        );
+    }
+
+    #[test]
+    fn diff_outputs_caps_line_chars() {
+        let long = "x".repeat(DIFF_MAX_LINE_CHARS + 500);
+        let lines = diff_outputs(&long, "y");
+        assert!(lines.iter().all(|l| l.text.len() < DIFF_MAX_LINE_CHARS + 80));
     }
 }

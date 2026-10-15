@@ -1,4 +1,5 @@
 import { lateAuthHeaders, lateLocalToken } from "./localToken";
+import { ingestSseChatChunk } from "./sseChat";
 import type { ApprovalPrompt, ChatBackend, ChatMsg } from "../types";
 
 export const SIDECAR_HTTP = "http://127.0.0.1:7430";
@@ -237,18 +238,9 @@ export async function streamChat(opts: {
   const dec = new TextDecoder();
   let buf = "";
   const flush = (chunk: string) => {
-    buf += chunk;
-    const parts = buf.split("\n\n");
-    buf = parts.pop() ?? "";
-    for (const part of parts) {
-      const dataLine = part.split("\n").find((l) => l.startsWith("data:"));
-      if (!dataLine) continue;
-      try {
-        opts.onEvent(JSON.parse(dataLine.slice(5).trim()) as SidecarEvent);
-      } catch {
-        /* ignore malformed */
-      }
-    }
+    const out = ingestSseChatChunk(buf, chunk);
+    buf = out.buf;
+    for (const ev of out.events) opts.onEvent(ev);
   };
   while (true) {
     const { done, value } = await reader.read();

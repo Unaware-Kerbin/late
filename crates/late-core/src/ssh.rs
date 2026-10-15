@@ -1,17 +1,20 @@
 use crate::config::LatePaths;
 use crate::error::{LateError, Result};
 use crate::known_hosts::{
-    host_port_key, pick_keyscan_line, sanitized_host_key_algo, HostKeyCheck, KnownHosts,
+    host_port_key, parse_keyscan_entries, pick_keyscan_entry_for_pin, sanitized_host_key_algo,
+    HostKeyCheck, KeyscanEntry, KnownHosts,
 };
 use crate::secrets::SecretStore;
 use crate::types::{AuthProfile, Device};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::{broadcast, mpsc};
 use zeroize::Zeroize;
@@ -31,9 +34,50 @@ pub struct SshConnectOpts {
 /// PuTTY-like one-shot budget for TCP + SSH. No silent retry loop.
 pub const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEYSCAN_TIMEOUT: Duration = Duration::from_secs(8);
+/// Parallel `session.open` thunders `ssh-keyscan`; some NOS close extra probes and
+/// omit key types. Reuse a fresh scan briefly so concurrent opens see the same set.
+const KEYSCAN_CACHE_TTL: Duration = Duration::from_secs(8);
+const KEYSCAN_PIN_RETRIES: usize = 2;
+
+static KEYSCAN_CACHE: Mutex<Option<(Instant, HashMap<String, String>)>> = Mutex::new(None);
+/// Serialize live keyscan probes — many NOS drop concurrent `ssh-keyscan`.
+static KEYSCAN_GATE: Mutex<()> = Mutex::new(());
 
 pub fn probe_fingerprint(host: &str, port: u16) -> Result<String> {
     Ok(probe_keyscan(host, port)?.2)
+}
+
+fn keyscan_cache_key(host: &str, port: u16) -> String {
+    format!("{host}:{port}")
+}
+
+fn keyscan_cache_get(host: &str, port: u16) -> Option<String> {
+    let mut guard = KEYSCAN_CACHE.lock().ok()?;
+    let Some((built, map)) = guard.as_mut() else {
+        return None;
+    };
+    if built.elapsed() > KEYSCAN_CACHE_TTL {
+        *guard = None;
+        return None;
+    }
+    map.get(&keyscan_cache_key(host, port)).cloned()
+}
+
+fn keyscan_cache_put(host: &str, port: u16, text: &str) {
+    let Ok(mut guard) = KEYSCAN_CACHE.lock() else {
+        return;
+    };
+    let now = Instant::now();
+    match guard.as_mut() {
+        Some((built, map)) if built.elapsed() <= KEYSCAN_CACHE_TTL => {
+            map.insert(keyscan_cache_key(host, port), text.to_string());
+        }
+        _ => {
+            let mut map = HashMap::new();
+            map.insert(keyscan_cache_key(host, port), text.to_string());
+            *guard = Some((now, map));
+        }
+    }
 }
 
 fn display_host(host: &str, port: u16) -> String {
@@ -225,7 +269,7 @@ fn wait_command(
     }
 }
 
-fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
+fn probe_keyscan_text_uncached(host: &str, port: u16) -> Result<String> {
     preflight_tcp(host, port, SSH_CONNECT_TIMEOUT)?;
     let mut cmd = Command::new("ssh-keyscan");
     cmd.args([
@@ -238,16 +282,62 @@ fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
         host,
     ]);
     let (stdout, stderr, _ok) = wait_command(cmd, KEYSCAN_TIMEOUT, host, port)?;
-    let text = String::from_utf8_lossy(&stdout);
-    if let Ok(line) = pick_keyscan_line(&text) {
-        let (algo, fp) = KnownHosts::fingerprint_keyscan_line(&line)?;
-        return Ok((line, algo, fp));
+    let text = String::from_utf8_lossy(&stdout).into_owned();
+    if !parse_keyscan_entries(&text).is_empty() {
+        return Ok(text);
     }
     let combined = format!("{text}\n{}", String::from_utf8_lossy(&stderr));
     if let Some((cause, reason)) = classify_connect_text(&combined) {
         return Err(unable_to_connect(host, port, cause, reason));
     }
     Err(unable_to_connect(host, port, "failed", "no SSH banner"))
+}
+
+fn probe_keyscan_text(host: &str, port: u16) -> Result<String> {
+    if let Some(cached) = keyscan_cache_get(host, port) {
+        return Ok(cached);
+    }
+    let _gate = KEYSCAN_GATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = keyscan_cache_get(host, port) {
+        return Ok(cached);
+    }
+    let text = probe_keyscan_text_uncached(host, port)?;
+    keyscan_cache_put(host, port, &text);
+    Ok(text)
+}
+
+fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
+    let text = probe_keyscan_text(host, port)?;
+    let entry = pick_keyscan_entry_for_pin(&text, None)?;
+    Ok((entry.line, entry.algo, entry.fingerprint))
+}
+
+fn probe_keyscan_for_pin(
+    host: &str,
+    port: u16,
+    pinned: Option<&str>,
+) -> Result<(String, Vec<KeyscanEntry>, KeyscanEntry)> {
+    let mut text = probe_keyscan_text(host, port)?;
+    let mut entries = parse_keyscan_entries(&text);
+    // If the pin is missing from a partial scan (common under concurrent keyscan
+    // pressure), bypass the cache and retry a few times before declaring mismatch.
+    if let Some(pinned) = pinned {
+        let mut tries = 0;
+        while !entries.iter().any(|e| e.fingerprint == pinned) && tries < KEYSCAN_PIN_RETRIES {
+            tries += 1;
+            std::thread::sleep(Duration::from_millis(120 * tries as u64));
+            text = probe_keyscan_text_uncached(host, port)?;
+            keyscan_cache_put(host, port, &text);
+            entries = parse_keyscan_entries(&text);
+        }
+    }
+    if entries.is_empty() {
+        return Err(unable_to_connect(host, port, "failed", "no SSH banner"));
+    }
+    let chosen = pick_keyscan_entry_for_pin(&text, pinned)?;
+    Ok((text, entries, chosen))
 }
 
 pub(crate) fn confined_identity(profile: &AuthProfile) -> Result<Option<PathBuf>> {
@@ -283,9 +373,11 @@ fn write_openssh_known_hosts(
 pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<(PathBuf, String)> {
     let paths = LatePaths::discover();
     let known = KnownHosts::load(&paths)?;
-    let (line, algo, fp) = probe_keyscan(host, port)?;
     let hk = host_port_key(host, port);
-    match known.check(&hk, &fp) {
+    let pinned = known.pins.get(&hk).cloned();
+    let (_text, entries, chosen) = probe_keyscan_for_pin(host, port, pinned.as_deref())?;
+    let fps: Vec<_> = entries.iter().map(|e| e.fingerprint.as_str()).collect();
+    match known.check_any(&hk, fps) {
         HostKeyCheck::Match => {}
         HostKeyCheck::Unknown => {
             return Err(LateError::Ssh(format!(
@@ -300,8 +392,8 @@ pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<(PathBuf,
             });
         }
     }
-    let path = write_openssh_known_hosts(&paths, host, port, &line)?;
-    Ok((path, algo))
+    let path = write_openssh_known_hosts(&paths, host, port, &chosen.line)?;
+    Ok((path, chosen.algo))
 }
 
 pub fn open_ssh(
@@ -321,8 +413,12 @@ pub fn open_ssh(
         .ok_or_else(|| LateError::Ssh("device has no host".into()))?;
     let port = device.port.unwrap_or(22);
     let hk = host_port_key(&host, port);
-    let (keyscan_line, algo, presented) = probe_keyscan(&host, port)?;
-    match known.check(&hk, &presented) {
+    let pinned = known.pins.get(&hk).cloned();
+    let (_text, entries, chosen) = probe_keyscan_for_pin(&host, port, pinned.as_deref())?;
+    let fps: Vec<_> = entries.iter().map(|e| e.fingerprint.as_str()).collect();
+    let presented = chosen.fingerprint.clone();
+    let algo = chosen.algo.clone();
+    match known.check_any(&hk, fps) {
         HostKeyCheck::Match => {}
         HostKeyCheck::Unknown => {
             if !opts.accept_unknown_host {
@@ -346,7 +442,7 @@ pub fn open_ssh(
             known.save(paths)?;
         }
     }
-    let kh = write_openssh_known_hosts(paths, &host, port, &keyscan_line)?;
+    let kh = write_openssh_known_hosts(paths, &host, port, &chosen.line)?;
 
     let mut password = match session_password.filter(|s| !s.is_empty()) {
         Some(p) => Some(p),

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { Modals } from "./components/Modals";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { ShellLayout } from "./components/ShellLayout";
 import { StatusBar } from "./components/StatusBar";
+
+const Modals = lazy(() => import("./components/Modals").then((m) => ({ default: m.Modals })));
 import {
   activateTab,
   boot,
@@ -331,7 +332,9 @@ export function App() {
         </div>
       )}
       <StatusBar />
-      <Modals />
+      <Suspense fallback={null}>
+        <Modals />
+      </Suspense>
       <div className="toasts">
         {(toasts ?? []).map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>

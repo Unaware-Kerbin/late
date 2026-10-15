@@ -8,6 +8,7 @@ import {
   isProposalDismissed,
 } from "../lib/approvals-ui";
 import { renderChatMarkdown } from "../lib/chatMarkdown";
+import { MAX_CHAT_CONTENT_CHARS, capChatContent, trimChatMessages } from "../lib/chatTrim";
 import {
   backendBlockedWhenCloudOff,
   cloudOffOptionSuffix,
@@ -937,7 +938,10 @@ export function ChatPane() {
       );
       return;
     }
-    const next: ChatMsg[] = [...messages, { id: newId(), role: "user", content: text }];
+    const next: ChatMsg[] = trimChatMessages([
+      ...messages,
+      { id: newId(), role: "user", content: text },
+    ]);
     setMessages(next);
     setInput("");
     busyRef.current = true;
@@ -947,7 +951,21 @@ export function ChatPane() {
     abort.current = new AbortController();
     let assistant = "";
     let speakersSeen = false;
+    let deltaRaf = 0;
     const id = newId();
+    const paintAssistantDelta = () => {
+      deltaRaf = 0;
+      const content = capChatContent(assistant);
+      setMessages((cur) => {
+        const idx = cur.findIndex((m) => m.id === id);
+        if (idx >= 0) {
+          const copy = cur.slice();
+          copy[idx] = { ...copy[idx], content };
+          return copy;
+        }
+        return trimChatMessages([...cur, { id, role: "assistant", content }]);
+      });
+    };
     try {
       await streamChat({
         messages: next,
@@ -959,24 +977,30 @@ export function ChatPane() {
           if (e.type === "speaker") {
             speakersSeen = true;
             setThinking("Writing");
-            setMessages((cur) => [
-              ...cur,
-              {
-                id: newId(),
-                role: "assistant",
-                content: e.content,
-                speaker: e.speaker,
-                label: e.label,
-                nickname: e.nickname,
-                logoDataUrl: e.logoDataUrl,
-                skipped: e.skipped === true,
-              },
-            ]);
+            setMessages((cur) =>
+              trimChatMessages([
+                ...cur,
+                {
+                  id: newId(),
+                  role: "assistant",
+                  content: e.content,
+                  speaker: e.speaker,
+                  label: e.label,
+                  nickname: e.nickname,
+                  logoDataUrl: e.logoDataUrl,
+                  skipped: e.skipped === true,
+                },
+              ]),
+            );
           } else if (e.type === "delta") {
             if (speakersSeen) return;
             assistant += e.text;
+            if (assistant.length > MAX_CHAT_CONTENT_CHARS) {
+              assistant = assistant.slice(0, MAX_CHAT_CONTENT_CHARS);
+            }
             setThinking("Writing");
-            setMessages([...next, { id, role: "assistant", content: assistant }]);
+            // Coalesce token paints to one React commit per frame (was OOM'ing ~4 GiB).
+            if (!deltaRaf) deltaRaf = requestAnimationFrame(paintAssistantDelta);
           } else if (e.type === "tool") {
             const name = e.name || "tool";
             if (e.status === "start") setThinking(`Using ${name.replace(/_/g, " ")}`);
@@ -987,13 +1011,16 @@ export function ChatPane() {
               }
             }
             else if (e.status === "denied") {
-              const reason =
+              const raw =
                 typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail ?? "permit list denied");
+              const reason = raw.length > 2000 ? `${raw.slice(0, 2000)}…` : raw;
               setStatus(`permit denied: ${reason}`);
-              setMessages((cur) => [
-                ...cur,
-                { id: newId(), role: "system", content: `Permit list denied: ${reason}` },
-              ]);
+              setMessages((cur) =>
+                trimChatMessages([
+                  ...cur,
+                  { id: newId(), role: "system", content: `Permit list denied: ${reason}` },
+                ]),
+              );
             }
           } else if (e.type === "approval") {
             if (e.pending?.proposalId && isProposalDismissed(e.pending.proposalId)) {
@@ -1026,10 +1053,12 @@ export function ChatPane() {
               )
                 ? "Agent error"
                 : "Agent stopped";
-            setMessages((cur) => [
-              ...cur,
-              { id: newId(), role: "system", content: `${prefix}: ${line}` },
-            ]);
+            setMessages((cur) =>
+              trimChatMessages([
+                ...cur,
+                { id: newId(), role: "system", content: `${prefix}: ${line}` },
+              ]),
+            );
           } else if (e.type === "round") {
             setThinking(`Thinking · round ${e.n}/${e.max}`);
             setStatus(`round ${e.n}/${e.max}`);
@@ -1038,7 +1067,16 @@ export function ChatPane() {
             setStatus(e.message || "still thinking");
           } else if (e.type === "done") {
             setThinking("");
-            if (!assistant && !speakersSeen) setMessages([...next, { id, role: "assistant", content: e.message }]);
+            if (deltaRaf) {
+              cancelAnimationFrame(deltaRaf);
+              deltaRaf = 0;
+            }
+            if (assistant && !speakersSeen) paintAssistantDelta();
+            else if (!assistant && !speakersSeen) {
+              setMessages((cur) =>
+                trimChatMessages([...cur, { id, role: "assistant", content: e.message }]),
+              );
+            }
           }
         },
       });
@@ -1046,6 +1084,7 @@ export function ChatPane() {
       setStatus(err instanceof Error ? err.message : String(err));
       setThinking("");
     } finally {
+      if (deltaRaf) cancelAnimationFrame(deltaRaf);
       const queued = queuedGrantRef.current;
       queuedGrantRef.current = null;
       if (queued) {

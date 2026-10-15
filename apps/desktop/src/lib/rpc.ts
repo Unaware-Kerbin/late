@@ -70,6 +70,40 @@ export function parseTermDataFrame(buf: Uint8Array): { sessionId: string; bytes:
   return { sessionId, bytes: buf.subarray(z + 1) };
 }
 
+/**
+ * Cap early `session.data` held before the pane subscribes.
+ * Banner / login prompt often arrives on the WS while React is still mounting
+ * TerminalPane after `session.open`; without a prebuffer those bytes are dropped
+ * and first paint waits on a follow-up `session.scrollback` RPC.
+ */
+export const MAX_SESSION_PREBUFFER_BYTES = 128_000;
+
+/** Append PTY octets into a capped prebuffer (keeps the trailing tail). */
+export function appendSessionPrebuffer(
+  prev: Uint8Array | undefined,
+  chunk: Uint8Array,
+  maxBytes = MAX_SESSION_PREBUFFER_BYTES,
+): Uint8Array {
+  if (!chunk.length) return prev ?? new Uint8Array(0);
+  if (!prev?.length) {
+    if (chunk.length <= maxBytes) return chunk.slice();
+    return chunk.slice(chunk.length - maxBytes);
+  }
+  const combined = prev.length + chunk.length;
+  if (combined <= maxBytes) {
+    const out = new Uint8Array(combined);
+    out.set(prev, 0);
+    out.set(chunk, prev.length);
+    return out;
+  }
+  if (chunk.length >= maxBytes) return chunk.slice(chunk.length - maxBytes);
+  const keepPrev = maxBytes - chunk.length;
+  const out = new Uint8Array(maxBytes);
+  out.set(prev.subarray(prev.length - keepPrev), 0);
+  out.set(chunk, keepPrev);
+  return out;
+}
+
 export class RpcError extends Error {
   code?: number;
   data?: unknown;
@@ -145,6 +179,8 @@ class DaemonRpc {
   private sessionHandlers = new Set<SessionBytesHandler>();
   /** Per-session PTY stdout — O(1) dispatch instead of waking every pane. */
   private sessionPayload = new Map<string, Set<SessionPayloadHandler>>();
+  /** Bytes that arrived before any pane subscribed (first-connect race). */
+  private sessionPrebuffer = new Map<string, Uint8Array>();
   private statusHandlers = new Set<(ok: boolean, err?: string) => void>();
   private closedHandlers = new Set<(sessionId: string, reason?: string) => void>();
   private opening: Promise<void> | null = null;
@@ -164,6 +200,11 @@ class DaemonRpc {
       this.sessionPayload.set(sessionId, set);
     }
     set.add(h);
+    const early = this.sessionPrebuffer.get(sessionId);
+    if (early?.length) {
+      this.sessionPrebuffer.delete(sessionId);
+      h(early);
+    }
     return () => {
       set!.delete(h);
       if (!set!.size) this.sessionPayload.delete(sessionId);
@@ -193,6 +234,7 @@ class DaemonRpc {
     this.opening = null;
     this.lastError = msg;
     this.connected = false;
+    this.sessionPrebuffer.clear();
     this.statusHandlers.forEach((h) => h(false, msg));
     reject?.(new Error(msg));
   }
@@ -231,6 +273,9 @@ class DaemonRpc {
           this.opening = null;
           this.connected = false;
           this.lastError = "daemon disconnected";
+          // Drop early banners so a reconnect cannot paint another session's
+          // prebuffer (or retain secrets) after the socket dies mid-flight.
+          this.sessionPrebuffer.clear();
           this.statusHandlers.forEach((h) => h(false, this.lastError ?? undefined));
           for (const [, p] of this.pending) p.reject(new Error("daemon websocket closed"));
           this.pending.clear();
@@ -253,8 +298,14 @@ class DaemonRpc {
   private dispatchBytes(sessionId: string, bytes: Uint8Array) {
     if (!sessionId || !bytes.length) return;
     const targeted = this.sessionPayload.get(sessionId);
-    if (targeted) {
+    if (targeted?.size) {
       for (const h of targeted) h(bytes);
+    } else {
+      // No pane listening yet — hold banner/login so first paint is not gated on hydrate.
+      this.sessionPrebuffer.set(
+        sessionId,
+        appendSessionPrebuffer(this.sessionPrebuffer.get(sessionId), bytes),
+      );
     }
     if (this.sessionHandlers.size) {
       this.sessionHandlers.forEach((h) => h(sessionId, bytes));
@@ -287,7 +338,10 @@ class DaemonRpc {
     if (event === "session.closed" || event === "sessionClosed") {
       const sessionId = String(msg.sessionId ?? msg.session_id ?? "");
       const reason = msg.reason ? String(msg.reason) : undefined;
-      if (sessionId) this.closedHandlers.forEach((h) => h(sessionId, reason));
+      if (sessionId) {
+        this.sessionPrebuffer.delete(sessionId);
+        this.closedHandlers.forEach((h) => h(sessionId, reason));
+      }
       return;
     }
     if (typeof msg.id === "number" && this.pending.has(msg.id)) {

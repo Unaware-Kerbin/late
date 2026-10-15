@@ -183,9 +183,14 @@ fi
 
 export DISPLAY="${DISPLAY:-:0}"
 export LATE_DEV_URL="$UI_URL"
-# Intel Arc + Wayland GPU compositing blanks Electron. Force software + X11.
-export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+# GPU compositing is on by default (snappier). Intel Arc + Wayland used to blank the
+# window — Electron main forces X11. Escape hatch: LATE_SOFTWARE_RENDER=1
+ELECTRON_ARGS=(--no-sandbox --ozone-platform=x11 --log-level=3)
+if [[ "${LATE_SOFTWARE_RENDER:-}" == "1" || "${LATE_SOFTWARE_RENDER:-}" == "true" ]]; then
+  export LIBGL_ALWAYS_SOFTWARE=1
+  ELECTRON_ARGS+=(--disable-gpu --disable-gpu-compositing --disable-gpu-vsync)
+fi
 echo "late: opening window"
-"$ELECTRON_BIN" --no-sandbox --disable-gpu --disable-gpu-compositing --disable-gpu-vsync --ozone-platform=x11 --log-level=3 \
+"$ELECTRON_BIN" "${ELECTRON_ARGS[@]}" \
   "$ROOT/apps/desktop/electron/main.cjs" >>/tmp/late-electron.log 2>&1
 # Window closed — cleanup only what we started.

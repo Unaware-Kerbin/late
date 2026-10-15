@@ -32,5 +32,5 @@ pub mod weights;
 
 pub use config::{AppSettings, LatePaths};
 pub use error::{LateError, Result};
-pub use session::{App, AppEvent, OpenSession};
+pub use session::{App, AppEvent, OpenSession, SCROLLBACK_BYTE_CAP};
 pub use types::*;

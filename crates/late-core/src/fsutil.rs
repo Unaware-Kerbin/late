@@ -23,11 +23,15 @@ pub fn write_private(path: &Path, data: impl AsRef<[u8]>) -> Result<()> {
     if let Some(parent) = path.parent() {
         mkdir_private(parent)?;
     }
+    // Unique tmp per call — parallel writers to the same final path (e.g. two
+    // session.open → ssh-known/*.known) must not share `{name}.tmp` or one
+    // rename leaves the other with ENOENT.
     let tmp = path.with_file_name(format!(
-        "{}.tmp",
+        "{}.{}.tmp",
         path.file_name()
             .map(|n| n.to_string_lossy())
-            .unwrap_or_else(|| "secret".into())
+            .unwrap_or_else(|| "secret".into()),
+        uuid::Uuid::new_v4()
     ));
     {
         let mut opts = OpenOptions::new();
@@ -65,4 +69,32 @@ pub fn chmod_private(path: &Path) -> Result<()> {
     }
     let _ = path;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    #[test]
+    fn write_private_parallel_same_path_no_enoent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.known");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                write_private(&path, format!("line-{i}\n").as_bytes()).expect("write_private")
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert!(path.is_file());
+        assert!(!fs::read_to_string(&path).unwrap().is_empty());
+    }
 }

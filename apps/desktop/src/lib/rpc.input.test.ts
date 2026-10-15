@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { encodeTermDataFrame, encodeTermInputFrame, parseTermDataFrame, isCancelled, isConnectError, RpcError } from "./rpc";
+import {
+  appendSessionPrebuffer,
+  encodeTermDataFrame,
+  encodeTermInputFrame,
+  MAX_SESSION_PREBUFFER_BYTES,
+  parseTermDataFrame,
+  isCancelled,
+  isConnectError,
+  RpcError,
+} from "./rpc";
 
 test("encodeTermInputFrame is sessionId NUL payload, not JSON-RPC", () => {
   const buf = encodeTermInputFrame("a1b2c3d4-e5f6-7890-abcd-ef1234567890", "sh");
@@ -60,4 +69,23 @@ test("isConnectError treats session.open RPC timeout as Unable to Connect", () =
   const got = isConnectError(new RpcError("RPC timeout: session.open"));
   assert.ok(got);
   assert.equal(got.cause, "timeout");
+});
+
+test("appendSessionPrebuffer keeps early banner bytes before pane subscribe", () => {
+  const enc = new TextEncoder();
+  const a = enc.encode("login: ");
+  const b = enc.encode("password: ");
+  const merged = appendSessionPrebuffer(a, b);
+  assert.equal(new TextDecoder().decode(merged), "login: password: ");
+});
+
+test("appendSessionPrebuffer caps to trailing tail", () => {
+  const first = new Uint8Array(MAX_SESSION_PREBUFFER_BYTES);
+  first.fill(0x41);
+  const chunk = new Uint8Array([0x5a, 0x5a, 0x5a]);
+  const out = appendSessionPrebuffer(first, chunk);
+  assert.equal(out.length, MAX_SESSION_PREBUFFER_BYTES);
+  assert.equal(out[out.length - 1], 0x5a);
+  assert.equal(out[out.length - 2], 0x5a);
+  assert.equal(out[out.length - 3], 0x5a);
 });

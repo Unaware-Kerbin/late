@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { cancelAll, decide, listPending } from "./approvals.js";
+import { cancelAll, cancelConversation, decide, listPending } from "./approvals.js";
 import { resolveSidecarChatBackend } from "./chat-backend.js";
 import { runCursorChat } from "./cursor-loop.js";
 import { auditEvent, authorizeLocal, corsAllowOrigin, isLoopbackHostHeader } from "./local-auth.js";
@@ -208,11 +208,12 @@ const server = createServer(async (req, res) => {
       if (body.conversationId) {
         runs.get(body.conversationId)?.abort();
         runs.delete(body.conversationId);
+        cancelConversation(body.conversationId, "stopped");
       } else {
         for (const c of runs.values()) c.abort();
         runs.clear();
+        cancelAll("stopped");
       }
-      cancelAll("stopped");
       sendJson(res, req, 200, { ok: true });
       return;
     }
@@ -237,7 +238,8 @@ const server = createServer(async (req, res) => {
       const conversationId = body.conversationId ?? crypto.randomUUID();
       const ac = new AbortController();
       runs.get(conversationId)?.abort();
-      cancelAll("superseded by a new chat turn");
+      // Only supersede Approves for this conversation — concurrent chats keep their gates.
+      cancelConversation(conversationId, "superseded by a new chat turn");
       runs.set(conversationId, ac);
 
       const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";

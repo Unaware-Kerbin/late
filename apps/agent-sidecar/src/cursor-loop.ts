@@ -4,8 +4,38 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withUntrustedDeviceFence } from "./mcp-chat-format.js";
-import { allChatTools, cursorToolDefs, liveSessionContext, mcpSystemNote, type ToolCtx } from "./tools.js";
+import {
+  allChatTools,
+  clipToolResult,
+  cursorToolDefs,
+  liveSessionContext,
+  mcpSystemNote,
+  type ToolCtx,
+} from "./tools.js";
 import { SYSTEM_PROMPT, TURN_TIMEOUT_MS, type ChatMessage, type SseEvent } from "./types.js";
+
+/** Cap continue-prompt tool notes so multi-device investigate hops stay bounded. */
+export const MAX_CURSOR_TOOL_NOTES_CHARS = 48_000;
+/** Stop streaming assistant deltas past this size (renderer also caps; belt-and-suspenders). */
+export const MAX_CURSOR_ASSISTANT_EMIT_CHARS = 48_000;
+
+/** Keep newest notes under a total char budget (each note already clipped). */
+export function trimToolNotes(notes: string[], maxTotal = MAX_CURSOR_TOOL_NOTES_CHARS): string[] {
+  let total = 0;
+  const out: string[] = [];
+  for (let i = notes.length - 1; i >= 0; i--) {
+    let n = notes[i] ?? "";
+    if (!n) continue;
+    if (total + n.length > maxTotal) {
+      if (out.length) break;
+      // Always keep a truncated newest note so continuePrompt still has evidence.
+      n = n.slice(-maxTotal);
+    }
+    out.push(n);
+    total += n.length;
+  }
+  return out.reverse();
+}
 
 type AgentHandle = {
   send: (prompt: string) => Promise<{
@@ -88,8 +118,12 @@ export async function runCursorChat(opts: {
       def[key] = async (args: Record<string, unknown>) => {
         toolsInFlight++;
         try {
-          const result = await bound(args);
-          toolNotes.push(String(result).slice(0, 4000));
+          // executeTool already clips; clip again so a future wrapper cannot leak MiB to the SDK.
+          const result = clipToolResult(String(await bound(args)), 4000);
+          toolNotes.push(result);
+          const trimmed = trimToolNotes(toolNotes);
+          toolNotes.length = 0;
+          toolNotes.push(...trimmed);
           lastToolDoneAt = Date.now();
           return result;
         } finally {
@@ -232,9 +266,12 @@ export async function runCursorChat(opts: {
       if (e.type === "assistant" && e.message?.content) {
         for (const block of e.message.content) {
           if (block.type === "text" && block.text?.trim()) {
-            text += block.text;
+            if (text.length >= MAX_CURSOR_ASSISTANT_EMIT_CHARS) continue;
+            const room = MAX_CURSOR_ASSISTANT_EMIT_CHARS - text.length;
+            const chunk = block.text.length > room ? block.text.slice(0, room) : block.text;
+            text += chunk;
             lastTextAt = Date.now();
-            opts.emit({ type: "delta", text: block.text });
+            opts.emit({ type: "delta", text: chunk });
           }
         }
       }

@@ -6,12 +6,21 @@ const os = require("node:os");
 const path = require("node:path");
 const { fileURLToPath } = require("node:url");
 
-app.disableHardwareAcceleration();
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-gpu-compositing");
-app.commandLine.appendSwitch("disable-gpu-vsync");
+// GPU on by default (snappier paint/compositing). Intel Arc + Wayland used to blank
+// the window — we stay on X11 below. Escape hatch: LATE_SOFTWARE_RENDER=1.
+const softwareRender =
+  process.env.LATE_SOFTWARE_RENDER === "1" ||
+  process.env.LATE_SOFTWARE_RENDER === "true" ||
+  process.env.LIBGL_ALWAYS_SOFTWARE === "1";
+if (softwareRender) {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("disable-gpu-vsync");
+}
 app.commandLine.appendSwitch("log-level", "3");
 if (process.platform === "linux") {
+  // Wayland GPU path blanked some Intel Arc boxes; X11 stays reliable.
   app.commandLine.appendSwitch("ozone-platform", "x11");
 }
 
@@ -336,7 +345,8 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     title: "Late — Local AI Terminal Emulator",
-    backgroundColor: "#0b1020",
+    backgroundColor: "#070b10",
+    show: false,
     autoHideMenuBar: true,
     icon: path.join(__dirname, "../src-tauri/icons/128x128.png"),
     webPreferences: {
@@ -347,10 +357,18 @@ function createWindow() {
       spellcheck: false,
       webviewTag: false,
       devTools: !app.isPackaged,
+      // Keep WebGL off: xterm WebGL blanks panes on layout change; canvas is fine with GPU compositing.
       webgl: false,
       backgroundThrottling: false,
     },
   });
+  win.once("ready-to-show", () => {
+    if (!win.isDestroyed()) win.show();
+  });
+  // Fallback if ready-to-show never fires (some Linux GPU drivers).
+  setTimeout(() => {
+    if (!win.isDestroyed() && !win.isVisible()) win.show();
+  }, 2500);
   if (app.isPackaged) {
     win.loadFile(path.join(__dirname, "../dist/index.html"));
   } else {
@@ -361,12 +379,12 @@ function createWindow() {
     win.reload();
   });
   win.webContents.on("gpu-crashed", () => {
-    console.error("late gpu crashed");
+    console.error("late gpu crashed — set LATE_SOFTWARE_RENDER=1 if this repeats");
     win.reload();
   });
 }
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(isAllowedWebPermission(permission));
   });
@@ -435,8 +453,9 @@ app.whenReady().then(async () => {
     return update.applyUpdates(payload && typeof payload === "object" ? payload : {});
   });
   installAppMenu();
-  await startBackend();
+  // Show the shell immediately; daemon/sidecar catch up in the background (terminal needs daemon).
   createWindow();
+  void startBackend();
 });
 app.on("web-contents-created", (_e, contents) => {
   lockWebContents(contents);

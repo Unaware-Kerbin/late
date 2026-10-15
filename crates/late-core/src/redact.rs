@@ -2,19 +2,15 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// Cap unique secret→ordinal entries so a long chatty session with noisy false
+/// positives cannot grow the redactor maps without bound (lock-copy path clones this).
+const REDACTOR_SEEN_CAP: usize = 8_192;
+
 /// Best-effort redaction. Secrets become `[REDACTED:kind#N]` with stable per-session ordinals.
+#[derive(Clone, Default)]
 pub struct Redactor {
     seen: HashMap<(String, String), usize>,
     next: HashMap<String, usize>,
-}
-
-impl Default for Redactor {
-    fn default() -> Self {
-        Self {
-            seen: HashMap::new(),
-            next: HashMap::new(),
-        }
-    }
 }
 
 impl Redactor {
@@ -44,6 +40,11 @@ impl Redactor {
         let key = (kind.to_string(), secret.to_string());
         if let Some(n) = self.seen.get(&key) {
             return format!("[REDACTED:{kind}#{n}]");
+        }
+        if self.seen.len() >= REDACTOR_SEEN_CAP {
+            // Drop history; ordinals restart. Prefer bounded memory over perfect stability.
+            self.seen.clear();
+            self.next.clear();
         }
         let n = self.next.entry(kind.to_string()).or_insert(1);
         let assigned = *n;
@@ -99,5 +100,19 @@ mod tests {
         let out = r.redact(r#"{"password":"hunter2"}"#);
         assert!(!out.contains("hunter2"));
         assert!(out.contains("REDACTED"));
+    }
+
+    #[test]
+    fn seen_map_stays_bounded() {
+        let mut r = Redactor::new();
+        for i in 0..(REDACTOR_SEEN_CAP + 50) {
+            let token = format!("AKIA{:0>16}", i);
+            let _ = r.redact(&token);
+        }
+        assert!(
+            r.seen.len() <= REDACTOR_SEEN_CAP,
+            "seen len {} exceeds cap",
+            r.seen.len()
+        );
     }
 }

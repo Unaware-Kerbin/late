@@ -35,7 +35,24 @@ const OUTPUT_COALESCE_MAX: usize = 65_536;
 /// Only used while a large dump is in flight (above interactive size, below max).
 const OUTPUT_COALESCE_MS: u64 = 2;
 
+/// Hard cap on in-memory session scrollback (bytes).
+///
+/// Independent of Settings `scrollback_lines` (xterm UI history, default 32_000).
+/// Even if the UI asks for a huge line count, the daemon ring stays at most this
+/// many bytes so a chatty PTY cannot grow RSS without bound. 2 MiB balances
+/// “show running-config” style dumps against renderer/agent OOM risk when a
+/// client still requests a large RPC tail.
+pub const SCROLLBACK_BYTE_CAP: usize = 2_000_000;
+
 /// Move pending PTY bytes onto the event bus as raw octets (no base64 on the hot path).
+/// Timestamped capture path. Short UUID suffix so two starts in the same second
+/// never share a file (second-resolution stamps alone collided under smoke load).
+fn unique_pcap_path(dir: &Path, prefix: &str) -> PathBuf {
+    let stamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let short = &Uuid::new_v4().to_string()[..8];
+    dir.join(format!("{prefix}-{stamp}-{short}.pcap"))
+}
+
 fn emit_session_data(events: &broadcast::Sender<AppEvent>, session_id: &str, buf: Vec<u8>) {
     if buf.is_empty() {
         return;
@@ -64,7 +81,7 @@ fn ingest_pty_chunk(
             return false;
         };
         s.scrollback.extend_from_slice(buf);
-        let max = 2_000_000;
+        let max = SCROLLBACK_BYTE_CAP;
         if s.scrollback.len() > max {
             s.scrollback.drain(0..s.scrollback.len() - max);
         }
@@ -475,23 +492,55 @@ impl App {
         Ok(())
     }
 
-    pub fn redacted_scrollback(&self, session_id: &str) -> Result<String> {
-        let mut inner = self.inner.lock();
-        let s = inner
-            .sessions
-            .get_mut(session_id)
-            .ok_or_else(|| LateError::NotFound(session_id.into()))?;
-        let raw = String::from_utf8_lossy(&s.scrollback).into_owned();
-        Ok(s.redactor.redact(&raw))
+    /// Copy a scrollback slice under the session lock. `max_chars` keeps only the
+    /// trailing UTF-8-ish tail so agent/UI RPCs do not clone or redact a full 2 MiB buffer.
+    fn scrollback_slice_locked(scrollback: &[u8], max_chars: Option<usize>) -> String {
+        let bytes = match max_chars.filter(|n| *n > 0) {
+            Some(max) if scrollback.len() > max => {
+                let mut start = scrollback.len() - max;
+                while start < scrollback.len() && scrollback[start] & 0xc0 == 0x80 {
+                    start += 1;
+                }
+                &scrollback[start..]
+            }
+            _ => scrollback,
+        };
+        String::from_utf8_lossy(bytes).into_owned()
     }
 
-    pub fn raw_scrollback(&self, session_id: &str) -> Result<String> {
+    /// Redacted scrollback. Optional `max_chars` returns only the trailing tail.
+    /// Redaction runs *outside* the session mutex so PTY ingest / WS emit are not stalled
+    /// by multi-regex passes over large dumps (agent multi-turn on chatty devices).
+    pub fn redacted_scrollback(
+        &self,
+        session_id: &str,
+        max_chars: Option<usize>,
+    ) -> Result<String> {
+        let (raw, mut redactor) = {
+            let inner = self.inner.lock();
+            let s = inner
+                .sessions
+                .get(session_id)
+                .ok_or_else(|| LateError::NotFound(session_id.into()))?;
+            (
+                Self::scrollback_slice_locked(&s.scrollback, max_chars),
+                s.redactor.clone(),
+            )
+        };
+        let out = redactor.redact(&raw);
+        if let Some(s) = self.inner.lock().sessions.get_mut(session_id) {
+            s.redactor = redactor;
+        }
+        Ok(out)
+    }
+
+    pub fn raw_scrollback(&self, session_id: &str, max_chars: Option<usize>) -> Result<String> {
         let inner = self.inner.lock();
         let s = inner
             .sessions
             .get(session_id)
             .ok_or_else(|| LateError::NotFound(session_id.into()))?;
-        Ok(String::from_utf8_lossy(&s.scrollback).into_owned())
+        Ok(Self::scrollback_slice_locked(&s.scrollback, max_chars))
     }
 
     pub fn check_command(&self, session_id: &str, command: &str) -> Result<PolicyDecision> {
@@ -501,7 +550,9 @@ impl App {
                 .sessions
                 .get_mut(session_id)
                 .ok_or_else(|| LateError::NotFound(session_id.into()))?;
-            let text = String::from_utf8_lossy(&s.scrollback);
+            // Banner / OS hints live near the end of interactive sessions; skip scanning 2 MiB.
+            const VENDOR_INFER_TAIL: usize = 65_536;
+            let text = Self::scrollback_slice_locked(&s.scrollback, Some(VENDOR_INFER_TAIL));
             let vendor = Vendor::infer_from_text(&text, s.vendor);
             s.vendor = vendor;
             vendor
@@ -1015,7 +1066,8 @@ impl App {
     ) -> Result<serde_json::Value> {
         let dir = self.paths.data.join("pcap");
         crate::fsutil::mkdir_private(&dir)?;
-        let file = dir.join(format!("live-{}.pcap", Utc::now().format("%Y%m%d-%H%M%S")));
+        // Include a short UUID so two starts in the same second never share a path.
+        let file = unique_pcap_path(&dir, "live");
         let cap = LiveCapture::start(iface, file.clone(), bpf.as_deref(), count)?;
         let info = CaptureInfo {
             id: cap.id.clone(),
@@ -1114,7 +1166,7 @@ impl App {
         )?;
         let dir = self.paths.data.join("pcap");
         crate::fsutil::mkdir_private(&dir)?;
-        let file = dir.join(format!("ssh-{}.pcap", Utc::now().format("%Y%m%d-%H%M%S")));
+        let file = unique_pcap_path(&dir, "ssh");
         std::fs::write(&file, &bytes)?;
         let _ = crate::fsutil::chmod_private(&file);
         self.open_pcap(file)
@@ -1136,7 +1188,7 @@ impl App {
         let (device, profile) = self.resolve_ssh_device(device_id, session_id, auth_profile_id)?;
         let dir = self.paths.data.join("pcap");
         crate::fsutil::mkdir_private(&dir)?;
-        let file = dir.join(format!("ssh-{}.pcap", Utc::now().format("%Y%m%d-%H%M%S")));
+        let file = unique_pcap_path(&dir, "ssh");
         let cap = crate::remote_pcap::start_live(
             &device,
             &profile,
@@ -1406,7 +1458,7 @@ impl App {
     }
 
     pub fn save_capture(&self, session_id: &str, name: &str) -> Result<CaptureRecord> {
-        let output = self.raw_scrollback(session_id)?;
+        let output = self.raw_scrollback(session_id, None)?;
         let inner = self.inner.lock();
         let s = inner
             .sessions
@@ -1454,9 +1506,9 @@ impl App {
         redacted: bool,
     ) -> Result<PathBuf> {
         let body = if redacted {
-            self.redacted_scrollback(session_id)?
+            self.redacted_scrollback(session_id, None)?
         } else {
-            self.raw_scrollback(session_id)?
+            self.raw_scrollback(session_id, None)?
         };
         capture::export_session(&self.paths, name, &body, passphrase)
     }
@@ -2933,7 +2985,11 @@ mod serial_session_tests {
                     r#"
 import os, pty, sys, time
 master, slave = pty.openpty()
-sys.stdout.write(os.ttyname(slave) + "\n")
+name = os.ttyname(slave)
+# Close the slave so Late is the sole opener (real USB adapters have no
+# second holder). Exclusive locks then clear when Late drops its fds.
+os.close(slave)
+sys.stdout.write(name + "\n")
 sys.stdout.flush()
 try:
     while True:
@@ -2941,7 +2997,6 @@ try:
 except Exception:
     pass
 os.close(master)
-os.close(slave)
 "#,
                 ])
                 .stdin(Stdio::null())
@@ -3103,6 +3158,147 @@ mod drop_reconnect_tests {
 }
 
 #[cfg(test)]
+mod scrollback_tail_tests {
+    use super::*;
+
+    #[test]
+    fn scrollback_slice_keeps_utf8_tail() {
+        let mut buf = Vec::new();
+        buf.extend(b"AAAA");
+        buf.extend("é".as_bytes()); // 2-byte UTF-8
+        buf.extend(b"TAIL");
+        // max 5 bytes from end — must not start mid-codepoint
+        let s = App::scrollback_slice_locked(&buf, Some(5));
+        assert!(s.ends_with("TAIL"));
+        assert!(!s.contains('\u{fffd}') || s.starts_with('é') || s.chars().all(|c| c.is_ascii()));
+    }
+
+    #[test]
+    fn scrollback_slice_none_is_full() {
+        let buf = b"hello world".to_vec();
+        assert_eq!(App::scrollback_slice_locked(&buf, None), "hello world");
+        assert_eq!(App::scrollback_slice_locked(&buf, Some(5)), "world");
+    }
+
+    #[test]
+    fn scrollback_byte_cap_is_two_mib() {
+        // Documented contract: ring buffer ≤ 2 MiB regardless of scrollback_lines.
+        assert_eq!(SCROLLBACK_BYTE_CAP, 2_000_000);
+    }
+
+    fn test_session(id: &str) -> SessionInfo {
+        SessionInfo {
+            id: id.into(),
+            device_id: None,
+            name: "scrollback-test".into(),
+            kind: SessionKind::Local,
+            vendor: Vendor::Generic,
+            connected: true,
+            created_at: Utc::now(),
+            accent: None,
+            logging: false,
+            log_path: None,
+        }
+    }
+
+    #[test]
+    fn ingest_enforces_scrollback_byte_cap() {
+        let dir = std::env::temp_dir().join(format!("late-sb-cap-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        let sid = "sb-cap-1";
+        app.insert_test_session(test_session(sid));
+        // Overfill past the hard byte cap; ring must retain only the tail.
+        let chunk = vec![b'x'; SCROLLBACK_BYTE_CAP / 4];
+        for _ in 0..6 {
+            let mut pending = Vec::new();
+            assert!(ingest_pty_chunk(&app.inner, sid, &chunk, &mut pending));
+        }
+        let len = {
+            let g = app.inner.lock();
+            g.sessions.get(sid).unwrap().scrollback.len()
+        };
+        assert!(
+            len <= SCROLLBACK_BYTE_CAP,
+            "scrollback len {len} exceeds SCROLLBACK_BYTE_CAP"
+        );
+        assert_eq!(len, SCROLLBACK_BYTE_CAP);
+        let tail = app.raw_scrollback(sid, Some(8)).unwrap();
+        assert_eq!(tail, "xxxxxxxx");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn redacted_scrollback_respects_max_chars() {
+        let dir = std::env::temp_dir().join(format!("late-sb-redact-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        let sid = "sb-redact-1";
+        app.insert_test_session(test_session(sid));
+        let mut pending = Vec::new();
+        let body = b"prefix SECRET_TOKEN_VALUE suffix-TAIL";
+        assert!(ingest_pty_chunk(&app.inner, sid, body, &mut pending));
+        let full = app.redacted_scrollback(sid, None).unwrap();
+        assert!(full.contains("suffix-TAIL") || full.contains("TAIL"));
+        let short = app.redacted_scrollback(sid, Some(12)).unwrap();
+        assert!(short.len() <= 12 + 32, "unexpected expansion: {short:?}");
+        assert!(short.ends_with("TAIL") || short.contains("TAIL"));
+        assert!(!short.contains("prefix"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_capture_persists_body_for_diff() {
+        let dir = std::env::temp_dir().join(format!("late-cap-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        let sid = "cap-sess-1";
+        app.insert_test_session(test_session(sid));
+        let mut pending = Vec::new();
+        assert!(ingest_pty_chunk(
+            &app.inner,
+            sid,
+            b"show version\nAOS-CX 10.13\n",
+            &mut pending
+        ));
+        let a = app.save_capture(sid, "before").unwrap();
+        assert!(!a.output.is_empty(), "disk record must keep scrollback body");
+        assert!(a.output.contains("AOS-CX"));
+
+        assert!(ingest_pty_chunk(
+            &app.inner,
+            sid,
+            b"show version\nAOS-CX 10.14\n",
+            &mut pending
+        ));
+        let b = app.save_capture(sid, "after").unwrap();
+
+        let listed = app.list_captures().unwrap();
+        assert!(listed.iter().any(|c| c.id == a.id && !c.output.is_empty()));
+        assert!(listed.iter().any(|c| c.id == b.id && !c.output.is_empty()));
+
+        let lines = app.diff_captures(&a.id, &b.id).unwrap();
+        assert!(
+            lines.iter().any(|l| l.tag == "ins" || l.tag == "del"),
+            "diff should see body from disk: {lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
 mod session_logging_tests {
     use super::*;
     use crate::types::{Device, DeviceKind, Vendor};
@@ -3249,5 +3445,19 @@ mod session_logging_tests {
         assert!(text.contains("# Late session log"));
         app.close_session(&info.id).ok();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unique_pcap_path_avoids_same_second_collision() {
+        let dir = PathBuf::from("/tmp");
+        let a = unique_pcap_path(&dir, "live");
+        let b = unique_pcap_path(&dir, "live");
+        assert_ne!(a, b);
+        assert!(a
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("live-"));
+        assert!(a.extension().unwrap() == "pcap");
     }
 }

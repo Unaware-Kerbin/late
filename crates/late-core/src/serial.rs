@@ -86,11 +86,39 @@ fn serial_err(path: &str, e: impl std::fmt::Display) -> LateError {
     }
 }
 
+fn os_reports_busy(err: &impl std::fmt::Display) -> bool {
+    let lower = err.to_string().to_ascii_lowercase();
+    lower.contains("exclusive lock")
+        || lower.contains("resource busy")
+        || lower.contains("device or resource busy")
+        || lower.contains("busy")
+        || lower.contains("in use")
+}
+
 fn open_port(path: &str, baud: u32) -> Result<Box<dyn serialport::SerialPort>> {
-    serialport::new(path, baud)
-        .timeout(Duration::from_millis(50))
-        .open()
-        .map_err(|e| serial_err(path, e))
+    // TIOCEXCL/flock can still look busy for a few dozen ms after the previous
+    // handles drop (scheduler delay). Retry briefly so close→reopen of the
+    // same console does not require an app restart.
+    const ATTEMPTS: u32 = 6;
+    const GAP: Duration = Duration::from_millis(15);
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match serialport::new(path, baud)
+            .timeout(Duration::from_millis(50))
+            .open()
+        {
+            Ok(port) => return Ok(port),
+            Err(e) if os_reports_busy(&e) && attempt + 1 < ATTEMPTS => {
+                last = Some(e);
+                std::thread::sleep(GAP);
+            }
+            Err(e) => return Err(serial_err(path, e)),
+        }
+    }
+    Err(serial_err(
+        path,
+        last.expect("busy open retry exhausted"),
+    ))
 }
 
 fn notice(out: &broadcast::Sender<Vec<u8>>, msg: &str) {
@@ -279,7 +307,11 @@ mod tests {
                     r#"
 import os, pty, sys, time
 master, slave = pty.openpty()
-sys.stdout.write(os.ttyname(slave) + "\n")
+name = os.ttyname(slave)
+# Close the slave so Late is the sole opener (real USB adapters have no
+# second holder). Exclusive locks then clear when Late drops its fds.
+os.close(slave)
+sys.stdout.write(name + "\n")
 sys.stdout.flush()
 try:
     while True:
@@ -287,7 +319,6 @@ try:
 except Exception:
     pass
 os.close(master)
-os.close(slave)
 "#,
                 ])
                 .stdin(Stdio::null())

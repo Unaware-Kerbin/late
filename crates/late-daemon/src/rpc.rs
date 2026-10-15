@@ -3,7 +3,7 @@ use base64::Engine;
 use late_core::http_api::ApiRequest;
 use late_core::{
     sftp, App, AppSettings, AuthProfile, CommandCollection, Device, LateError, OpenSession,
-    SessionKind, Vendor,
+    SessionKind, Vendor, SCROLLBACK_BYTE_CAP,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -259,10 +259,14 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
                 .get("redacted")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
+            // Safe default tail when the client omits max_chars. Full ring buffer
+            // only when explicitly opted in (`full` / `full_buffer`); export /
+            // capture paths call App methods directly with None instead.
+            let max_chars = scrollback_rpc_max_chars(&params);
             let text = if redacted {
-                app.redacted_scrollback(&id)?
+                app.redacted_scrollback(&id, max_chars)?
             } else {
-                app.raw_scrollback(&id)?
+                app.raw_scrollback(&id, max_chars)?
             };
             Ok(json!({"id": id, "text": text}))
         }
@@ -464,11 +468,22 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             app.delete_collection(&req_str(&params, &["id"])?)?;
             Ok(json!({"ok": true}))
         }
-        "capture.list" => Ok(serde_json::to_value(app.list_captures()?)?),
+        "capture.list" => {
+            // UI only needs id/name/timestamps for the picker; omit multi‑MiB
+            // bodies so refreshAll cannot OOM the renderer.
+            let mut caps = app.list_captures()?;
+            for c in &mut caps {
+                c.output.clear();
+            }
+            Ok(serde_json::to_value(caps)?)
+        }
         "capture.save" => {
             let id = req_str(&params, &["id", "session_id"])?;
             let name = pstr(&params, &["name"]).unwrap_or_else(|| "capture".into());
-            Ok(serde_json::to_value(app.save_capture(&id, &name)?)?)
+            let mut rec = app.save_capture(&id, &name)?;
+            // Persist full body on disk; do not echo it back over RPC.
+            rec.output.clear();
+            Ok(serde_json::to_value(rec)?)
         }
         "capture.diff" => {
             let a = req_str(&params, &["a", "left"])?;
@@ -627,6 +642,31 @@ fn unwrap_obj(params: &Value, key: &str) -> Value {
 fn json_flag(v: &Value, keys: &[&str]) -> bool {
     keys.iter()
         .any(|k| v.get(*k).and_then(|x| x.as_bool()) == Some(true))
+}
+
+/// Default RPC tail for `session.scrollback` when the client omits `max_chars`.
+/// Large enough for hydrate / agent context; far below the 2 MiB ring so a
+/// missing bound cannot push ~2 MiB JSON into the Electron renderer.
+const SCROLLBACK_RPC_DEFAULT_MAX: usize = 256_000;
+
+/// Resolve the scrollback tail bound for RPC.
+/// - omitted / zero `max_chars` → [`SCROLLBACK_RPC_DEFAULT_MAX`]
+/// - explicit positive `max_chars` / `maxChars` → that value, clamped to
+///   [`SCROLLBACK_BYTE_CAP`] (client cannot ask past the ring)
+/// - `full` / `full_buffer: true` → `None` (entire ring, up to `SCROLLBACK_BYTE_CAP`)
+fn scrollback_rpc_max_chars(params: &Value) -> Option<usize> {
+    if json_flag(params, &["full", "full_buffer"]) {
+        return None;
+    }
+    match params
+        .get("max_chars")
+        .or_else(|| params.get("maxChars"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
+    {
+        Some(n) if n > 0 => Some(n.min(SCROLLBACK_BYTE_CAP)),
+        _ => Some(SCROLLBACK_RPC_DEFAULT_MAX),
+    }
 }
 
 fn pstr(v: &Value, keys: &[&str]) -> Option<String> {
@@ -887,6 +927,52 @@ mod tests {
         assert!(!is_rpc_notification(&json!(1)));
     }
 
+    #[test]
+    fn scrollback_rpc_defaults_to_safe_tail() {
+        assert_eq!(
+            scrollback_rpc_max_chars(&json!({})),
+            Some(SCROLLBACK_RPC_DEFAULT_MAX)
+        );
+        assert_eq!(
+            scrollback_rpc_max_chars(&json!({"max_chars": 0})),
+            Some(SCROLLBACK_RPC_DEFAULT_MAX)
+        );
+        assert_eq!(
+            scrollback_rpc_max_chars(&json!({"max_chars": 12_000})),
+            Some(12_000)
+        );
+        assert_eq!(
+            scrollback_rpc_max_chars(&to_snake(json!({"maxChars": 4000}))),
+            Some(4000)
+        );
+        assert_eq!(scrollback_rpc_max_chars(&json!({"full": true})), None);
+        assert_eq!(
+            scrollback_rpc_max_chars(&to_snake(json!({"fullBuffer": true}))),
+            None
+        );
+        // Explicit full wins over a numeric max (export-style opt-in).
+        assert_eq!(
+            scrollback_rpc_max_chars(&json!({"full_buffer": true, "max_chars": 100})),
+            None
+        );
+    }
+
+    #[test]
+    fn scrollback_rpc_clamps_max_chars_to_byte_cap() {
+        assert_eq!(
+            scrollback_rpc_max_chars(&json!({"max_chars": 10_000_000})),
+            Some(SCROLLBACK_BYTE_CAP)
+        );
+        assert_eq!(
+            scrollback_rpc_max_chars(&to_snake(json!({"maxChars": SCROLLBACK_BYTE_CAP + 1}))),
+            Some(SCROLLBACK_BYTE_CAP)
+        );
+        assert_eq!(
+            scrollback_rpc_max_chars(&json!({"max_chars": SCROLLBACK_BYTE_CAP})),
+            Some(SCROLLBACK_BYTE_CAP)
+        );
+    }
+
     #[tokio::test]
     async fn session_input_notification_returns_no_body() {
         let dir = std::env::temp_dir().join(format!("late-input-notify-{}", uuid::Uuid::new_v4()));
@@ -909,6 +995,56 @@ mod tests {
         .await;
         assert!(with_id.contains("\"id\":7"), "{with_id}");
         assert!(with_id.contains("error"), "{with_id}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn capture_list_omits_bodies_diff_still_works() {
+        let dir = std::env::temp_dir().join(format!("late-cap-rpc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths = late_core::LatePaths {
+            config: dir.clone(),
+            data: dir.clone(),
+        };
+        let app = App::boot_with(paths).unwrap();
+        let mut store = late_core::capture::CaptureStore::default();
+        let ts = "2024-01-01T00:00:00Z";
+        store.add(serde_json::from_value(json!({
+            "id": "cap-a",
+            "name": "before",
+            "device_id": null,
+            "command": "sess",
+            "output": "line-OLD-unique-body\n",
+            "created_at": ts,
+        }))
+        .unwrap());
+        store.add(serde_json::from_value(json!({
+            "id": "cap-b",
+            "name": "after",
+            "device_id": null,
+            "command": "sess",
+            "output": "line-NEW-unique-body\n",
+            "created_at": ts,
+        }))
+        .unwrap());
+        store.save(&app.paths).unwrap();
+
+        let list = handle(&app, r#"{"id":1,"method":"capture.list","params":{}}"#).await;
+        assert!(list.contains("before") && list.contains("after"), "{list}");
+        assert!(
+            !list.contains("unique-body"),
+            "list must strip output bodies: {list}"
+        );
+
+        let diff = handle(
+            &app,
+            r#"{"id":2,"method":"capture.diff","params":{"a":"cap-a","b":"cap-b"}}"#,
+        )
+        .await;
+        assert!(
+            diff.contains("unique-body") || diff.contains("OLD") || diff.contains("NEW"),
+            "diff must load bodies from disk: {diff}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

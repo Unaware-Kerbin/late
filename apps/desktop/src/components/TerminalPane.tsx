@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
 import { clipboardRead, clipboardWrite } from "../lib/clipboard";
 import { rpc } from "../lib/rpc";
+import { appendWritePending } from "../lib/termWritePump";
 import { bumpTermFont, reconnectPane, resizeSession, sendBreak, sendInput, setState, useApp } from "../store";
 import { StreamHighlighter } from "../termHighlight";
 import type { PaneState } from "../types";
@@ -29,28 +30,39 @@ function ptyPaste(text: string) {
 
 /** Coalesce PTY frames onto xterm without per-chunk write callbacks.
  * Callback serialization waited for each parse/paint before the next glyph,
- * so remote echo felt laggy and could flicker under bursty SSH output. */
-function createWritePump(term: Terminal) {
+ * so remote echo felt laggy and could flicker under bursty SSH output.
+ * Bursts flush once per animation frame (Alacritty-like); tiny idle writes stay immediate. */
+function createWritePump(term: Terminal): { write: (text: string) => void; cancel: () => void } {
   let pending = "";
   let scheduled = false;
+  let raf = 0;
   const flush = () => {
     scheduled = false;
+    raf = 0;
     if (!pending) return;
     const chunk = pending;
     pending = "";
     term.write(chunk);
   };
-  return (text: string) => {
-    if (!text) return;
-    // Idle + small: paint immediately (keystroke echo).
-    if (!scheduled && !pending && text.length <= 64) {
-      term.write(text);
-      return;
-    }
-    pending += text;
-    if (scheduled) return;
-    scheduled = true;
-    queueMicrotask(flush);
+  return {
+    write(text: string) {
+      if (!text) return;
+      // Idle + small: paint immediately (keystroke echo).
+      if (!scheduled && !pending && text.length <= 64) {
+        term.write(text);
+        return;
+      }
+      pending = appendWritePending(pending, text);
+      if (scheduled) return;
+      scheduled = true;
+      raf = requestAnimationFrame(flush);
+    },
+    cancel() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      scheduled = false;
+      pending = "";
+    },
   };
 }
 
@@ -59,6 +71,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   const termRef = useRef<Terminal>();
   const searchRef = useRef<SearchAddon>();
   const fitRef = useRef<FitAddon>();
+  const writePumpRef = useRef<{ write: (text: string) => void; cancel: () => void }>();
   const paneRef = useRef(pane);
   paneRef.current = pane;
   const disconnectedRef = useRef(pane.disconnected);
@@ -86,12 +99,15 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
   useEffect(() => {
     if (!host.current || !paneRef.current.session) return;
     const term = new Terminal({
-      cursorBlink: true,
+      // Solid cursor (Alacritty default) — blinking forces continuous canvas repaints.
+      cursorBlink: false,
       fontFamily: termFontCss(termFont, termFontCustom),
       fontSize: termFontSize,
       theme: xtermTheme(theme),
       scrollback: 10000,
       fastScrollModifier: "alt",
+      fastScrollSensitivity: 5,
+      scrollSensitivity: 1,
       rightClickSelectsWord: false,
     });
     const fit = new FitAddon();
@@ -100,7 +116,7 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     term.loadAddon(fit);
     term.loadAddon(search);
     // Canvas renderer: WebGL blanks the whole pane when the layout changes
-    // (opening packet capture from a live local shell).
+    // (opening packet capture from a live local shell). GPU compositing still helps.
     term.open(host.current);
     const fitSoon = () => {
       requestAnimationFrame(() => {
@@ -123,28 +139,10 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       });
     };
     fitSoon();
-    const sid = paneRef.current.session.id;
-    void rpc
-      .call<{ text?: string }>("session.scrollback", {
-        id: sid,
-        sessionId: sid,
-        session_id: sid,
-        redacted: false,
-      })
-      .then((r) => {
-        const text = r?.text ?? "";
-        if (text) writePump(hlRef.current.feed(text.replace(/\n/g, "\r\n")) + hlRef.current.flush());
-      })
-      .catch(() => undefined);
     termRef.current = term;
     searchRef.current = search;
     fitRef.current = fit;
-
-    const unsub = rpc.onSessionBytes(sid, (bytes) => {
-      if (paneRef.current.session?.id !== sid) return;
-      const text = decRef.current.decode(bytes, { stream: true });
-      if (text) writePump(hlRef.current.feed(text));
-    });
+    writePumpRef.current = writePump;
     const onData = term.onData((data) => {
       const p = paneRef.current;
       if (disconnectedRef.current) {
@@ -240,7 +238,8 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
     term.focus();
 
     return () => {
-      unsub();
+      writePump.cancel();
+      writePumpRef.current = undefined;
       onData.dispose();
       onSel.dispose();
       term.element?.removeEventListener("contextmenu", onContext);
@@ -251,9 +250,81 @@ export function TerminalPane({ pane, visible = true }: { pane: PaneState; visibl
       host.current?.removeEventListener("wheel", onWheel);
       term.dispose();
     };
-    // Keep one xterm for the pane lifetime. Disconnect/reconnect update refs, not this effect.
+    // Keep one xterm for the pane lifetime. Session id changes rebind stdout below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pane.id]);
+
+  // Bind live PTY bytes (and optional hydrate fallback) whenever the daemon session id changes.
+  useEffect(() => {
+    const sid = pane.session?.id;
+    const writePump = writePumpRef.current;
+    if (!sid || !writePump) return;
+    decRef.current = new TextDecoder("utf-8");
+    // Subscribe first: rpc drains the prebuffer synchronously inside onSessionBytes.
+    // That covers the first-connect banner race. Skip hydrate only then (duplicate).
+    // Remount (tab switch) has an empty xterm and no prebuffer — hydrate history, and
+    // queue live bytes that arrive while scrollback RPC is in flight so we do not blank
+    // the pane when the session is still noisy.
+    let alive = true;
+    let subscribed = false;
+    let sawPrebuffer = false;
+    let waitingHydrate = false;
+    let liveQueue = "";
+    const paint = (text: string) => {
+      if (text) writePump.write(hlRef.current.feed(text));
+    };
+    const flushLiveQueue = () => {
+      waitingHydrate = false;
+      if (!liveQueue) return;
+      const q = liveQueue;
+      liveQueue = "";
+      paint(q);
+    };
+    const unsub = rpc.onSessionBytes(sid, (bytes) => {
+      if (!alive || paneRef.current.session?.id !== sid) return;
+      const text = decRef.current.decode(bytes, { stream: true });
+      if (!text) return;
+      if (!subscribed) {
+        sawPrebuffer = true;
+        paint(text);
+        return;
+      }
+      if (waitingHydrate) {
+        liveQueue = appendWritePending(liveQueue, text);
+        return;
+      }
+      paint(text);
+    });
+    subscribed = true;
+    const cleanup = () => {
+      alive = false;
+      unsub();
+    };
+    if (sawPrebuffer) return cleanup;
+    waitingHydrate = true;
+    // xterm keeps ~10k lines; do not pull the full 2 MiB daemon buffer onto the UI thread.
+    const HYDRATE_MAX_CHARS = 128_000;
+    void rpc
+      .call<{ text?: string }>("session.scrollback", {
+        id: sid,
+        sessionId: sid,
+        session_id: sid,
+        redacted: false,
+        maxChars: HYDRATE_MAX_CHARS,
+        max_chars: HYDRATE_MAX_CHARS,
+      })
+      .then((r) => {
+        if (!alive || paneRef.current.session?.id !== sid) return;
+        const text = r?.text ?? "";
+        if (text) writePump.write(hlRef.current.feed(text.replace(/\n/g, "\r\n")) + hlRef.current.flush());
+        flushLiveQueue();
+      })
+      .catch(() => {
+        if (!alive) return;
+        flushLiveQueue();
+      });
+    return cleanup;
+  }, [pane.session?.id]);
 
   useEffect(() => {
     hlRef.current.setSettings(termHighlights);

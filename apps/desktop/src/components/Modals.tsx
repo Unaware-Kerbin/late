@@ -25,6 +25,7 @@ import {
   deleteAuth,
   deleteCollection,
   diffCaptures,
+  saveCapture,
   importFile,
   closeTab,
   getState,
@@ -518,6 +519,22 @@ function Palette() {
     { id: "keys", label: "API keys", run: () => setState({ keysOpen: true }) },
     { id: "auth", label: "Auth profiles", run: () => setState({ authOpen: true }) },
     { id: "cap", label: "Captures / diff", run: () => setState({ captureOpen: true }) },
+    {
+      id: "cap-save",
+      label: "Save session capture (focused pane)",
+      run: () => {
+        const pane = getState().focusedPaneId
+          ? getState().panes[getState().focusedPaneId!]
+          : undefined;
+        const sid = pane?.session?.id;
+        if (!sid || pane?.kind === "pcap" || pane?.kind === "empty" || pane?.kind === "stage") {
+          toast("error", "focus a terminal session first");
+          return;
+        }
+        const name = pane.session?.name?.trim() || "capture";
+        void saveCapture(name, sid);
+      },
+    },
     { id: "quick", label: "Quick Connect (SSH)", run: () => startQuickConnect() },
     { id: "add-ssh", label: "SSH session (advanced)", run: () => startDeviceEditor(undefined, "ssh") },
     { id: "add-serial", label: "New serial console", run: () => startDeviceEditor(undefined, "serial") },
@@ -1796,17 +1813,33 @@ function CollectionsModal() {
 function CaptureModal() {
   const captures = useApp((s) => s.captures);
   const lastDiff = useApp((s) => s.lastDiff);
+  const focused = useApp((s) => (s.focusedPaneId ? s.panes[s.focusedPaneId] : undefined));
   const [a, setA] = useState("");
   const [b, setB] = useState("");
+  const [name, setName] = useState(() => focused?.session?.name?.trim() || "capture");
+  const sid = focused?.session?.id;
+  const canSave =
+    !!sid &&
+    focused?.kind !== "pcap" &&
+    focused?.kind !== "empty" &&
+    focused?.kind !== "stage" &&
+    focused?.kind !== "sftp";
   return (
     <div className="modal-root" onMouseDown={() => setState({ captureOpen: false })}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2>Captures</h2>
+        <p className="hint">
+          List shows names only (bodies stay on disk). Diff loads full text server-side with size caps.
+        </p>
         {captures.map((c) => (
           <div key={c.id} className="file">
-            {c.name} · {c.created_at}
+            {c.name} · {c.command || "—"} · {c.created_at}
           </div>
         ))}
+        <label>
+          Save name
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="capture" />
+        </label>
         <label>
           Diff A
           <select value={a} onChange={(e) => setA(e.target.value)}>
@@ -1827,6 +1860,14 @@ function CaptureModal() {
         </label>
         <div className="actions">
           <button className="ghost" onClick={() => setState({ captureOpen: false })}>Close</button>
+          <button
+            className="ghost"
+            disabled={!canSave || !name.trim()}
+            title={canSave ? `Save scrollback from ${focused?.session?.name ?? "session"}` : "Focus a terminal session first"}
+            onClick={() => void saveCapture(name.trim() || "capture", sid!)}
+          >
+            Save focused
+          </button>
           <button className="primary" disabled={!a || !b} onClick={() => void diffCaptures(a, b)}>Diff</button>
         </div>
         {lastDiff && (

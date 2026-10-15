@@ -52,6 +52,32 @@ impl KnownHosts {
         }
     }
 
+    /// TOFU against every key `ssh-keyscan` returned. A host often advertises
+    /// ed25519 + ecdsa + rsa; flaky scans may omit the preferred type, so matching
+    /// only the preferred line falsely reports mismatch for an unchanged host.
+    pub fn check_any<'a>(
+        &self,
+        host: &str,
+        presented: impl IntoIterator<Item = &'a str>,
+    ) -> HostKeyCheck {
+        let Some(pinned) = self.pins.get(host) else {
+            return HostKeyCheck::Unknown;
+        };
+        let mut first: Option<String> = None;
+        for fp in presented {
+            if first.is_none() {
+                first = Some(fp.to_string());
+            }
+            if fp == pinned {
+                return HostKeyCheck::Match;
+            }
+        }
+        HostKeyCheck::Mismatch {
+            pinned: pinned.clone(),
+            presented: first.unwrap_or_else(|| "unknown fingerprint".into()),
+        }
+    }
+
     pub fn pin(&mut self, host: &str, fingerprint: &str) {
         self.pins.insert(host.to_string(), fingerprint.to_string());
     }
@@ -117,39 +143,76 @@ pub fn parse_host_port_key(key: &str) -> Result<(String, u16)> {
     Ok((key.to_string(), 22))
 }
 
-/// Prefer Ed25519, then ECDSA, then RSA. First matching line wins within a type.
-pub fn pick_keyscan_line(text: &str) -> Result<String> {
-    const PREF: &[&str] = &[
-        "ssh-ed25519",
-        "sk-ssh-ed25519@openssh.com",
-        "ecdsa-sha2-nistp256",
-        "ecdsa-sha2-nistp384",
-        "ecdsa-sha2-nistp521",
-        "rsa-sha2-512",
-        "rsa-sha2-256",
-        "ssh-rsa",
-    ];
-    let mut best: Option<(usize, String)> = None;
+const KEY_ALGO_PREF: &[&str] = &[
+    "ssh-ed25519",
+    "sk-ssh-ed25519@openssh.com",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+    "ssh-rsa",
+];
+
+/// One host key from `ssh-keyscan` stdout: raw line, algorithm, SHA256 fingerprint.
+#[derive(Debug, Clone)]
+pub struct KeyscanEntry {
+    pub line: String,
+    pub algo: String,
+    pub fingerprint: String,
+}
+
+/// Parse every usable host-key line from keyscan output (comments skipped).
+pub fn parse_keyscan_entries(text: &str) -> Vec<KeyscanEntry> {
+    let mut out = Vec::new();
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Ok((algo, _)) = parse_keyscan_line(line) else {
+        let Ok((algo, raw)) = parse_keyscan_line(line) else {
             continue;
         };
-        let rank = PREF
-            .iter()
-            .position(|a| *a == algo.as_str())
-            .unwrap_or(PREF.len());
-        match &best {
-            None => best = Some((rank, line.to_string())),
-            Some((r, _)) if rank < *r => best = Some((rank, line.to_string())),
-            _ => {}
+        out.push(KeyscanEntry {
+            line: line.to_string(),
+            algo,
+            fingerprint: KnownHosts::fingerprint(&raw),
+        });
+    }
+    out
+}
+
+fn key_algo_rank(algo: &str) -> usize {
+    KEY_ALGO_PREF
+        .iter()
+        .position(|a| *a == algo)
+        .unwrap_or(KEY_ALGO_PREF.len())
+}
+
+/// Prefer Ed25519, then ECDSA, then RSA. First matching line wins within a type.
+pub fn pick_keyscan_line(text: &str) -> Result<String> {
+    Ok(pick_keyscan_entry(text)?.line)
+}
+
+/// Prefer the entry whose fingerprint is already pinned; otherwise algo preference.
+pub fn pick_keyscan_entry_for_pin(text: &str, pinned: Option<&str>) -> Result<KeyscanEntry> {
+    let entries = parse_keyscan_entries(text);
+    if entries.is_empty() {
+        return Err(LateError::Ssh("ssh-keyscan returned no host key".into()));
+    }
+    if let Some(pinned) = pinned {
+        if let Some(e) = entries.iter().find(|e| e.fingerprint == pinned) {
+            return Ok(e.clone());
         }
     }
-    best.map(|(_, l)| l)
+    entries
+        .into_iter()
+        .min_by_key(|e| key_algo_rank(&e.algo))
         .ok_or_else(|| LateError::Ssh("ssh-keyscan returned no host key".into()))
+}
+
+pub fn pick_keyscan_entry(text: &str) -> Result<KeyscanEntry> {
+    pick_keyscan_entry_for_pin(text, None)
 }
 
 pub fn parse_keyscan_line(line: &str) -> Result<(String, Vec<u8>)> {
@@ -223,6 +286,41 @@ mod tests {
         );
         let line = pick_keyscan_line(&text).unwrap();
         assert!(line.contains("ssh-ed25519"));
+    }
+
+    #[test]
+    fn check_any_matches_non_preferred_algo() {
+        let ed_blob = STANDARD.encode(b"ed-bytes");
+        let ec_blob = STANDARD.encode(b"ec-bytes");
+        let text = format!(
+            "host.example ecdsa-sha2-nistp256 {ec_blob}\nhost.example ssh-ed25519 {ed_blob}\n"
+        );
+        let entries = parse_keyscan_entries(&text);
+        assert_eq!(entries.len(), 2);
+        let ed_fp = entries
+            .iter()
+            .find(|e| e.algo == "ssh-ed25519")
+            .unwrap()
+            .fingerprint
+            .clone();
+        let mut kh = KnownHosts::default();
+        kh.pin("10.1.0.12", &ed_fp);
+        // Preferred pick is ed25519; simulate a flaky scan that only returned ECDSA.
+        let only_ecdsa = format!("host.example ecdsa-sha2-nistp256 {ec_blob}\n");
+        let ecdsa_only = parse_keyscan_entries(&only_ecdsa);
+        assert!(matches!(
+            kh.check("10.1.0.12", &ecdsa_only[0].fingerprint),
+            HostKeyCheck::Mismatch { .. }
+        ));
+        // Full multi-algo probe still matches the pinned ed25519.
+        let fps: Vec<_> = entries.iter().map(|e| e.fingerprint.as_str()).collect();
+        assert!(matches!(
+            kh.check_any("10.1.0.12", fps),
+            HostKeyCheck::Match
+        ));
+        let picked = pick_keyscan_entry_for_pin(&text, Some(&ed_fp)).unwrap();
+        assert_eq!(picked.algo, "ssh-ed25519");
+        assert_eq!(picked.fingerprint, ed_fp);
     }
 
     #[test]

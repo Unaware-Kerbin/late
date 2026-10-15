@@ -87,7 +87,8 @@ export const OPENAI_TOOLS: OpenAiTool[] = [
     type: "function",
     function: {
       name: "read_scrollback",
-      description: "Read redacted scrollback for a session. Sensitive tokens are already replaced with [REDACTED:kind#N].",
+      description:
+        "Read a redacted trailing slice of session scrollback (not the full buffer). Sensitive tokens are already replaced with [REDACTED:kind#N].",
       parameters: {
         type: "object",
         properties: { session_id: { type: "string" } },
@@ -226,8 +227,27 @@ export async function snapshotSessions(): Promise<
     .filter((s) => s.id);
 }
 
-const MAX_SCROLLBACK_CHARS = 12_000;
+/** Trailing slice attached to the agent / returned by read_scrollback (never the full daemon buffer). */
+export const MAX_SCROLLBACK_CHARS = 12_000;
+/** propose_command post-Approve tool result — keep smaller than attach size. */
+export const PROPOSE_COMMAND_TAIL_CHARS = 4_000;
+/** Hard cap on every tool JSON/string returned to model loops (incl. Cursor SDK / MCP). */
+export const MAX_TOOL_RESULT_CHARS = 16_000;
 const MAX_CONTEXT_CHARS = 48_000;
+
+/** Keep the trailing `maxChars` of already-fetched scrollback text. */
+export function truncateScrollbackTail(text: string, maxChars: number): string {
+  if (!text || text.length <= maxChars) return text ?? "";
+  return text.slice(-maxChars);
+}
+
+/** Clip oversized tool payloads so Cursor/OpenAI loops cannot retain multi‑MiB JSON. */
+export function clipToolResult(s: string, n = MAX_TOOL_RESULT_CHARS): string {
+  if (s.length <= n) return s;
+  const head = Math.min(1200, Math.floor(n * 0.3));
+  const tail = Math.max(0, n - head - 40);
+  return `${s.slice(0, head)}\n…[truncated ${s.length - n} chars]…\n${s.slice(-tail)}`;
+}
 
 /** Redacted live terminals for the agent — Cursor has no working tool loop unless this is inlined. */
 export async function liveSessionContext(): Promise<string> {
@@ -280,18 +300,24 @@ export async function liveSessionContext(): Promise<string> {
             query: "summary",
           });
         }
-        body = `PCAP FINDINGS (no payload bytes)\n${JSON.stringify(digest, null, 2)}`;
+        {
+          const raw = `PCAP FINDINGS (no payload bytes)\n${JSON.stringify(digest, null, 2)}`;
+          body =
+            raw.length > MAX_SCROLLBACK_CHARS
+              ? `${raw.slice(0, MAX_SCROLLBACK_CHARS)}\n…[truncated]`
+              : raw;
+        }
       } else {
         const raw = await daemon.call<{ text?: string }>("session.scrollback", {
           id: s.id,
           sessionId: s.id,
           session_id: s.id,
           redacted: true,
+          maxChars: MAX_SCROLLBACK_CHARS,
+          max_chars: MAX_SCROLLBACK_CHARS,
         });
         const text = (raw?.text ?? "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
-        if (text) {
-          body = text.length > MAX_SCROLLBACK_CHARS ? text.slice(-MAX_SCROLLBACK_CHARS) : text;
-        }
+        if (text) body = truncateScrollbackTail(text, MAX_SCROLLBACK_CHARS);
       }
     } catch (err) {
       body = `(unavailable: ${err instanceof Error ? err.message : String(err)})`;
@@ -339,16 +365,20 @@ function waitMs(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-async function readSessionTail(sessionId: string): Promise<string> {
+async function readSessionTail(
+  sessionId: string,
+  maxChars = PROPOSE_COMMAND_TAIL_CHARS,
+): Promise<string> {
   const raw = await daemon.call<{ text?: string }>("session.scrollback", {
     id: sessionId,
     sessionId,
     session_id: sessionId,
     redacted: true,
+    maxChars,
+    max_chars: maxChars,
   });
   const text = (raw?.text ?? "").replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").trim();
-  if (text.length <= 4000) return text;
-  return text.slice(-4000);
+  return truncateScrollbackTail(text, maxChars);
 }
 
 function waitAbort(signal: AbortSignal): Promise<never> {
@@ -408,11 +438,14 @@ export async function executeTool(name: string, rawArgs: string, ctx: ToolCtx): 
     ) {
       text = `BEGIN UNTRUSTED DEVICE OUTPUT\n${text}\nEND UNTRUSTED DEVICE OUTPUT`;
     }
-    return text;
+    // Cursor SDK keeps raw tool returns in-process; MCP/api dumps must be clipped here,
+    // not only in openai-loop (which Cursor never enters).
+    return clipToolResult(text);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    ctx.emit({ type: "tool", name, status: "error", detail: message });
-    return JSON.stringify({ error: message });
+    const clipped = clipToolResult(message, 2_000);
+    ctx.emit({ type: "tool", name, status: "error", detail: clipped });
+    return clipToolResult(JSON.stringify({ error: clipped }));
   }
 }
 
@@ -422,7 +455,9 @@ async function dispatch(name: string, args: Record<string, unknown>, ctx: ToolCt
       return snapshotSessions();
     case "read_scrollback": {
       const sessionId = str(args, "session_id");
-      return daemon.call("session.scrollback", { sessionId, session_id: sessionId, redacted: true });
+      // Cap at attach size — uncapped returns up to 2 MiB and blew the Electron renderer (~4 GiB OOM).
+      const text = await readSessionTail(sessionId, MAX_SCROLLBACK_CHARS);
+      return { id: sessionId, text, truncated: true, maxChars: MAX_SCROLLBACK_CHARS };
     }
     case "query_pcap": {
       const sessionId = str(args, "session_id");
@@ -472,7 +507,7 @@ async function awaitGate(
   pending: Omit<PendingApproval, "proposalId">,
   _match: (p: PendingApproval) => boolean,
 ): Promise<ApprovalDecision> {
-  const { proposal, promise } = requestApproval(pending);
+  const { proposal, promise } = requestApproval(pending, ctx.conversationId);
   ctx.emit({ type: "approval", pending: proposal });
   try {
     return await Promise.race([promise, waitAbort(ctx.signal)]);
@@ -488,7 +523,7 @@ async function askUser(question: string, ctx: ToolCtx) {
     title: "Agent question",
     detail: { question },
   };
-  const { proposal, promise } = requestApproval(pending);
+  const { proposal, promise } = requestApproval(pending, ctx.conversationId);
   ctx.emit({ type: "approval", pending: proposal });
   ctx.emit({ type: "ask", proposalId: proposal.proposalId, question });
   let decision: Awaited<typeof promise>;
@@ -626,7 +661,8 @@ async function proposeCommand(
   await waitMs(1500, ctx.signal).catch(() => undefined);
   let output = "";
   try {
-    output = await readSessionTail(sessionId);
+    // Explicit cap — must not dump the daemon's full scrollback into the tool/SSE path.
+    output = await readSessionTail(sessionId, PROPOSE_COMMAND_TAIL_CHARS);
   } catch (err) {
     output = `(command sent; could not read scrollback: ${err instanceof Error ? err.message : String(err)})`;
   }
@@ -636,6 +672,7 @@ async function proposeCommand(
     intent,
     output,
     note: "command sent after dual gate; output is the latest redacted scrollback",
+    maxChars: PROPOSE_COMMAND_TAIL_CHARS,
   };
 }
 

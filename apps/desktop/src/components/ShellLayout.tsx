@@ -1,10 +1,19 @@
-import { Fragment, useState, type CSSProperties, type DragEvent, type MouseEvent } from "react";
-import { ChatPane } from "./ChatPane";
+import { Fragment, lazy, Suspense, useState, type CSSProperties, type DragEvent, type MouseEvent } from "react";
 import { Sidebar } from "./Sidebar";
 import { Workspace } from "./Workspace";
 import { decodeShellDrag, draggingShell, endShellDrag, isAgentStacked, SHELL_DND, type ShellPaneId } from "../shell";
 import { onShellDragEnd, onShellDragStart } from "../shellDnD";
 import { dropShellPane, setChatHeight, setShellWidth, useApp } from "../store";
+
+const ChatPane = lazy(() => import("./ChatPane").then((m) => ({ default: m.ChatPane })));
+
+function AgentSlot() {
+  return (
+    <Suspense fallback={<div className="chat chat-loading" aria-busy="true" />}>
+      <ChatPane />
+    </Suspense>
+  );
+}
 
 export function ShellLayout() {
   const chatOpen = useApp((s) => s.chatOpen);
@@ -60,7 +69,7 @@ export function ShellLayout() {
                 <Workspace />
               </>
             )}
-            {id === "chat" && <ChatPane />}
+            {id === "chat" && <AgentSlot />}
           </div>
         </Fragment>
       ))}
@@ -72,7 +81,7 @@ export function ShellLayout() {
   return (
     <div className="body stacked">
       <div {...bindSlot("chat")} style={slotStyle("chat", sideW, chatW, true, chatH)}>
-        <ChatPane />
+        <AgentSlot />
       </div>
       <ShellGutter axis="y" />
       {row}

@@ -3,6 +3,7 @@ import type { ApprovalDecision, ApprovalKind, PendingApproval } from "./types.js
 
 type Waiter = {
   pending: PendingApproval;
+  conversationId: string;
   resolve: (d: ApprovalDecision) => void;
   reject: (e: Error) => void;
 };
@@ -31,19 +32,22 @@ export function rememberAlways(
   linux: boolean,
 ): void {
   if (linux) return;
-  const set = alwaysAllow.get(conversationId) ?? new Set<string>();
+  const set = alwaysAllow.get(conversationId) ?? new Set();
   set.add(key(kind, fingerprint));
   alwaysAllow.set(conversationId, set);
 }
 
-export function requestApproval(pending: Omit<PendingApproval, "proposalId">): {
+export function requestApproval(
+  pending: Omit<PendingApproval, "proposalId">,
+  conversationId = "",
+): {
   proposal: PendingApproval;
   promise: Promise<ApprovalDecision>;
 } {
   const proposalId = randomUUID();
   const full: PendingApproval = { ...pending, proposalId };
   const promise = new Promise<ApprovalDecision>((resolve, reject) => {
-    waiters.set(proposalId, { pending: full, resolve, reject });
+    waiters.set(proposalId, { pending: full, conversationId, resolve, reject });
   });
   return { proposal: full, promise };
 }
@@ -56,13 +60,22 @@ export function listPending(): PendingApproval[] {
   return [...waiters.values()].map((w) => w.pending);
 }
 
-
 export function decide(decision: ApprovalDecision): boolean {
   const w = waiters.get(decision.proposalId);
   if (!w) return false;
   waiters.delete(decision.proposalId);
   w.resolve(decision);
   return true;
+}
+
+/** Cancel pending Approves for one chat turn only — other conversationIds stay gated. */
+export function cancelConversation(conversationId: string, reason: string): void {
+  if (!conversationId) return;
+  for (const [id, w] of waiters) {
+    if (w.conversationId !== conversationId) continue;
+    w.reject(new Error(reason));
+    waiters.delete(id);
+  }
 }
 
 export function cancelAll(reason: string): void {
