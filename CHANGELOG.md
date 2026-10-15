@@ -2,6 +2,14 @@
 
 Dates and times are from git commits (America/New_York). Newest first.
 
+## 2026-10-15
+
+**v0.1.21 installers (memory/SSH hardening + agents).**
+
+- GitHub Release v0.1.21 packs from this main. File names Late-0.1.21-*. Tag v0.1.20 stays frozen. Still unsigned.
+- Cap Agent chat/SSE/tool/scrollback memory paths; serialize SSH keyscan and uniquify pcaps under load; share Late auditor agent defs.
+- SSH typing lag fix from keyword-highlight hold; Dependabot npm/cargo pins already on main since v0.1.20.
+
 ## 2026-10-12
 
 **v0.1.20 installers (Enter-to-reconnect after SSH/local drop).**
