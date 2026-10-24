@@ -14,8 +14,8 @@
     "ws": "^8.18.3"
   },
   "optionalDependencies": {
-    "@cursor/sdk": "^1.0.6",
-    "undici": "6.28.1"
+    "@cursor/sdk": "1.0.38",
+    "undici": "6.29.1"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
