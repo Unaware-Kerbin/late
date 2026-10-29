@@ -27,7 +27,8 @@ dirs = "6"
 anyhow = "1"
 
 # candle-core 0.9.2 requires zip ^7.2.0. That range is RUSTSEC-2026-0369
-# (and 0368, 0367), patched in zip >=9.0.0. Upstream candle-core 0.11.0 still
-# requires zip ^8.6.0, so the patched 0.9.2 tree is the smallest override.
+# (and 0368, 0367), patched in zip >=9.0.0. GHSA-m665-v7pm-7grj affects
+# zip <=9.0.4, patched in 9.0.5. Upstream candle-core 0.11.0 still requires
+# zip ^8.6.0, so the patched 0.9.2 tree is the smallest override.
 [patch.crates-io]
 candle-core = { path = "third_party/candle-core" }
