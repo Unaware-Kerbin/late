@@ -185,7 +185,10 @@ export DISPLAY="${DISPLAY:-:0}"
 export LATE_DEV_URL="$UI_URL"
 # GPU compositing is on by default (snappier). Intel Arc + Wayland used to blank the
 # window — Electron main forces X11. Escape hatch: LATE_SOFTWARE_RENDER=1
-ELECTRON_ARGS=(--no-sandbox --ozone-platform=x11 --log-level=3)
+# Dev only: node_modules chrome-sandbox is not root-owned mode 4755. --no-sandbox
+# skips that setuid helper (and the user-namespace sandbox). Packaged apps do not
+# use this script, so their sandbox stays as electron-builder shipped it.
+ELECTRON_ARGS=(--no-sandbox --disable-setuid-sandbox --ozone-platform=x11 --log-level=3)
 if [[ "${LATE_SOFTWARE_RENDER:-}" == "1" || "${LATE_SOFTWARE_RENDER:-}" == "true" ]]; then
   export LIBGL_ALWAYS_SOFTWARE=1
   ELECTRON_ARGS+=(--disable-gpu --disable-gpu-compositing --disable-gpu-vsync)

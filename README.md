@@ -346,7 +346,7 @@ The UI is a React app. Two native shells wrap it:
 npm run native
 ```
 
-`npm run native` also passes `--no-sandbox` on every OS. Use it only with daemon, sidecar, and Vite already running. Packaged Release binaries do not set this flag.
+`npm run native` and `./late` pass `--no-sandbox` and `--disable-setuid-sandbox` so a checkout does not need a root-owned `chrome-sandbox`. Use `npm run native` only with daemon, sidecar, and Vite already running. Packaged Release binaries do not set these flags.
 
 **Tauri 2** (`apps/desktop/src-tauri`) is the planned Linux-native binary. It needs GTK/WebKit headers:
 
