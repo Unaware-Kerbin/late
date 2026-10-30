@@ -1,9 +1,9 @@
 //! How an SSH session reaches a host that is not directly routable.
 //!
-//! Containerlab management addresses sit behind the lab host. Ásbrú used a
-//! local SOCKS tunnel (or its own jump). Late uses the same tunnel when the
-//! launcher still has it open, and OpenSSH `ProxyJump` when the device's
-//! jump host is set and no tunnel was passed in.
+//! Containerlab management addresses sit behind the lab host. Late uses the
+//! launcher's local SOCKS tunnel or OpenSSH control socket when that tunnel
+//! is still open, and OpenSSH `ProxyJump` when the device's jump host is set
+//! and no tunnel was passed in.
 
 use crate::error::{LateError, Result};
 use std::path::Path;

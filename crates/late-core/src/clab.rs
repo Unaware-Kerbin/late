@@ -1,10 +1,9 @@
 //! Containerlab nodes as Late inventory rows and SSH sessions.
 //!
-//! `clab-ssh` used to write an Ásbrú config and start Ásbrú. Late is the
-//! connection manager now: one folder per lab host, one SSH device per node,
-//! sessions opened in this app. The lab host is the jump. A SOCKS port or
-//! OpenSSH control socket from the launcher keeps the jump password to a
-//! single prompt.
+//! `clab-ssh` stages nodes here and Late opens them: one folder per lab host,
+//! one SSH device per node, sessions opened in this app. The lab host is the
+//! jump. A SOCKS port or OpenSSH control socket from the launcher keeps the
+//! jump password to a single prompt.
 
 use crate::error::{LateError, Result};
 use crate::inventory::InventoryStore;
