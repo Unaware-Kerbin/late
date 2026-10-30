@@ -191,18 +191,28 @@ fn strip_cidr(value: &str) -> String {
     value.split('/').next().unwrap_or("").trim().to_string()
 }
 
-fn short_from_long(long_name: &str) -> String {
-    if !long_name.starts_with("clab-") {
-        return long_name.to_string();
+/// Node name from a containerlab container.
+///
+/// Official `clab inspect -f json` has no `clab-node-name` label. The lab name
+/// is the object key, and the container is `clab-<lab>-<node>` (both sides may
+/// contain hyphens). A label still wins when a caller included one.
+fn node_short(long_name: &str, lab: Option<&str>, label_name: &str) -> String {
+    let labeled = label_name.trim();
+    if !labeled.is_empty() {
+        return labeled.to_string();
     }
-    let rest = &long_name["clab-".len()..];
-    match rest.split_once('-') {
-        Some((_, node)) if !node.is_empty() => node.to_string(),
-        _ => rest.to_string(),
+    if let Some(lab) = lab.map(str::trim).filter(|s| !s.is_empty()) {
+        let prefix = format!("clab-{lab}-");
+        if let Some(rest) = long_name.strip_prefix(&prefix) {
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
     }
+    long_name.to_string()
 }
 
-fn parse_node(node: &Value) -> Option<ClabNode> {
+fn parse_node(node: &Value, lab: Option<&str>) -> Option<ClabNode> {
     let state = node
         .get("State")
         .or_else(|| node.get("state"))
@@ -234,20 +244,15 @@ fn parse_node(node: &Value) -> Option<ClabNode> {
     if long_name.is_empty() {
         return None;
     }
-    let from_long = short_from_long(&long_name);
-    let short = if !from_long.is_empty() && from_long != long_name {
-        from_long
+    let labeled = label("clab-node-name");
+    let short = if !labeled.is_empty() {
+        labeled
     } else {
-        let named = label("clab-node-name");
-        if !named.is_empty() {
-            named
-        } else {
-            node.get("shortname")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&long_name)
-                .to_string()
-        }
+        node.get("shortname")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| node_short(&long_name, lab, ""))
     };
     let kind = {
         let from_label = label("clab-node-kind");
@@ -284,25 +289,29 @@ fn parse_node(node: &Value) -> Option<ClabNode> {
     })
 }
 
-fn iter_node_values(data: &Value, out: &mut Vec<ClabNode>) {
+fn looks_like_node(value: &Value) -> bool {
+    value.is_object()
+        && (value.get("name").is_some()
+            || value.get("Name").is_some()
+            || value.get("Labels").is_some())
+}
+
+fn iter_node_values(data: &Value, lab: Option<&str>, out: &mut Vec<ClabNode>) {
     match data {
         Value::Array(items) => {
             for item in items {
-                if let Some(parsed) = item.as_object().and_then(|_| parse_node(item)) {
+                if let Some(parsed) = item.as_object().and_then(|_| parse_node(item, lab)) {
                     out.push(parsed);
                 }
             }
         }
         Value::Object(map) => {
-            for value in map.values() {
+            for (key, value) in map {
                 if value.is_array() {
-                    iter_node_values(value, out);
-                } else if value.is_object()
-                    && (value.get("name").is_some()
-                        || value.get("Name").is_some()
-                        || value.get("Labels").is_some())
-                {
-                    if let Some(parsed) = parse_node(value) {
+                    // Official inspect: `{ "<lab>": [ containers ] }`.
+                    iter_node_values(value, Some(key.as_str()), out);
+                } else if looks_like_node(value) {
+                    if let Some(parsed) = parse_node(value, lab) {
                         out.push(parsed);
                     }
                 }
@@ -315,7 +324,7 @@ fn iter_node_values(data: &Value, out: &mut Vec<ClabNode>) {
 /// `clab inspect -f json` → running nodes that have a management IP.
 pub fn parse_inspect(data: &Value) -> Vec<ClabNode> {
     let mut devices = Vec::new();
-    iter_node_values(data, &mut devices);
+    iter_node_values(data, None, &mut devices);
     let mut seen = std::collections::BTreeSet::new();
     devices.retain(|d| seen.insert(d.long.clone()));
     devices
@@ -441,6 +450,17 @@ pub fn launch_from_value(params: &Value) -> Result<ClabLaunch> {
     })
 }
 
+/// Structured host-key failure, when `err` is one the desktop dialog understands.
+pub(crate) fn host_key_failure(err: &LateError) -> Option<Value> {
+    let data = err.rpc_data()?;
+    let code = data.get("code").and_then(|v| v.as_str()).unwrap_or("");
+    if code == "host_key_mismatch" || code == "host_key_untrusted" {
+        Some(data)
+    } else {
+        None
+    }
+}
+
 /// Write or refresh inventory rows. Does not open SSH.
 pub fn stage_clab_devices(inventory: &InventoryStore, launch: &ClabLaunch) -> Result<Vec<StagedNode>> {
     let folder = folder_for_host(&launch.host);
@@ -522,6 +542,9 @@ impl App {
                 .clone()
                 .filter(|s| !s.is_empty())
         };
+        if let Some(jump) = staged.first().and_then(|item| item.device.jump_host.clone()) {
+            self.remember_jump_tunnel(jump, socks, control.clone());
+        }
         let mut results = Vec::with_capacity(staged.len());
         let mut opened = 0usize;
         let mut failed = 0usize;
@@ -561,12 +584,25 @@ impl App {
                 }
                 Err(err) => {
                     failed += 1;
-                    results.push(json!({
+                    let mut row = json!({
                         "name": item.node.short,
                         "device_id": item.device.id,
                         "ok": false,
                         "error": err.to_string(),
-                    }));
+                    });
+                    if let Some(mut payload) = host_key_failure(&err) {
+                        payload["device_id"] = json!(item.device.id);
+                        payload["name"] = json!(item.node.short);
+                        let _ = self.events.send(AppEvent {
+                            event: "host_key".into(),
+                            session_id: String::new(),
+                            data: serde_json::to_string(&payload).ok(),
+                            bytes: None,
+                            reason: None,
+                        });
+                        row["host_key"] = payload;
+                    }
+                    results.push(row);
                 }
             }
         }
@@ -637,6 +673,40 @@ mod tests {
         assert_eq!(vendor_for_kind("nokia_srlinux"), Vendor::Generic);
         assert_eq!(vendor_for_kind("ceos"), Vendor::AristaEos);
         assert_eq!(vendor_for_kind("cisco_xrd"), Vendor::CiscoIosXe);
+    }
+
+    #[test]
+    fn parse_inspect_uses_lab_key_for_hyphenated_names() {
+        // Official `clab inspect -f json`: lab name is the object key, and
+        // there is no clab-node-name label. Splitting on the first hyphen
+        // would turn clab-srl-lab-spine1 into lab-spine1.
+        let nodes = parse_inspect(&json!({
+            "srl-lab": [
+                {
+                    "name": "clab-srl-lab-spine1",
+                    "state": "running",
+                    "kind": "nokia_srlinux",
+                    "ipv4_address": "172.20.20.11/24"
+                },
+                {
+                    "name": "clab-srl-lab-leaf-1",
+                    "state": "running",
+                    "kind": "nokia_srlinux",
+                    "ipv4_address": "172.20.20.12/24"
+                },
+                {
+                    "name": "clab-srl-lab-border-1",
+                    "state": "running",
+                    "kind": "nokia_srlinux",
+                    "ipv4_address": "172.20.20.13/24",
+                    "Labels": {"clab-node-name": "edge"}
+                }
+            ]
+        }));
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].short, "spine1");
+        assert_eq!(nodes[1].short, "leaf-1");
+        assert_eq!(nodes[2].short, "edge");
     }
 
     #[test]
@@ -745,5 +815,19 @@ mod tests {
             "devices": devices
         }));
         assert!(err.unwrap_err().to_string().contains("64"));
+    }
+
+    #[test]
+    fn host_key_failure_is_the_dialog_payload() {
+        let mismatch = LateError::HostKeyMismatch {
+            host: "172.20.20.2".into(),
+            pinned: "SHA256:old".into(),
+            presented: "SHA256:new".into(),
+        };
+        let payload = host_key_failure(&mismatch).unwrap();
+        assert_eq!(payload["code"], "host_key_mismatch");
+        assert_eq!(payload["host"], "172.20.20.2");
+        assert_eq!(payload["presented"], "SHA256:new");
+        assert!(host_key_failure(&LateError::Ssh("no SSH banner".into())).is_none());
     }
 }

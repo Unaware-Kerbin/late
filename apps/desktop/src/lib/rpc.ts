@@ -172,6 +172,35 @@ export function isHostKeyError(err: unknown): { mismatch: boolean; host: string;
   };
 }
 
+/** Host key the containerlab launcher could not replace on its own. */
+export function hostKeyEventInfo(msg: Record<string, unknown>): {
+  host: string;
+  presented: string;
+  pinned?: string;
+  mismatch: boolean;
+  deviceId?: string;
+} | null {
+  const event = String(msg.event ?? msg.method ?? "");
+  if (event !== "host_key" && event !== "hostKey") return null;
+  const raw = msg.data ?? msg.info;
+  if (typeof raw !== "string" || !raw.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const code = String(parsed.code ?? parsed.kind ?? "");
+    const mismatch = code === "host_key_mismatch";
+    const untrusted = code === "host_key_untrusted";
+    if (!mismatch && !untrusted) return null;
+    const host = String(parsed.host ?? "");
+    const presented = String(parsed.presented ?? "");
+    if (!host || !presented) return null;
+    const pinned = parsed.pinned ? String(parsed.pinned) : undefined;
+    const deviceId = String(parsed.device_id ?? parsed.deviceId ?? "") || undefined;
+    return { host, presented, pinned, mismatch, deviceId };
+  } catch {
+    return null;
+  }
+}
+
 /** Session the daemon opened outside this window (containerlab launcher). */
 export function sessionOpenedInfo(msg: Record<string, unknown>): SessionInfo | null {
   const event = String(msg.event ?? msg.method ?? "");
@@ -202,6 +231,7 @@ class DaemonRpc {
   private statusHandlers = new Set<(ok: boolean, err?: string) => void>();
   private closedHandlers = new Set<(sessionId: string, reason?: string) => void>();
   private openedHandlers = new Set<(info: SessionInfo) => void>();
+  private hostKeyHandlers = new Set<(info: NonNullable<ReturnType<typeof hostKeyEventInfo>>) => void>();
   private opening: Promise<void> | null = null;
   connected = false;
   lastError: string | null = null;
@@ -243,6 +273,11 @@ class DaemonRpc {
   onOpened(h: (info: SessionInfo) => void): () => void {
     this.openedHandlers.add(h);
     return () => this.openedHandlers.delete(h);
+  }
+
+  onHostKey(h: (info: NonNullable<ReturnType<typeof hostKeyEventInfo>>) => void): () => void {
+    this.hostKeyHandlers.add(h);
+    return () => this.hostKeyHandlers.delete(h);
   }
 
   async health(): Promise<boolean> {
@@ -362,6 +397,11 @@ class DaemonRpc {
     const opened = sessionOpenedInfo(msg);
     if (opened) {
       this.openedHandlers.forEach((h) => h(opened));
+      return;
+    }
+    const hostKey = hostKeyEventInfo(msg);
+    if (hostKey) {
+      this.hostKeyHandlers.forEach((h) => h(hostKey));
       return;
     }
     if (event === "session.closed" || event === "sessionClosed") {

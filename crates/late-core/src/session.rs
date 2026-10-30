@@ -16,6 +16,7 @@ use crate::secrets::SecretStore;
 use crate::serial;
 use crate::sftp::{self, SftpEntry};
 use crate::ssh::{self, SshConnectOpts};
+use crate::ssh_proxy::{nc_supports_socks, resolve_ssh_proxy, SshProxy};
 use crate::types::*;
 use chrono::Utc;
 use parking_lot::Mutex;
@@ -255,11 +256,21 @@ pub struct App {
     inner: Arc<Mutex<Inner>>,
 }
 
+/// Launcher jump tunnel still expected to be up. Not written to inventory:
+/// the SOCKS port and control socket die with the `clab-ssh` process.
+#[derive(Clone)]
+struct JumpTunnel {
+    socks_port: Option<u16>,
+    control_path: Option<String>,
+}
+
 struct Inner {
     sessions: HashMap<String, LiveSession>,
     known: KnownHosts,
     pcaps: HashMap<String, OpenPcap>,
     live_caps: HashMap<String, LiveCapture>,
+    /// Keyed by the device jump host (`user@lab`).
+    jump_tunnels: HashMap<String, JumpTunnel>,
 }
 
 struct LiveSession {
@@ -318,6 +329,7 @@ impl App {
                 known,
                 pcaps: HashMap::new(),
                 live_caps: HashMap::new(),
+                jump_tunnels: HashMap::new(),
             })),
         })
     }
@@ -709,6 +721,59 @@ impl App {
         self.open_session(spec)
     }
 
+    pub(crate) fn remember_jump_tunnel(
+        &self,
+        jump: String,
+        socks_port: Option<u16>,
+        control_path: Option<String>,
+    ) {
+        let jump = jump.trim();
+        if jump.is_empty() {
+            return;
+        }
+        let socks_port = socks_port.filter(|p| *p > 0);
+        let control_path = control_path
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if socks_port.is_none() && control_path.is_none() {
+            return;
+        }
+        self.inner.lock().jump_tunnels.insert(
+            jump.to_string(),
+            JumpTunnel {
+                socks_port,
+                control_path,
+            },
+        );
+    }
+
+    /// Reach `device` the way `open_ssh` would: the launcher tunnel while it is
+    /// still up, otherwise `ssh -J` from `device.jump_host`.
+    fn proxy_for_device(&self, device: &Device) -> Result<SshProxy> {
+        let jump = device
+            .jump_host
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let tunnel = jump.and_then(|j| self.inner.lock().jump_tunnels.get(j).cloned());
+        let (socks, control) = match tunnel {
+            Some(t) => (t.socks_port, t.control_path),
+            None => (None, None),
+        };
+        resolve_ssh_proxy(jump, socks, control.as_deref(), nc_supports_socks())
+    }
+
+    fn proxy_for_host(&self, host: &str, port: u16) -> Result<SshProxy> {
+        let inv = self.inventory.load()?;
+        let device = inv.devices.iter().find(|d| {
+            d.host.as_deref() == Some(host) && d.port.unwrap_or(22) == port && d.jump_host.is_some()
+        });
+        match device {
+            Some(device) => self.proxy_for_device(device),
+            None => Ok(SshProxy::Direct),
+        }
+    }
+
     pub fn accept_host_key(&self, host: &str, fingerprint: &str) -> Result<()> {
         let fp = fingerprint.trim();
         if host.trim().is_empty() || fp.is_empty() || fp == "unknown fingerprint" {
@@ -717,7 +782,8 @@ impl App {
             ));
         }
         let (h, p) = crate::known_hosts::parse_host_port_key(host.trim())?;
-        let observed = crate::ssh::probe_fingerprint(&h, p)?;
+        let proxy = self.proxy_for_host(&h, p)?;
+        let observed = crate::ssh::probe_fingerprint_via(&h, p, &proxy)?;
         if observed != fp {
             return Err(LateError::Ssh(
                 "fingerprint does not match the host key Late just scanned".into(),
@@ -748,6 +814,27 @@ impl App {
             },
         )?;
         let session_password = prepared.session_password.take();
+        if req.socks_port.filter(|p| *p > 0).is_none()
+            && req
+                .control_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_none()
+        {
+            if let Some(jump) = prepared
+                .device
+                .jump_host
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if let Some(tunnel) = self.inner.lock().jump_tunnels.get(jump).cloned() {
+                    req.socks_port = tunnel.socks_port;
+                    req.control_path = tunnel.control_path;
+                }
+            }
+        }
         let mut known = self.inner.lock().known.clone();
         let ssh_pw = session_password.clone();
         let opened = ssh::open_ssh(
@@ -947,12 +1034,14 @@ impl App {
 
     pub fn sftp_list(&self, session_id: &str, path: &str) -> Result<Vec<SftpEntry>> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let proxy = self.proxy_for_device(&device)?;
         sftp::list_dir(
             &profile,
             &self.secrets,
             device.host.as_deref().unwrap_or(""),
             device.port.unwrap_or(22),
             path,
+            &proxy,
         )
     }
 
@@ -974,6 +1063,7 @@ impl App {
         recursive: bool,
     ) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let proxy = self.proxy_for_device(&device)?;
         let dest =
             confine::confine_under_roots(Path::new(local), &self.operator_fs_roots(), false)?;
         sftp::download(
@@ -984,6 +1074,7 @@ impl App {
             remote,
             &dest.to_string_lossy(),
             recursive,
+            &proxy,
         )
     }
 
@@ -995,6 +1086,7 @@ impl App {
         recursive: bool,
     ) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let proxy = self.proxy_for_device(&device)?;
         let local_path = Path::new(local);
         let recursive = recursive || local_path.is_dir();
         let src = if recursive {
@@ -1010,22 +1102,26 @@ impl App {
             &src.to_string_lossy(),
             remote,
             recursive,
+            &proxy,
         )
     }
 
     pub fn sftp_mkdir(&self, session_id: &str, path: &str) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let proxy = self.proxy_for_device(&device)?;
         sftp::mkdir(
             &profile,
             &self.secrets,
             device.host.as_deref().unwrap_or(""),
             device.port.unwrap_or(22),
             path,
+            &proxy,
         )
     }
 
     pub fn sftp_remove(&self, session_id: &str, path: &str, dir: bool) -> Result<()> {
         let (device, profile) = self.sftp_ctx(session_id)?;
+        let proxy = self.proxy_for_device(&device)?;
         sftp::remove(
             &profile,
             &self.secrets,
@@ -1033,6 +1129,7 @@ impl App {
             device.port.unwrap_or(22),
             path,
             dir,
+            &proxy,
         )
     }
 

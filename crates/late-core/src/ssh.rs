@@ -50,7 +50,12 @@ static KEYSCAN_CACHE: Mutex<Option<(Instant, HashMap<String, String>)>> = Mutex:
 static KEYSCAN_GATE: Mutex<()> = Mutex::new(());
 
 pub fn probe_fingerprint(host: &str, port: u16) -> Result<String> {
-    Ok(probe_keyscan(host, port)?.2)
+    probe_fingerprint_via(host, port, &SshProxy::Direct)
+}
+
+pub fn probe_fingerprint_via(host: &str, port: u16, proxy: &SshProxy) -> Result<String> {
+    let text = probe_keyscan_text_via(host, port, proxy)?;
+    Ok(pick_keyscan_entry_for_pin(&text, None)?.fingerprint)
 }
 
 fn keyscan_cache_key(host: &str, port: u16, tag: &str) -> String {
@@ -299,10 +304,6 @@ fn probe_keyscan_text_uncached(host: &str, port: u16) -> Result<String> {
     Err(unable_to_connect(host, port, "failed", "no SSH banner"))
 }
 
-fn probe_keyscan_text(host: &str, port: u16) -> Result<String> {
-    probe_keyscan_text_via(host, port, &SshProxy::Direct)
-}
-
 fn probe_uncached(host: &str, port: u16, proxy: &SshProxy) -> Result<String> {
     if proxy.is_direct() {
         probe_keyscan_text_uncached(host, port)
@@ -366,12 +367,6 @@ fn probe_via_proxy(host: &str, port: u16, proxy: &SshProxy) -> Result<String> {
     Ok(text)
 }
 
-fn probe_keyscan(host: &str, port: u16) -> Result<(String, String, String)> {
-    let text = probe_keyscan_text(host, port)?;
-    let entry = pick_keyscan_entry_for_pin(&text, None)?;
-    Ok((entry.line, entry.algo, entry.fingerprint))
-}
-
 fn probe_keyscan_for_pin(
     host: &str,
     port: u16,
@@ -429,13 +424,17 @@ fn write_openssh_known_hosts(
 }
 
 /// OpenSSH will only connect if this host was already pinned in Late's TOML store.
-pub(crate) fn pinned_known_hosts_file(host: &str, port: u16) -> Result<(PathBuf, String)> {
+/// `proxy` is how the probe reaches the host (direct, SOCKS, control socket, or `-J`).
+pub(crate) fn pinned_known_hosts_file(
+    host: &str,
+    port: u16,
+    proxy: &SshProxy,
+) -> Result<(PathBuf, String)> {
     let paths = LatePaths::discover();
     let known = KnownHosts::load(&paths)?;
     let hk = host_port_key(host, port);
     let pinned = known.pins.get(&hk).cloned();
-    let (_text, entries, chosen) =
-        probe_keyscan_for_pin(host, port, pinned.as_deref(), &SshProxy::Direct)?;
+    let (_text, entries, chosen) = probe_keyscan_for_pin(host, port, pinned.as_deref(), proxy)?;
     let fps: Vec<_> = entries.iter().map(|e| e.fingerprint.as_str()).collect();
     match known.check_any(&hk, fps) {
         HostKeyCheck::Match => {}
@@ -635,6 +634,15 @@ pub fn open_ssh(
     ))
 }
 
+fn device_jump_proxy(device: &Device) -> Result<SshProxy> {
+    resolve_ssh_proxy(
+        device.jump_host.as_deref(),
+        None,
+        None,
+        nc_supports_socks(),
+    )
+}
+
 pub fn exec_bytes(
     device: &Device,
     profile: &AuthProfile,
@@ -665,21 +673,26 @@ pub fn exec_bytes_result(
         .clone()
         .ok_or_else(|| LateError::Ssh("device has no host".into()))?;
     let port = device.port.unwrap_or(22);
+    let proxy = device_jump_proxy(device)?;
     let mut password = if profile.has_password {
         secrets.get(&profile.id)?
     } else {
         None
     };
-    let mut cmd = ssh_command_with_secret("ssh", password.as_deref())?;
+    // Askpass answers every prompt. A bare ProxyJump may ask for the jump
+    // password first, so a non-interactive exec does not fill it.
+    let autofill = password.as_ref().is_some_and(|s| !s.is_empty())
+        && (proxy.is_direct() || proxy.is_preauthenticated());
+    let mut cmd = ssh_command_with_secret("ssh", if autofill { password.as_deref() } else { None })?;
     cmd.arg("-T");
-    if profile.has_password {
+    if autofill {
         cmd.arg("-o")
             .arg("PreferredAuthentications=keyboard-interactive,password");
         cmd.arg("-o").arg("NumberOfPasswordPrompts=1");
     } else {
         cmd.arg("-o").arg("BatchMode=yes");
     }
-    apply_strict_host_opts_std(&mut cmd, &host, port)?;
+    apply_strict_host_opts_std(&mut cmd, &host, port, &proxy)?;
     cmd.arg("-o").arg("LogLevel=ERROR");
     cmd.arg("-o")
         .arg("ConnectTimeout=8")
@@ -761,21 +774,24 @@ pub fn spawn_exec(
         .clone()
         .ok_or_else(|| LateError::Ssh("device has no host".into()))?;
     let port = device.port.unwrap_or(22);
+    let proxy = device_jump_proxy(device)?;
     let mut password = if profile.has_password {
         secrets.get(&profile.id)?
     } else {
         None
     };
-    let mut cmd = ssh_command_with_secret("ssh", password.as_deref())?;
+    let autofill = password.as_ref().is_some_and(|s| !s.is_empty())
+        && (proxy.is_direct() || proxy.is_preauthenticated());
+    let mut cmd = ssh_command_with_secret("ssh", if autofill { password.as_deref() } else { None })?;
     cmd.arg("-T");
-    if profile.has_password {
+    if autofill {
         cmd.arg("-o")
             .arg("PreferredAuthentications=keyboard-interactive,password");
         cmd.arg("-o").arg("NumberOfPasswordPrompts=1");
     } else {
         cmd.arg("-o").arg("BatchMode=yes");
     }
-    apply_strict_host_opts_std(&mut cmd, &host, port)?;
+    apply_strict_host_opts_std(&mut cmd, &host, port, &proxy)?;
     cmd.arg("-o").arg("LogLevel=ERROR");
     cmd.arg("-o")
         .arg("ConnectTimeout=8")
@@ -820,6 +836,7 @@ impl CliSession {
             .clone()
             .ok_or_else(|| LateError::Ssh("device has no host".into()))?;
         let port = device.port.unwrap_or(22);
+        let proxy = device_jump_proxy(device)?;
         let mut password = if profile.has_password {
             secrets.get(&profile.id)?
         } else {
@@ -834,9 +851,12 @@ impl CliSession {
                 pixel_height: 0,
             })
             .map_err(|e| LateError::Ssh(e.to_string()))?;
-        let (kh, algo) = pinned_known_hosts_file(&host, port)?;
+        let (kh, algo) = pinned_known_hosts_file(&host, port, &proxy)?;
         let mut cmd = CommandBuilder::new("ssh");
         cmd.arg("-tt");
+        for arg in proxy.ssh_args() {
+            cmd.arg(arg);
+        }
         apply_strict_host_opts_pty(&mut cmd, &kh, &algo);
         cmd.arg("-p");
         cmd.arg(port.to_string());
@@ -862,10 +882,16 @@ impl CliSession {
             cmd.arg("-o");
             cmd.arg("NumberOfPasswordPrompts=0");
         }
-        let _askpass = if let Some(ref pw) = password {
-            let (wrapped, guard) = wrap_pty_password(cmd, pw)?;
-            cmd = wrapped;
-            guard
+        let autofill = password.as_ref().is_some_and(|s| !s.is_empty())
+            && (proxy.is_direct() || proxy.is_preauthenticated());
+        let _askpass = if autofill {
+            if let Some(ref pw) = password {
+                let (wrapped, guard) = wrap_pty_password(cmd, pw)?;
+                cmd = wrapped;
+                guard
+            } else {
+                AskpassCleanup::none()
+            }
         } else {
             AskpassCleanup::none()
         };
@@ -1361,8 +1387,16 @@ pub(crate) fn ssh_command_with_secret(
     })
 }
 
-pub(crate) fn apply_strict_host_opts_std(cmd: &mut Command, host: &str, port: u16) -> Result<()> {
-    let (kh, algo) = pinned_known_hosts_file(host, port)?;
+pub(crate) fn apply_strict_host_opts_std(
+    cmd: &mut Command,
+    host: &str,
+    port: u16,
+    proxy: &SshProxy,
+) -> Result<()> {
+    let (kh, algo) = pinned_known_hosts_file(host, port, proxy)?;
+    for arg in proxy.ssh_args() {
+        cmd.arg(arg);
+    }
     apply_strict_std(cmd, &kh, &algo);
     Ok(())
 }

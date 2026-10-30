@@ -69,7 +69,10 @@ fn null_ssh_config() -> &'static str {
     if cfg!(windows) { "NUL" } else { "/dev/null" }
 }
 
-/// `true` when `nc` advertises SOCKS (`-X` / "socks"). Cached for the process.
+/// `true` when `nc` is OpenBSD-style `nc -X 5` (SOCKS5). Cached for the process.
+///
+/// nmap-ncat (`nc` on Fedora, RHEL, and Arch) mentions SOCKS in `--proxy-type`
+/// and does not implement `-X 5`. That must not count.
 pub fn nc_supports_socks() -> bool {
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| {
@@ -81,9 +84,48 @@ pub fn nc_supports_socks() -> bool {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        let lower = text.to_ascii_lowercase();
-        text.contains("-X") || lower.contains("socks")
+        nc_help_supports_socks5(&text)
     })
+}
+
+/// OpenBSD `nc` documents `-X` with proxy protocol `5`. Help text that only
+/// says "socks" (nmap `--proxy-type`) is not that flag.
+pub(crate) fn nc_help_supports_socks5(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let mut found = false;
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'-' && bytes[i + 1] == b'x' {
+            let prev = if i == 0 { b' ' } else { bytes[i - 1] };
+            let long_opt = prev == b'-';
+            let next = bytes.get(i + 2).copied();
+            let boundary = matches!(next, None | Some(b' ' | b'\t' | b'\n' | b'\r' | b']' | b'['));
+            let start = prev.is_ascii_whitespace() || prev == b'[';
+            if !long_opt && boundary && start {
+                let end = (i + 220).min(lower.len());
+                let window = &lower[i..end];
+                if window_offers_socks5(window) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        i += 1;
+    }
+    found
+}
+
+fn window_offers_socks5(window: &str) -> bool {
+    window.contains("socks5")
+        || window.contains("socks v.5")
+        || window.contains("socks version 5")
+        || window.contains("-x 5")
+        || window.contains("\"5\"")
+        || window.contains("'5'")
+        || window.contains("(5")
+        || window.contains(", 5")
+        || window.contains(",5")
 }
 
 /// Prefer an already-open SOCKS tunnel, then a control socket, then `-J`.
@@ -256,5 +298,25 @@ mod tests {
         let proxy = resolve_ssh_proxy(None, None, None, false).unwrap();
         assert!(proxy.is_direct());
         assert!(proxy.ssh_args().is_empty());
+    }
+
+    #[test]
+    fn openbsd_nc_help_is_socks5_and_ncat_is_not() {
+        let openbsd = "\
+usage: nc [-46DdFhklNnrStUuvz] [-X proxy_protocol] [-x proxy_address[:port]]
+     -X proxy_protocol
+             Supported protocols are \"4\" (SOCKS v.4), \"5\" (SOCKS v.5) and \"connect\".
+";
+        let terse = "-X proxy_version\nUse proxy_version (4, 5, connect) for the proxy.\n";
+        let ncat = "\
+Ncat 7.95
+  --proxy <addr[:port]>   Specify address of host to proxy through
+  --proxy-type <type>     Specify proxy type (\"http\", \"socks4\", \"socks5\")
+  --proxy-auth <auth>     Authenticate with HTTP or SOCKS proxy server
+";
+        assert!(nc_help_supports_socks5(openbsd));
+        assert!(nc_help_supports_socks5(terse));
+        assert!(!nc_help_supports_socks5(ncat), "nmap nc must not win over ControlMaster");
+        assert!(!nc_help_supports_socks5("no proxy flags here"));
     }
 }

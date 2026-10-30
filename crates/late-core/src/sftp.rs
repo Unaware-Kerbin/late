@@ -1,5 +1,6 @@
 use crate::error::{LateError, Result};
 use crate::secrets::SecretStore;
+use crate::ssh_proxy::SshProxy;
 use crate::types::AuthProfile;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -23,17 +24,22 @@ fn ssh_base(
     host: &str,
     port: u16,
     secrets: &SecretStore,
+    proxy: &SshProxy,
 ) -> Result<crate::ssh::SecretCommand> {
     let pw = if profile.has_password {
         secrets.get(&profile.id)?
     } else {
         None
     };
-    let mut cmd = crate::ssh::ssh_command_with_secret("ssh", pw.as_deref())?;
-    if !profile.has_password {
+    // Same rule as an interactive session: do not feed the device password to a jump prompt.
+    let autofill = pw.as_ref().is_some_and(|s| !s.is_empty())
+        && (proxy.is_direct() || proxy.is_preauthenticated());
+    let mut cmd =
+        crate::ssh::ssh_command_with_secret("ssh", if autofill { pw.as_deref() } else { None })?;
+    if !autofill {
         cmd.arg("-o").arg("BatchMode=yes");
     }
-    crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port)?;
+    crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port, proxy)?;
     cmd.arg("-p").arg(port.to_string());
     if let Some(key) = crate::ssh::confined_identity(profile)? {
         cmd.arg("-i").arg(key);
@@ -48,10 +54,11 @@ pub fn list_dir(
     host: &str,
     port: u16,
     path: &str,
+    proxy: &SshProxy,
 ) -> Result<Vec<SftpEntry>> {
     let remote = if path.trim().is_empty() { "/" } else { path };
     reject_remote(remote)?;
-    let mut cmd = ssh_base(profile, host, port, secrets)?;
+    let mut cmd = ssh_base(profile, host, port, secrets, proxy)?;
     cmd.arg(format!("ls -la {}", shell_escape(remote)));
     let out = cmd.output().map_err(|e| LateError::Sftp(e.to_string()))?;
     if !out.status.success() {
@@ -200,6 +207,7 @@ pub fn download(
     remote: &str,
     local: &str,
     recursive: bool,
+    proxy: &SshProxy,
 ) -> Result<()> {
     reject_remote(remote)?;
     if !recursive && Path::new(local).is_dir() {
@@ -208,7 +216,7 @@ pub fn download(
         ));
     }
     scp(
-        profile, secrets, host, port, remote, local, false, recursive,
+        profile, secrets, host, port, remote, local, false, recursive, proxy,
     )
 }
 
@@ -220,6 +228,7 @@ pub fn upload(
     local: &str,
     remote: &str,
     recursive: bool,
+    proxy: &SshProxy,
 ) -> Result<()> {
     reject_remote(remote)?;
     let p = Path::new(local);
@@ -230,7 +239,9 @@ pub fn upload(
     } else if !p.is_file() {
         return Err(LateError::Sftp(format!("local file not found: {local}")));
     }
-    scp(profile, secrets, host, port, local, remote, true, recursive)
+    scp(
+        profile, secrets, host, port, local, remote, true, recursive, proxy,
+    )
 }
 
 fn reject_remote(path: &str) -> Result<()> {
@@ -253,6 +264,7 @@ fn scp(
     dst: &str,
     upload: bool,
     recursive: bool,
+    proxy: &SshProxy,
 ) -> Result<()> {
     let remote = format!(
         "{}@{}:{}",
@@ -270,8 +282,11 @@ fn scp(
     } else {
         None
     };
-    let mut cmd = crate::ssh::ssh_command_with_secret("scp", pw.as_deref())?;
-    if !profile.has_password {
+    let autofill = pw.as_ref().is_some_and(|s| !s.is_empty())
+        && (proxy.is_direct() || proxy.is_preauthenticated());
+    let mut cmd =
+        crate::ssh::ssh_command_with_secret("scp", if autofill { pw.as_deref() } else { None })?;
+    if !autofill {
         cmd.arg("-o").arg("BatchMode=yes");
     }
     if recursive {
@@ -281,7 +296,7 @@ fn scp(
     if let Some(key) = crate::ssh::confined_identity(profile)? {
         cmd.arg("-i").arg(key);
     }
-    crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port)?;
+    crate::ssh::apply_strict_host_opts_std(&mut cmd, host, port, proxy)?;
     cmd.arg(&from).arg(&to);
     let out = cmd.output().map_err(|e| LateError::Sftp(e.to_string()))?;
     if !out.status.success() {
@@ -298,9 +313,10 @@ pub fn mkdir(
     host: &str,
     port: u16,
     path: &str,
+    proxy: &SshProxy,
 ) -> Result<()> {
     reject_remote(path)?;
-    let mut cmd = ssh_base(profile, host, port, secrets)?;
+    let mut cmd = ssh_base(profile, host, port, secrets, proxy)?;
     cmd.arg(format!("mkdir -p {}", shell_escape(path)));
     let out = cmd.output().map_err(|e| LateError::Sftp(e.to_string()))?;
     if !out.status.success() {
@@ -318,9 +334,10 @@ pub fn remove(
     port: u16,
     path: &str,
     dir: bool,
+    proxy: &SshProxy,
 ) -> Result<()> {
     reject_remote(path)?;
-    let mut cmd = ssh_base(profile, host, port, secrets)?;
+    let mut cmd = ssh_base(profile, host, port, secrets, proxy)?;
     cmd.arg(format!(
         "{} {}",
         if dir { "rm -rf" } else { "rm -f" },

@@ -35,7 +35,7 @@ import {
   moveShellPane,
   type ShellPaneId,
 } from "./shell";
-import { isCancelled, isConnectError, isHostKeyError, rpc } from "./lib/rpc";
+import { hostKeyEventInfo, isCancelled, isConnectError, isHostKeyError, rpc } from "./lib/rpc";
 import { sidecarHealth } from "./lib/sidecar";
 import { stageBodyAfterOpen, stageDeviceAfterOpen, stageSessionAfterOpen, stagingSeedRemounts } from "./lib/stageDrafts";
 import {
@@ -834,7 +834,9 @@ export async function openSession(
               },
               login,
             );
+            pumpLauncherHostKeys();
           },
+          dismiss: () => pumpLauncherHostKeys(),
         },
       });
       return;
@@ -1000,7 +1002,9 @@ export async function reconnectPane(paneId: string) {
               acceptUnknownHost: true,
               replaceHostKey: hk.mismatch,
             });
+            pumpLauncherHostKeys();
           },
+          dismiss: () => pumpLauncherHostKeys(),
         },
       });
       return;
@@ -1715,9 +1719,82 @@ rpc.onStatus((ok, err) => {
   setState({ daemonOk: ok, daemonError });
 });
 
+type LauncherHostKey = NonNullable<ReturnType<typeof hostKeyEventInfo>>;
+
+const launcherHostKeys: LauncherHostKey[] = [];
+let launcherHostKeyShowing = false;
+
+function pumpLauncherHostKeys() {
+  if (launcherHostKeyShowing || getState().hostKey) return;
+  const info = launcherHostKeys.shift();
+  if (!info) return;
+  launcherHostKeyShowing = true;
+  void presentLauncherHostKey(info);
+}
+
+function enqueueLauncherHostKey(info: LauncherHostKey) {
+  launcherHostKeys.push(info);
+  pumpLauncherHostKeys();
+}
+
+async function presentLauncherHostKey(info: LauncherHostKey) {
+  try {
+    await refreshAll();
+  } catch {
+    /* the device was staged before the host-key failure */
+  }
+  if (getState().hostKey) {
+    launcherHostKeys.unshift(info);
+    launcherHostKeyShowing = false;
+    return;
+  }
+  const device =
+    getState().inventory.devices.find((d) => info.deviceId && d.id === info.deviceId) ??
+    getState().inventory.devices.find((d) => d.host === info.host);
+  const finish = () => {
+    launcherHostKeyShowing = false;
+    pumpLauncherHostKeys();
+  };
+  setState({
+    hostKey: {
+      host: info.host,
+      presented: info.presented,
+      pinned: info.pinned,
+      mismatch: info.mismatch,
+      dismiss: finish,
+      retry: async () => {
+        launcherHostKeyShowing = false;
+        setState({ hostKey: null });
+        try {
+          await rpc.call("known_hosts.accept", {
+            host: info.host,
+            fingerprint: info.presented,
+            presented: info.presented,
+          });
+        } catch {
+          /* session.open replace_host_key still pins when the scan cannot run */
+        }
+        const again =
+          getState().inventory.devices.find((d) => info.deviceId && d.id === info.deviceId) ?? device;
+        if (again) {
+          await openSession(again, "ssh", {
+            acceptUnknownHost: true,
+            replaceHostKey: info.mismatch,
+          });
+        }
+        pumpLauncherHostKeys();
+      },
+    },
+  });
+}
+
 rpc.onOpened((info) => {
   attachSession(info, info.device_id ?? undefined, info.kind);
   void refreshAll();
+});
+
+rpc.onHostKey((info) => {
+  enqueueLauncherHostKey(info);
 });
 
 rpc.onClosed((sessionId, reason) => {
