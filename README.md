@@ -112,6 +112,26 @@ On Linux, `./late --install` puts Late in the app menu. After that you can searc
 5. On an SSH device, **SCP / SFTP** copies files. The helper cannot copy files.
 6. Settings has **Keyword highlights** (`down` / `up` colors), **Terminal font** / size, and **Session logging** (optional SecureCRT-style transcripts: pick a folder, optionally start logging when a session connects; device **Log this session**; pane **Log** still toggles one session).
 
+## Containerlab
+
+[clab-ssh](https://github.com/Unaware-Kerbin/clab-terminal-launcher) opens a lab’s nodes as SSH tabs in Late. Start Late on this computer first. Then, from that tool:
+
+```bash
+./clab-ssh -t late
+```
+
+```powershell
+.\clab-ssh.ps1 -Launcher late
+```
+
+Late files each running node under `clab-<lab-host>` and opens a terminal for it. One launch accepts up to 64 nodes. On Linux and macOS the lab tool keeps one jump tunnel. You type the jump password once there. Late sends the node sessions through that tunnel. A device password from the lab tool’s vault is saved in Late’s secret file and filled in for that launch. The jump password is not saved.
+
+Clicking that saved device later uses the jump host on the row (`user@lab-host`). You type the passwords in the terminal.
+
+On Windows there is no shared tunnel. You type the jump password and the device password in the Late terminal.
+
+The window has to be open when the lab tool runs. Sessions started while it is closed stay on the daemon; this window does not add tabs for them afterwards.
+
 ## On your computer (short how-tos)
 
 All of this stays on loopback. Cloud AI is Cursor and public internet APIs only. A GPU on your LAN is not Cloud AI.
@@ -266,7 +286,9 @@ PTY output event:
 { "event": "session.data", "sessionId": "...", "data": "<base64>" }
 ```
 
-Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId` or Quick Connect `host`/`port`/`username`/`password`, `saveSession`/`savePassword`, `acceptUnknownHost`, `cols`, `rows`, `shell`; one-time SSH does not write `secrets.json`; `scp` is an alias for `sftp`), `session.close|input|resize|reconnect|list|break|scrollback`, `policy.check`, `sftp.list|get|put|mkdir|rm` (aliases `scp.list|get|put|upload|download`; `recursive` copies folders with `scp -r`), `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
+Methods: `inventory.list|upsert|delete`, `auth.list|upsert|delete` (passwords go to the secret file — Unix mode 0600; Windows uses default NTFS ACLs on the config/data dirs — and are never returned), `settings.get|set`, `session.open` (`kind`: `ssh|serial|local|sftp|pcap|api`, `deviceId` or Quick Connect `host`/`port`/`username`/`password`, `saveSession`/`savePassword`, `acceptUnknownHost`, `cols`, `rows`, `shell`; one-time SSH does not write `secrets.json`; `scp` is an alias for `sftp`), `session.close|input|resize|reconnect|list|break|scrollback`, `clab.open`, `policy.check`, `sftp.list|get|put|mkdir|rm` (aliases `scp.list|get|put|upload|download`; `recursive` copies folders with `scp -r`), `pcap.interfaces|start|stop|open|packets|findings|query`, `api.request`, `import.file`, `collections.list|upsert`, `capture.save|diff|export`, `stage.render|save|get|list|plan|push`.
+
+`clab.open` is how [clab-ssh](https://github.com/Unaware-Kerbin/clab-terminal-launcher) opens a lab. Params: `host`, `ssh_user`, `device_user`, `devices`, optional `socks_port`, `control_path`, `device_password`, `no_jump`. It stages each node in folder `clab-<host>` (up to 64) and opens SSH. The password is not in the result. When the jump is already authenticated (SOCKS or a control socket), Late fills the device password. A bare `ssh -J` from the saved jump host prompts in the terminal. The daemon emits `session.opened` (`data` is the session JSON) so an open window attaches a tab.
 
 Agent tools call these same session/policy/pcap/api methods. The daemon does not talk to LLMs.
 
@@ -282,7 +304,7 @@ The **ci** workflow on each push is Rust tests, isolation greps, and advisory sc
 
 ## Layout
 
-- `crates/late-core` — inventory, secrets, SSH/serial/PTY/SCP, policy, redact, pcap, API client, staging
+- `crates/late-core` — inventory, secrets, SSH/serial/PTY/SCP, policy, redact, pcap, API client, staging, containerlab launch
 - `crates/late-daemon` — Axum JSON-RPC daemon
 - `crates/late-infer` — Late Local OpenAI `/v1` (Hugging Face safetensors, loopback). Not packed; not default-members
 - `crates/isolation-check` — sidecar firewall grep
