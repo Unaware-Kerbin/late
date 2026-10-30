@@ -67,6 +67,14 @@ Download from **[Releases](https://github.com/Unaware-Kerbin/late/releases)** (l
 
 Example Mac name: `Late-0.1.21-mac-arm64.zip`. The number matches the GitHub tag. These files are unsigned. SSH still uses the `ssh` program already on your computer.
 
+Those packages install Late only. They do not include clab-ssh, and they do not change Electron's sandbox. To put the containerlab launcher on your PATH next to Late, from this checkout:
+
+```bash
+./installer/install-clab-ssh.sh /path/to/clab-terminal-launcher
+```
+
+That runs the launcher's `./install.sh` (user install under `~/.local`). Open Late, then `clab-ssh -t late`. On Windows, run `.\install.ps1` in the launcher checkout. If this script cannot find the launcher sources, it prints the clone URL and stops.
+
 If Releases has no app files yet, [build it yourself](#install-from-source).
 
 ## Install from source
