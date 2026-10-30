@@ -1,3 +1,4 @@
+import { coerceSession, type SessionInfo } from "../types";
 import { lateLocalToken } from "./localToken";
 
 export const DAEMON_HTTP = "http://127.0.0.1:7420";
@@ -171,6 +172,23 @@ export function isHostKeyError(err: unknown): { mismatch: boolean; host: string;
   };
 }
 
+/** Session the daemon opened outside this window (containerlab launcher). */
+export function sessionOpenedInfo(msg: Record<string, unknown>): SessionInfo | null {
+  const event = String(msg.event ?? msg.method ?? "");
+  if (event !== "session.opened" && event !== "sessionOpened") return null;
+  const raw = msg.data ?? msg.info;
+  if (typeof raw !== "string" || !raw.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const info = coerceSession(parsed);
+    if (!info.id) return null;
+    return info;
+  } catch {
+    return null;
+  }
+}
+
 class DaemonRpc {
   private ws: WebSocket | null = null;
   private nextId = 1;
@@ -183,6 +201,7 @@ class DaemonRpc {
   private sessionPrebuffer = new Map<string, Uint8Array>();
   private statusHandlers = new Set<(ok: boolean, err?: string) => void>();
   private closedHandlers = new Set<(sessionId: string, reason?: string) => void>();
+  private openedHandlers = new Set<(info: SessionInfo) => void>();
   private opening: Promise<void> | null = null;
   connected = false;
   lastError: string | null = null;
@@ -219,6 +238,11 @@ class DaemonRpc {
   onClosed(h: (sessionId: string, reason?: string) => void): () => void {
     this.closedHandlers.add(h);
     return () => this.closedHandlers.delete(h);
+  }
+
+  onOpened(h: (info: SessionInfo) => void): () => void {
+    this.openedHandlers.add(h);
+    return () => this.openedHandlers.delete(h);
   }
 
   async health(): Promise<boolean> {
@@ -333,6 +357,11 @@ class DaemonRpc {
       const sessionId = String(msg.sessionId ?? msg.session_id ?? "");
       const data = String(msg.data ?? (msg as { params?: { data?: string } }).params?.data ?? "");
       if (sessionId && data) this.dispatchBytes(sessionId, b64ToBytes(data));
+      return;
+    }
+    const opened = sessionOpenedInfo(msg);
+    if (opened) {
+      this.openedHandlers.forEach((h) => h(opened));
       return;
     }
     if (event === "session.closed" || event === "sessionClosed") {

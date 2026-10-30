@@ -9,6 +9,7 @@ import {
   isCancelled,
   isConnectError,
   RpcError,
+  sessionOpenedInfo,
 } from "./rpc";
 
 test("encodeTermInputFrame is sessionId NUL payload, not JSON-RPC", () => {
@@ -88,4 +89,25 @@ test("appendSessionPrebuffer caps to trailing tail", () => {
   assert.equal(out[out.length - 1], 0x5a);
   assert.equal(out[out.length - 2], 0x5a);
   assert.equal(out[out.length - 3], 0x5a);
+});
+
+test("sessionOpenedInfo reads a launcher session and ignores terminal data", () => {
+  const info = sessionOpenedInfo({
+    event: "session.opened",
+    sessionId: "sess-1",
+    data: JSON.stringify({
+      id: "sess-1",
+      device_id: "dev-1",
+      name: "pe-1",
+      kind: "ssh",
+      vendor: "linux",
+      connected: true,
+      created_at: "2026-01-01T00:00:00Z",
+    }),
+  });
+  assert.equal(info?.id, "sess-1");
+  assert.equal(info?.device_id, "dev-1");
+  assert.equal(info?.name, "pe-1");
+  assert.equal(sessionOpenedInfo({ event: "session.data", data: "bm90IGpzb24=" }), null);
+  assert.equal(sessionOpenedInfo({ event: "session.opened", data: "not-json" }), null);
 });

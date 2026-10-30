@@ -156,6 +156,10 @@ pub struct OpenSession {
     pub name: Option<String>,
     /// Explicit connect flag: start logging this session (Quick Connect checkbox).
     pub log_session: bool,
+    /// Launcher SOCKS port. Takes precedence over `device.jump_host` for this open.
+    pub socks_port: Option<u16>,
+    /// Launcher OpenSSH control socket. Used when SOCKS is not available.
+    pub control_path: Option<String>,
 }
 
 impl OpenSession {
@@ -181,6 +185,8 @@ impl OpenSession {
             vendor: None,
             name: None,
             log_session: false,
+            socks_port: None,
+            control_path: None,
         }
     }
 }
@@ -208,6 +214,8 @@ impl Clone for OpenSession {
             vendor: self.vendor,
             name: self.name.clone(),
             log_session: self.log_session,
+            socks_port: self.socks_port,
+            control_path: self.control_path.clone(),
         }
     }
 }
@@ -751,6 +759,8 @@ impl App {
             SshConnectOpts {
                 accept_unknown_host: req.accept_unknown_host,
                 replace_host_key: req.replace_host_key,
+                socks_port: req.socks_port,
+                control_path: req.control_path.clone(),
             },
             req.cols.max(1),
             req.rows.max(1),
@@ -807,6 +817,8 @@ impl App {
         reconnect.save_session = false;
         reconnect.save_password = false;
         reconnect.log_session = req.log_session;
+        reconnect.socks_port = req.socks_port;
+        reconnect.control_path = req.control_path.clone();
         if persist_password {
             if let Some(mut pw) = session_password {
                 pw.zeroize();

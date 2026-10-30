@@ -1715,6 +1715,11 @@ rpc.onStatus((ok, err) => {
   setState({ daemonOk: ok, daemonError });
 });
 
+rpc.onOpened((info) => {
+  attachSession(info, info.device_id ?? undefined, info.kind);
+  void refreshAll();
+});
+
 rpc.onClosed((sessionId, reason) => {
   if (reconnectingSessions.has(sessionId)) return;
   if (userClosedSessions.has(sessionId) || reason === "closed") {
