@@ -188,6 +188,11 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             let info = app.open_session(parse_open(&params)?)?;
             Ok(serde_json::to_value(info)?)
         }
+        "clab.open" => {
+            let launch = late_core::clab::launch_from_value(&params)?;
+            let app = app.clone();
+            blocking(move || app.open_clab(launch)).await
+        }
         "known_hosts.accept" | "knownHosts.accept" => {
             let host = req_str(&params, &["host"])?;
             let fp = req_str(&params, &["fingerprint", "presented"])?;

@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod capture;
+pub mod clab;
 pub mod collections;
 pub mod config;
 pub mod confine;
@@ -26,6 +27,7 @@ pub mod session;
 pub mod session_log;
 pub mod sftp;
 pub mod ssh;
+pub mod ssh_proxy;
 pub mod stage;
 pub mod types;
 pub mod weights;

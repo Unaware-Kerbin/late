@@ -9,6 +9,8 @@ import {
   isCancelled,
   isConnectError,
   RpcError,
+  hostKeyEventInfo,
+  sessionOpenedInfo,
 } from "./rpc";
 
 test("encodeTermInputFrame is sessionId NUL payload, not JSON-RPC", () => {
@@ -88,4 +90,46 @@ test("appendSessionPrebuffer caps to trailing tail", () => {
   assert.equal(out[out.length - 1], 0x5a);
   assert.equal(out[out.length - 2], 0x5a);
   assert.equal(out[out.length - 3], 0x5a);
+});
+
+test("sessionOpenedInfo reads a launcher session and ignores terminal data", () => {
+  const info = sessionOpenedInfo({
+    event: "session.opened",
+    sessionId: "sess-1",
+    data: JSON.stringify({
+      id: "sess-1",
+      device_id: "dev-1",
+      name: "pe-1",
+      kind: "ssh",
+      vendor: "linux",
+      connected: true,
+      created_at: "2026-01-01T00:00:00Z",
+    }),
+  });
+  assert.equal(info?.id, "sess-1");
+  assert.equal(info?.device_id, "dev-1");
+  assert.equal(info?.name, "pe-1");
+  assert.equal(sessionOpenedInfo({ event: "session.data", data: "bm90IGpzb24=" }), null);
+  assert.equal(sessionOpenedInfo({ event: "session.opened", data: "not-json" }), null);
+});
+
+test("hostKeyEventInfo reads a containerlab mismatch and ignores terminal data", () => {
+  const info = hostKeyEventInfo({
+    event: "host_key",
+    data: JSON.stringify({
+      code: "host_key_mismatch",
+      kind: "host_key_mismatch",
+      host: "172.20.20.2",
+      pinned: "SHA256:old",
+      presented: "SHA256:new",
+      device_id: "dev-1",
+    }),
+  });
+  assert.equal(info?.mismatch, true);
+  assert.equal(info?.host, "172.20.20.2");
+  assert.equal(info?.presented, "SHA256:new");
+  assert.equal(info?.pinned, "SHA256:old");
+  assert.equal(info?.deviceId, "dev-1");
+  assert.equal(hostKeyEventInfo({ event: "session.data", data: "bm90IGpzb24=" }), null);
+  assert.equal(hostKeyEventInfo({ event: "host_key", data: "not-json" }), null);
 });
