@@ -12,7 +12,7 @@ authors = ["Late contributors"]
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_saphyr = { package = "serde-saphyr", version = "2.1" }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 tracing = "0.1"
@@ -32,3 +32,6 @@ anyhow = "1"
 # zip ^8.6.0, so the patched 0.9.2 tree is the smallest override.
 [patch.crates-io]
 candle-core = { path = "third_party/candle-core" }
+# pastey 0.2.3 under the paste package name. Transitive gemm/pulp/tokenizers
+# still name the unmaintained paste crate (RUSTSEC-2024-0436).
+paste = { path = "third_party/paste" }

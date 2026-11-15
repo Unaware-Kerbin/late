@@ -587,7 +587,7 @@ impl App {
         let path = policy::overlay_path(&dir, vendor);
         let current = if path.is_file() {
             let raw = std::fs::read_to_string(&path)?;
-            serde_yaml::from_str(&raw)?
+            serde_saphyr::from_str(&raw)?
         } else {
             self.policy.lock().get(vendor)
         };

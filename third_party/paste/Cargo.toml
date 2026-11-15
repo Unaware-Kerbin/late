@@ -1,0 +1,16 @@
+# pastey 0.2.3, package name `paste`, so gemm, pulp, and tokenizers
+# keep `use paste::paste` and leave RUSTSEC-2024-0436.
+[package]
+name = "paste"
+version = "1.0.15"
+edition = "2018"
+license = "MIT OR Apache-2.0"
+description = "Maintained paste fork (pastey 0.2.3) under the paste package name."
+publish = false
+rust-version = "1.54"
+
+[lib]
+proc-macro = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
