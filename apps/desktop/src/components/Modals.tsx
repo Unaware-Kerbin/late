@@ -244,7 +244,9 @@ function HostKeyModal() {
   function cancel() {
     if (busy) return;
     cancelInFlightConnect();
+    const dismiss = hostKey.dismiss;
     setState({ hostKey: null });
+    dismiss?.();
   }
   const acceptRef = useRef(accept);
   const cancelRef = useRef(cancel);

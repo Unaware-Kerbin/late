@@ -11,7 +11,7 @@ Likelihood and impact are qualitative (low / medium / high) for the Late **proje
 | R5 | Unsigned GGUF / Hub supply chain | M | H | Mitigate: GGUF magic `GGUF` after download; existing HF host allowlist. Residual: no SHA-256 yet. |
 | R6 | `pcap_dir=/` expands path jail | L | H | Mitigate: do not add `pcap_dir` as an extra root; reject settings outside home / Late dirs. |
 | R7 | Unsigned installers / `npx --yes` at pack | H | M | Accept this pass (no signing identity). Org: later pin pack tools and sign. |
-| R8 | Electron `--no-sandbox` on source launchers | H | M | Accept this pass (GPU/Wayland). `./late` (Linux) and `npm run native` (every OS) pass `--no-sandbox`. Packaged AppImage/deb from electron-builder do not set the flag. Residual, not a ship gate. |
+| R8 | Electron `--no-sandbox` on source launchers | H | M | Accept this pass (GPU/Wayland, and a non-root `chrome-sandbox` in a checkout). `./late` and `npm run native` pass `--no-sandbox` and `--disable-setuid-sandbox`. Packaged AppImage/deb from electron-builder do not set the flags. Residual, not a ship gate. |
 | R9 | Shared token, no unique app user | H | M | Accept for single-operator tool. Org: unique OS accounts. |
 | R10 | Supplier (Cursor, HF, GitHub, npm, crates) change or incident | M | M | Org: supplier register review. Product: local default, isolation CI. |
 | R11 | Audit log truncated by same user | H | M | Accept (O_APPEND, not WORM). Org: SIEM copy if required. |

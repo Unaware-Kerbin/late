@@ -9,7 +9,7 @@
 | GitHub | Source, CI, release artifacts | Public repo, Actions logs | No | Unsigned artifacts this pass |
 | npm / crates.io | Dependencies | Build-time | No | Advisory scans in CI |
 | Intel (`llm-scaler-vllm` image) | Optional compose example | Weights via HF_TOKEN in container | No | Privileged Docker; NVIDIA/AMD Start refused |
-| Electron / Tauri | Desktop shell | Local | No | `--no-sandbox` on source launchers (`./late`, `npm run native`). Packaged Electron-builder binaries do not set the flag |
+| Electron / Tauri | Desktop shell | Local | No | `--no-sandbox` and `--disable-setuid-sandbox` on source launchers (`./late`, `npm run native`). Packaged Electron-builder binaries do not set the flags |
 
 Google Fonts: **removed** from the UI CSP (no longer a runtime supplier).
 
