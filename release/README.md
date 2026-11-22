@@ -27,6 +27,7 @@ Exact `os`/`arch` tokens follow electron-builder (`linux`/`win`/`mac`, `amd64`/`
 - Windows is unsigned (no Authenticode). SmartScreen: More info → Run anyway.
 - `late-daemon` is built on that OS runner. A Mac zip packed on Linux has no Mach-O daemon until **macos-latest** runs.
 - Ollama + `llama-server` (Vulkan / Metal / mlx) are in the package. Model weights are not. vLLM Start still needs Docker on your computer.
+- clab-ssh is not inside these packages. `./installer/install-clab-ssh.sh` installs it from the clab-terminal-launcher checkout. Packaged Electron does not pass `--no-sandbox`.
 
 ## How CI publishes
 

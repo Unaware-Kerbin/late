@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/lib/stageEditorLang.test.ts src/lib/stageDrafts.test.ts src/mcpPick.test.ts src/termHighlight.test.ts src/lib/permitList.test.ts src/lib/updateSync.test.ts src/lib/inferenceUi.test.ts src/lib/rpc.input.test.ts src/lib/sidebarDnD.test.ts src/lib/approvals-ui.test.ts src/lib/cloudGate.test.ts src/lib/chatMarkdown.test.ts src/lib/chatTrim.test.ts src/lib/termWritePump.test.ts src/lib/sseChat.test.ts && node --test electron/update-sync.test.cjs",
     "tauri": "tauri",
-    "native": "env -u ELECTRON_RUN_AS_NODE electron --no-sandbox electron/main.cjs",
+    "native": "env -u ELECTRON_RUN_AS_NODE electron --no-sandbox --disable-setuid-sandbox electron/main.cjs",
     "tauri:dev": "tauri dev",
     "pack": "electron-builder"
   },

@@ -469,6 +469,8 @@ export interface HostKeyPrompt {
   pinned?: string;
   mismatch: boolean;
   retry: () => Promise<void>;
+  /** Continue a queued containerlab mismatch after Cancel. */
+  dismiss?: () => void;
 }
 
 export interface ConnectFailedPrompt {
