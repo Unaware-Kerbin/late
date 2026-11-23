@@ -1,9 +1,11 @@
 pub mod audit;
 pub mod capture;
+pub mod clab;
 pub mod collections;
 pub mod config;
 pub mod confine;
 pub mod connect;
+pub mod desktop;
 pub mod error;
 pub mod fsutil;
 pub mod hardware;

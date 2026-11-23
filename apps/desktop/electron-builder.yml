@@ -36,6 +36,10 @@ linux:
   category: Network
   maintainer: Late contributors <noreply@users.noreply.github.com>
   icon: src-tauri/icons
+appImage:
+  # An AppImage cannot keep a setuid chrome-sandbox. Deb and rpm chmod it in postinst.
+  executableArgs:
+    - --no-sandbox
 deb:
   afterInstall: ../../installer/linux/after-install.sh
   fpm:

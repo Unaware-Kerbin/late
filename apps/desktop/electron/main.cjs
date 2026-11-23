@@ -22,10 +22,16 @@ app.commandLine.appendSwitch("log-level", "3");
 if (process.platform === "linux") {
   // Wayland GPU path blanked some Intel Arc boxes; X11 stays reliable.
   app.commandLine.appendSwitch("ozone-platform", "x11");
+  // node_modules chrome-sandbox is not setuid. With user namespaces
+  // restricted, the helper aborts unless the sandbox is off from the start.
+  if (process.env.ELECTRON_DISABLE_SANDBOX === "1") {
+    app.commandLine.appendSwitch("no-sandbox");
+  }
 }
 
 const DEV_URL = process.env.LATE_DEV_URL || "http://127.0.0.1:5173";
 const children = [];
+const workspaceSpecs = new Map();
 
 function resource(...parts) {
   if (app.isPackaged) return path.join(process.resourcesPath, ...parts);
@@ -338,13 +344,28 @@ function installAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function createWindow() {
+function windowQuery(role, wid) {
+  const q = new URLSearchParams();
+  if (role && role !== "main") q.set("lateWindow", role);
+  if (wid) q.set("wid", wid);
+  return q;
+}
+
+function createWindow(opts = {}) {
+  const role = opts.role === "clab" || opts.role === "workspace" ? opts.role : "main";
+  const wid = typeof opts.wid === "string" ? opts.wid : "";
+  const title =
+    role === "clab"
+      ? "Containerlab — Late"
+      : opts.title
+        ? String(opts.title)
+        : "Late — Local AI Terminal Emulator";
   const win = new BrowserWindow({
-    width: 1480,
-    height: 940,
-    minWidth: 960,
+    width: role === "clab" ? 920 : 1480,
+    height: role === "clab" ? 720 : 940,
+    minWidth: role === "clab" ? 720 : 960,
     minHeight: 640,
-    title: "Late — Local AI Terminal Emulator",
+    title,
     backgroundColor: "#070b10",
     show: false,
     autoHideMenuBar: true,
@@ -369,10 +390,14 @@ function createWindow() {
   setTimeout(() => {
     if (!win.isDestroyed() && !win.isVisible()) win.show();
   }, 2500);
+  const q = windowQuery(role, wid);
   if (app.isPackaged) {
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    const query = {};
+    for (const [k, v] of q.entries()) query[k] = v;
+    win.loadFile(path.join(__dirname, "../dist/index.html"), { query });
   } else {
-    win.loadURL(DEV_URL);
+    const qs = q.toString();
+    win.loadURL(qs ? `${DEV_URL}?${qs}` : DEV_URL);
   }
   win.webContents.on("render-process-gone", (_e, details) => {
     console.error("late renderer gone", details);
@@ -419,6 +444,57 @@ app.whenReady().then(() => {
     } catch {
       return false;
     }
+  });
+  ipcMain.handle("late:open-window", (event, spec) => {
+    if (!ipcAllowed(event) || !spec || typeof spec !== "object") return { ok: false };
+    if (spec.role === "clab") {
+      const existing = BrowserWindow.getAllWindows().find((w) => {
+        if (w.isDestroyed()) return false;
+        try {
+          return new URL(w.webContents.getURL()).searchParams.get("lateWindow") === "clab";
+        } catch {
+          return false;
+        }
+      });
+      if (existing) {
+        existing.show();
+        existing.focus();
+        return { ok: true };
+      }
+      createWindow({ role: "clab" });
+      return { ok: true };
+    }
+    if (spec.role !== "workspace") return { ok: false };
+    const host = typeof spec.host === "string" ? spec.host.trim() : "";
+    const username = typeof spec.username === "string" ? spec.username.trim() : "";
+    if (!host || !username) return { ok: false };
+    const wid = `${Date.now().toString(36)}-${workspaceSpecs.size}`;
+    const title = typeof spec.name === "string" && spec.name.trim() ? spec.name.trim() : host;
+    workspaceSpecs.set(wid, {
+      host,
+      port: Number(spec.port) || 22,
+      username,
+      password: typeof spec.password === "string" ? spec.password : "",
+      savePassword: spec.savePassword === true,
+      jumpHost: typeof spec.jumpHost === "string" ? spec.jumpHost.trim() : "",
+      name: title,
+      vendor: typeof spec.vendor === "string" ? spec.vendor : "generic",
+    });
+    createWindow({ role: "workspace", wid, title });
+    return { ok: true };
+  });
+  ipcMain.handle("late:take-workspace", (event) => {
+    if (!ipcAllowed(event)) return null;
+    let wid = "";
+    try {
+      wid = new URL(event.sender.getURL()).searchParams.get("wid") || "";
+    } catch {
+      wid = "";
+    }
+    if (!wid || !workspaceSpecs.has(wid)) return null;
+    const spec = workspaceSpecs.get(wid);
+    workspaceSpecs.delete(wid);
+    return spec;
   });
   ipcMain.handle("late:pick-directory", async (event, opts) => {
     if (!ipcAllowed(event)) return null;

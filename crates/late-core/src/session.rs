@@ -156,6 +156,9 @@ pub struct OpenSession {
     pub name: Option<String>,
     /// Explicit connect flag: start logging this session (Quick Connect checkbox).
     pub log_session: bool,
+    pub jump_host: Option<String>,
+    pub folder: Option<String>,
+    pub allow_agent: bool,
 }
 
 impl OpenSession {
@@ -181,6 +184,9 @@ impl OpenSession {
             vendor: None,
             name: None,
             log_session: false,
+            jump_host: None,
+            folder: None,
+            allow_agent: false,
         }
     }
 }
@@ -208,6 +214,9 @@ impl Clone for OpenSession {
             vendor: self.vendor,
             name: self.name.clone(),
             log_session: self.log_session,
+            jump_host: self.jump_host.clone(),
+            folder: self.folder.clone(),
+            allow_agent: self.allow_agent,
         }
     }
 }
@@ -223,6 +232,9 @@ impl std::fmt::Debug for OpenSession {
             .field("password", &self.password.as_ref().map(|_| "***"))
             .field("save_session", &self.save_session)
             .field("save_password", &self.save_password)
+            .field("jump_host", &self.jump_host)
+            .field("folder", &self.folder)
+            .field("allow_agent", &self.allow_agent)
             .finish_non_exhaustive()
     }
 }
@@ -243,8 +255,9 @@ pub struct App {
     pub secrets: SecretStore,
     pub providers: ProviderVault,
     pub policy: Arc<Mutex<PolicyEngine>>,
-    pub events: broadcast::Sender<AppEvent>,
+    pub     events: broadcast::Sender<AppEvent>,
     inner: Arc<Mutex<Inner>>,
+    pub desktops: crate::desktop::Tunnels,
 }
 
 struct Inner {
@@ -311,6 +324,7 @@ impl App {
                 pcaps: HashMap::new(),
                 live_caps: HashMap::new(),
             })),
+            desktops: crate::desktop::Tunnels::new(),
         })
     }
 
@@ -737,8 +751,23 @@ impl App {
                 key_path: req.key_path.clone(),
                 save_session: req.save_session,
                 save_password: req.save_password,
+                allow_agent: req.allow_agent,
             },
         )?;
+        if let Some(jump) = req
+            .jump_host
+            .clone()
+            .or_else(|| prepared.device.jump_host.clone())
+        {
+            let jump = jump.trim().to_string();
+            if !jump.is_empty() {
+                crate::ssh::validate_jump(&jump)?;
+                prepared.device.jump_host = Some(jump);
+            }
+        }
+        if let Some(folder) = req.folder.clone().filter(|s| !s.trim().is_empty()) {
+            prepared.device.folder = Some(folder.trim().to_string());
+        }
         let session_password = prepared.session_password.take();
         let mut known = self.inner.lock().known.clone();
         let ssh_pw = session_password.clone();
@@ -807,6 +836,9 @@ impl App {
         reconnect.save_session = false;
         reconnect.save_password = false;
         reconnect.log_session = req.log_session;
+        reconnect.jump_host = prepared.device.jump_host.clone();
+        reconnect.folder = prepared.device.folder.clone();
+        reconnect.allow_agent = req.allow_agent && !persist_password && session_password.is_none();
         if persist_password {
             if let Some(mut pw) = session_password {
                 pw.zeroize();

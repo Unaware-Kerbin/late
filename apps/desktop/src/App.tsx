@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { ClabScreen } from "./components/ClabScreen";
 import { ShellLayout } from "./components/ShellLayout";
 import { StatusBar } from "./components/StatusBar";
 
@@ -16,11 +17,12 @@ import {
   resetAppearance,
   setState,
   splitFocused,
+  openSession,
   openStagePane,
   useApp,
 } from "./store";
 import { loadUpdateCheckOnStart } from "./lib/updatePrefs";
-import type { PaneState, SplitNode, SplitPlacement, TabState } from "./types";
+import type { PaneState, SplitNode, SplitPlacement, TabState, Vendor } from "./types";
 
 const SPLIT_CHOICES: { place: SplitPlacement; label: string; hint: string }[] = [
   { place: "left", label: "Split left", hint: "Ctrl+Shift+←" },
@@ -49,7 +51,26 @@ function tabSessionChrome(
   return { live: false };
 }
 
+const VENDORS: Vendor[] = [
+  "junos",
+  "cisco_ios",
+  "cisco_ios_xe",
+  "cisco_nxos",
+  "arista_eos",
+  "panos",
+  "linux",
+  "fortios",
+  "routeros",
+  "aos_cx",
+  "generic",
+];
+
+function asVendor(value: string | undefined): Vendor {
+  return VENDORS.find((v) => v === value) ?? "generic";
+}
+
 export function App() {
+  const lateWindow = new URLSearchParams(window.location.search).get("lateWindow");
   const tabs = useApp((s) => s.tabs);
   const activeTabId = useApp((s) => s.activeTabId);
   const panes = useApp((s) => s.panes);
@@ -61,8 +82,34 @@ export function App() {
   const [renaming, setRenaming] = useState<string | null>(null);
 
   useEffect(() => {
+    if (lateWindow === "clab") return;
     boot();
+    if (lateWindow === "workspace") {
+      void (async () => {
+        const spec = await window.lateRuntime?.takeWorkspace?.();
+        if (!spec) return;
+        await openSession(
+          undefined,
+          "ssh",
+          { acceptUnknownHost: true, replaceHostKey: true },
+          {
+            host: spec.host,
+            port: spec.port,
+            username: spec.username,
+            password: spec.password || undefined,
+            saveSession: true,
+            savePassword: Boolean(spec.savePassword && spec.password),
+            name: spec.name,
+            vendor: asVendor(spec.vendor),
+            jumpHost: spec.jumpHost,
+            folder: "Containerlab",
+            allowAgent: !spec.password,
+          },
+        );
+      })();
+    }
     const startup = window.setTimeout(() => {
+      if (lateWindow === "workspace") return;
       if (loadUpdateCheckOnStart()) void checkForUpdates({ reason: "startup" });
     }, 4000);
     const offMenu = window.lateRuntime?.onUpdateMenuCheck?.(() => {
@@ -153,6 +200,8 @@ export function App() {
       window.removeEventListener("wheel", onWheel);
     };
   }, []);
+
+  if (lateWindow === "clab") return <ClabScreen />;
 
   return (
     <div className="app">

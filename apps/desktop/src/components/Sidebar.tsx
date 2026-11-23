@@ -45,7 +45,7 @@ type VisRow =
   | { key: string; type: "folder"; path: string; name: string; depth: number; count: number }
   | { key: string; type: "device"; device: Device; depth: number }
   | { key: string; type: "tools"; depth: number }
-  | { key: string; type: "tool"; id: "pty" | "pcap" | "stage"; depth: number };
+  | { key: string; type: "tool"; id: "pty" | "pcap" | "stage" | "clab"; depth: number };
 
 const ROOT_COLLAPSE = "__sessions__";
 const TOOLS_COLLAPSE = "__tools__";
@@ -411,6 +411,7 @@ export function Sidebar() {
       out.push({ key: "t:pty", type: "tool", id: "pty", depth: 1 });
       out.push({ key: "t:pcap", type: "tool", id: "pcap", depth: 1 });
       out.push({ key: "t:stage", type: "tool", id: "stage", depth: 1 });
+      out.push({ key: "t:clab", type: "tool", id: "clab", depth: 1 });
     }
     return out;
   }, [tree, collapsed, filtering, toolsOpen]);
@@ -761,7 +762,10 @@ export function Sidebar() {
             e.currentTarget.focus();
             selectFolder(row.path, false);
           }}
-          onDoubleClick={() => toggle(row.path)}
+          onDoubleClick={() => {
+            toggle(row.path);
+            if (row.path === "Containerlab") void window.lateRuntime?.openWindow?.({ role: "clab" });
+          }}
           onContextMenu={(e) => openMenu({ kind: "folder", path: row.path, x: 0, y: 0 }, e)}
           onDragStart={(e) => {
             if (!row.path) {
@@ -841,9 +845,21 @@ export function Sidebar() {
     }
     if (row.type === "tool") {
       const label =
-        row.id === "pty" ? "Local PTY" : row.id === "pcap" ? "Packet capture" : "Staging";
+        row.id === "pty"
+          ? "Local PTY"
+          : row.id === "pcap"
+            ? "Packet capture"
+            : row.id === "clab"
+              ? "Containerlab"
+              : "Staging";
       const meta =
-        row.id === "pty" ? "host shell" : row.id === "pcap" ? "pcap / tcpdump" : "CLI / Ansible drafts";
+        row.id === "pty"
+          ? "host shell"
+          : row.id === "pcap"
+            ? "pcap / tcpdump"
+            : row.id === "clab"
+              ? "window per device"
+              : "CLI / Ansible drafts";
       return (
         <button
           key={row.key}
@@ -853,7 +869,9 @@ export function Sidebar() {
           onClick={() => {
             if (row.id === "pty") void openLocal();
             else if (row.id === "stage") openStagePane();
-            else openPcapPane();
+            else if (row.id === "clab") {
+              void window.lateRuntime?.openWindow?.({ role: "clab" });
+            } else openPcapPane();
           }}
           onDragOver={(e) => {
             acceptSidebarDrag(e, { type: "tools" });

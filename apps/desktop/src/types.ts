@@ -494,6 +494,9 @@ export interface SessionLogin {
   vendor?: Vendor;
   /** Start a SecureCRT-style transcript for this connect. */
   logSession?: boolean;
+  jumpHost?: string;
+  folder?: string;
+  allowAgent?: boolean;
 }
 
 export interface ConnectPrompt {

@@ -188,6 +188,73 @@ async fn dispatch(app: &App, method: &str, params: Value) -> Result<Value, LateE
             let info = app.open_session(parse_open(&params)?)?;
             Ok(serde_json::to_value(info)?)
         }
+        "clab.config" => {
+            if json_flag(&params, &["save"]) {
+                let cfg = late_core::clab::ClabConfig {
+                    host: pstr(&params, &["host", "clab_host"]).unwrap_or_default(),
+                    ssh_user: pstr(&params, &["ssh_user", "sshUser"]).unwrap_or_default(),
+                    device_user: pstr(&params, &["device_user", "deviceUser", "user"]).unwrap_or_default(),
+                };
+                late_core::clab::save_config(&cfg)?;
+            }
+            let cfg = late_core::clab::load_config();
+            Ok(json!({
+                "host": cfg.host,
+                "ssh_user": cfg.ssh_user,
+                "device_user": cfg.device_user,
+            }))
+        }
+        "clab.discover" => {
+            let host = req_str(&params, &["host", "clab_host"])?;
+            let user = req_str(&params, &["ssh_user", "sshUser", "user"])?;
+            let nodes = blocking(move || late_core::clab::discover(&host, &user)).await?;
+            let list: Vec<_> = nodes
+                .into_iter()
+                .map(|n| {
+                    json!({
+                        "long": n.long,
+                        "short": n.short,
+                        "kind": n.kind,
+                        "ip": n.ip,
+                        "vendor": n.vendor.as_str(),
+                    })
+                })
+                .collect();
+            Ok(json!({ "nodes": list }))
+        }
+        "desktop.open" => {
+            let protocol = late_core::desktop::DesktopProto::parse(
+                &req_str(&params, &["protocol"])?,
+            )?;
+            let host = req_str(&params, &["host"])?;
+            let port = params
+                .get("port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u16;
+            let username = pstr(&params, &["username", "user"]).unwrap_or_default();
+            let password = pstr(&params, &["password"]);
+            let jump = pstr(&params, &["jump", "jump_host", "jumpHost"]);
+            let name = pstr(&params, &["name"]).unwrap_or_default();
+            let app = app.clone();
+            let info = blocking(move || {
+                app.desktops.open(late_core::desktop::DesktopRequest {
+                    protocol,
+                    host,
+                    port,
+                    username,
+                    password,
+                    jump,
+                    name,
+                })
+            })
+            .await?;
+            Ok(serde_json::to_value(info)?)
+        }
+        "desktop.list" => Ok(serde_json::to_value(app.desktops.list())?),
+        "desktop.close" => {
+            app.desktops.close(&req_str(&params, &["id"])?)?;
+            Ok(json!({"ok": true}))
+        }
         "known_hosts.accept" | "knownHosts.accept" => {
             let host = req_str(&params, &["host"])?;
             let fp = req_str(&params, &["fingerprint", "presented"])?;
@@ -611,6 +678,9 @@ fn parse_open(params: &Value) -> Result<OpenSession, LateError> {
     req.vendor = pstr(params, &["vendor"]).map(|s| Vendor::parse(&s));
     req.name = pstr(params, &["name"]);
     req.log_session = json_flag(params, &["log_session", "logSession", "logging"]);
+    req.jump_host = pstr(params, &["jump_host", "jumpHost", "jump"]);
+    req.folder = pstr(params, &["folder"]);
+    req.allow_agent = json_flag(params, &["allow_agent", "allowAgent"]);
     Ok(req)
 }
 

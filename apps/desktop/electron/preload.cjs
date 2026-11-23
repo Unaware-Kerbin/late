@@ -43,4 +43,6 @@ contextBridge.exposeInMainWorld("lateRuntime", {
   },
   pickDirectory: (opts) =>
     ipcRenderer.invoke("late:pick-directory", opts && typeof opts === "object" ? opts : {}),
+  openWindow: (spec) => ipcRenderer.invoke("late:open-window", spec && typeof spec === "object" ? spec : {}),
+  takeWorkspace: () => ipcRenderer.invoke("late:take-workspace"),
 });

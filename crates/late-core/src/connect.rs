@@ -14,6 +14,8 @@ pub struct ConnectLogin {
     pub key_path: Option<String>,
     pub save_session: bool,
     pub save_password: bool,
+    /// Log in with the SSH agent when this attempt has no password and no key.
+    pub allow_agent: bool,
 }
 
 impl Drop for ConnectLogin {
@@ -99,10 +101,11 @@ pub fn prepare_ssh(
 
     let saved_has_password = saved_profile.as_ref().is_some_and(|p| p.has_password);
     let has_key = key_path.as_ref().is_some_and(|k| !k.is_empty());
+    let allow_agent = login.allow_agent && typed_pw.is_none() && !has_key;
     let use_agent =
         saved_profile.as_ref().is_some_and(|p| p.use_agent) && typed_pw.is_none() && !has_key;
 
-    if typed_pw.is_none() && !has_key && !saved_has_password && !use_agent {
+    if typed_pw.is_none() && !has_key && !saved_has_password && !use_agent && !allow_agent {
         return Err(LateError::Message(
             "enter a password (or a key path) so Late can log in".into(),
         ));
@@ -231,6 +234,7 @@ mod tests {
                 key_path: None,
                 save_session: false,
                 save_password: true, // must still not persist
+                allow_agent: false,
             },
         )
         .unwrap();
@@ -267,6 +271,7 @@ mod tests {
                 key_path: None,
                 save_session: true,
                 save_password: true,
+                allow_agent: false,
             },
         )
         .unwrap();
@@ -306,6 +311,7 @@ mod tests {
                 key_path: Some("/home/you/.ssh/id_ed25519".into()),
                 save_session: true,
                 save_password: true,
+                allow_agent: false,
             },
         )
         .unwrap();
@@ -350,6 +356,7 @@ mod tests {
                 key_path: None,
                 save_session: false,
                 save_password: false,
+                allow_agent: false,
             },
         )
         .unwrap();
@@ -379,6 +386,7 @@ mod tests {
                 key_path: None,
                 save_session: false,
                 save_password: false,
+                allow_agent: false,
             },
         )
         .unwrap();

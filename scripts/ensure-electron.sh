@@ -21,7 +21,18 @@ for dir in "$ROOT/node_modules/electron/dist" "$ROOT/apps/desktop/node_modules/e
 done
 
 echo "late: fetching Electron binary…" >&2
-npm exec -w late-desktop -- electron --version >/dev/null
+# Linux extracts chrome-sandbox without the setuid bit, and a bare
+# `electron --version` aborts before it prints a version. macOS and
+# Windows keep the sandbox for this probe.
+case "$(uname -s)" in
+  Linux*)
+    export ELECTRON_DISABLE_SANDBOX=1
+    npm exec -w late-desktop -- electron --no-sandbox --version >/dev/null || true
+    ;;
+  *)
+    npm exec -w late-desktop -- electron --version >/dev/null || true
+    ;;
+esac
 
 for dir in "$ROOT/node_modules/electron/dist" "$ROOT/apps/desktop/node_modules/electron/dist"; do
   if [[ -e "$dir/$name" ]]; then

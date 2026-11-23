@@ -784,6 +784,11 @@ export async function openSession(
         replaceHostKey: hostKeyFlags?.replaceHostKey,
         accept_unknown_host: hostKeyFlags?.acceptUnknownHost,
         replace_host_key: hostKeyFlags?.replaceHostKey,
+        jumpHost: login?.jumpHost,
+        jump_host: login?.jumpHost,
+        folder: login?.folder,
+        allowAgent: login?.allowAgent,
+        allow_agent: login?.allowAgent,
       },
       { timeoutMs: 28_000, signal: ac.signal },
     );

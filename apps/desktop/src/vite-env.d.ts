@@ -8,6 +8,27 @@ interface LateRuntime {
   isDirectory?: (path: string) => Promise<boolean>;
   /** Native folder picker (Electron). Returns an absolute path or null if cancelled. */
   pickDirectory?: (opts?: { title?: string; defaultPath?: string }) => Promise<string | null>;
+  openWindow?: (spec: {
+    role: "clab" | "workspace";
+    host?: string;
+    port?: number;
+    username?: string;
+    password?: string;
+    savePassword?: boolean;
+    jumpHost?: string;
+    name?: string;
+    vendor?: string;
+  }) => Promise<{ ok?: boolean }>;
+  takeWorkspace?: () => Promise<{
+    host: string;
+    port: number;
+    username: string;
+    password: string;
+    savePassword: boolean;
+    jumpHost: string;
+    name: string;
+    vendor: string;
+  } | null>;
   updateMeta?: () => Promise<{
     lateVersion: string;
     packaged: boolean;

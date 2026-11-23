@@ -2183,3 +2183,30 @@ html[data-font="mono"] {
   font-size: 12px;
   white-space: pre-wrap;
 }
+
+.clab-screen {
+  min-height: 100%;
+  padding: 28px 32px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--bg);
+  color: var(--text);
+}
+.clab-head h1 { margin: 0 0 6px; font-size: 22px; }
+.clab-head p, .clab-hint, .clab-note { margin: 0; color: var(--muted); max-width: 62ch; }
+.clab-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.clab-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.clab-form input[type="text"], .clab-form input:not([type]) , .clab-form input[type="password"] {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+.clab-check { grid-column: 1 / -1; flex-direction: row !important; align-items: center; gap: 8px; }
+.clab-actions { display: flex; gap: 8px; grid-column: 1 / -1; }
+.clab-nodes, .clab-desks ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.clab-nodes label, .clab-desks li { display: flex; gap: 10px; align-items: center; }
+.clab-meta { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.clab-desks h2 { font-size: 14px; margin: 0 0 8px; }

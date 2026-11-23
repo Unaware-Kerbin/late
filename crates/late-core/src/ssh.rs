@@ -414,7 +414,19 @@ pub fn open_ssh(
     let port = device.port.unwrap_or(22);
     let hk = host_port_key(&host, port);
     let pinned = known.pins.get(&hk).cloned();
-    let (_text, entries, chosen) = probe_keyscan_for_pin(&host, port, pinned.as_deref())?;
+    let jump = device
+        .jump_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    if let Some(ref j) = jump {
+        validate_jump(j)?;
+    }
+    let (_text, entries, chosen) = match &jump {
+        Some(j) => probe_keyscan_via_jump(&host, port, pinned.as_deref(), j)?,
+        None => probe_keyscan_for_pin(&host, port, pinned.as_deref())?,
+    };
     let fps: Vec<_> = entries.iter().map(|e| e.fingerprint.as_str()).collect();
     let presented = chosen.fingerprint.clone();
     let algo = chosen.algo.clone();
@@ -464,6 +476,10 @@ pub fn open_ssh(
     let mut cmd = CommandBuilder::new("ssh");
     cmd.arg("-tt");
     apply_strict_host_opts_pty(&mut cmd, &kh, &algo);
+    if let Some(ref j) = jump {
+        cmd.arg("-o");
+        cmd.arg(proxy_jump_option(j)?);
+    }
     cmd.arg("-p");
     cmd.arg(port.to_string());
     if let Some(key) = confined_identity(profile)? {
@@ -1334,5 +1350,99 @@ fn apply_strict_host_opts_pty(cmd: &mut CommandBuilder, kh: &Path, algo: &str) {
     if let Some(a) = sanitized_host_key_algo(algo) {
         cmd.arg("-o");
         cmd.arg(format!("HostKeyAlgorithms={a}"));
+    }
+}
+
+/// Lab host or device address. One hop, no shell metacharacters, not an ssh flag.
+pub(crate) fn validate_jump(jump: &str) -> Result<()> {
+    if jump.is_empty()
+        || jump.len() > 200
+        || jump.starts_with('-')
+        || !jump
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@' | ':'))
+    {
+        return Err(LateError::Message(
+            "jump host must look like user@lab-host".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_scan_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() < 253
+        && !host.starts_with('-')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' ))
+}
+
+pub(crate) fn proxy_jump_option(jump: &str) -> Result<String> {
+    validate_jump(jump)?;
+    Ok(format!(
+        "ProxyCommand=ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UpdateHostKeys=no -o ConnectTimeout=8 -W %h:%p {jump}"
+    ))
+}
+
+pub(crate) fn run_capturing(cmd: Command, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>)> {
+    let (out, err, _ok) = wait_command(cmd, timeout, "host", 22)?;
+    Ok((out, err))
+}
+
+fn probe_keyscan_via_jump(
+    host: &str,
+    port: u16,
+    pinned: Option<&str>,
+    jump: &str,
+) -> Result<(String, Vec<KeyscanEntry>, KeyscanEntry)> {
+    validate_jump(jump)?;
+    if !validate_scan_host(host) {
+        return Err(LateError::Message("device address is not a hostname or IP".into()));
+    }
+    let remote = format!("ssh-keyscan -T 5 -t ed25519,ecdsa,rsa -p {port} {host}");
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "UpdateHostKeys=no",
+        "-o",
+        "ConnectTimeout=8",
+        jump,
+        &remote,
+    ]);
+    let (stdout, stderr, _ok) = wait_command(cmd, KEYSCAN_TIMEOUT, host, port)?;
+    let text = String::from_utf8_lossy(&stdout).into_owned();
+    if parse_keyscan_entries(&text).is_empty() {
+        let combined = format!("{text}\n{}", String::from_utf8_lossy(&stderr));
+        if let Some((cause, reason)) = classify_connect_text(&combined) {
+            return Err(unable_to_connect(host, port, cause, reason));
+        }
+        return Err(unable_to_connect(
+            host,
+            port,
+            "failed",
+            "no SSH banner via the lab host",
+        ));
+    }
+    let chosen = pick_keyscan_entry_for_pin(&text, pinned)?;
+    let entries = parse_keyscan_entries(&text);
+    Ok((text, entries, chosen))
+}
+
+#[cfg(test)]
+mod jump_tests {
+    use super::*;
+
+    #[test]
+    fn jump_option_is_batchmode_and_has_no_password_slot() {
+        let opt = proxy_jump_option("lab@192.0.2.10").unwrap();
+        assert!(opt.contains("BatchMode=yes"));
+        assert!(opt.contains("-W %h:%p lab@192.0.2.10"));
+        assert!(proxy_jump_option("lab;rm").is_err());
+        assert!(proxy_jump_option("-oProxyCommand=evil").is_err());
     }
 }

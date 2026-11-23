@@ -2,6 +2,12 @@
 # Late rpm/pacman postinst. Does not install Docker (Suggests/optdepends only).
 set -e
 echo "Late: Ollama and llama.cpp are included. Model weights are not — use Pull / Download on your computer."
+for helper in /opt/Late/chrome-sandbox /opt/late/chrome-sandbox /usr/lib/late/chrome-sandbox; do
+  if [ -f "$helper" ]; then
+    chown root:root "$helper" || true
+    chmod 4755 "$helper" || true
+  fi
+done
 if command -v docker >/dev/null 2>&1; then
   echo "Late: Docker is present. vLLM Start can pull an image on first use."
 else

@@ -17,12 +17,21 @@ resolve_root() {
 }
 ROOT="$(resolve_root)"
 export LATE_ROOT="$ROOT"
-export LATE_ROOT="$ROOT"
 cd "$ROOT"
 if [[ ! -f "$ROOT/Cargo.toml" ]]; then
   echo "late: project root not found (resolved to $ROOT)" >&2
   exit 1
 fi
+if [[ "$(id -u)" -eq 0 ]]; then
+  echo "late: start it as your user. A root shell does not see your cargo and cannot open the window." >&2
+  exit 1
+fi
+case "$(uname -s)" in
+  Darwin*) LATE_LOG_DIR="${HOME}/Library/Logs/late" ;;
+  MINGW*|MSYS*|CYGWIN*) LATE_LOG_DIR="${LOCALAPPDATA:-$HOME/AppData/Local}/late/log" ;;
+  *) LATE_LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/late" ;;
+esac
+mkdir -p "$LATE_LOG_DIR"
 
 INSTALL_PREFIX="${HOME}/.local"
 
@@ -97,6 +106,9 @@ wait_up() {
     n=$((n + 1))
     if [[ "$n" -gt 40 ]]; then
       echo "late: timed out waiting for $name at $url" >&2
+      if [[ -n "${LATE_LOG_DIR:-}" ]]; then
+        echo "late: log: $LATE_LOG_DIR" >&2
+      fi
       return 1
     fi
     sleep 0.25
@@ -158,11 +170,11 @@ if [[ -r "${XDG_CONFIG_HOME:-$HOME/.config}/late/sidecar.token" ]]; then
   TOKEN="$(tr -d '\n' < "${XDG_CONFIG_HOME:-$HOME/.config}/late/sidecar.token")"
 fi
 echo "late: sidecar :7430"
-LATE_RPC_TOKEN="$TOKEN" npm run start -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
+LATE_RPC_TOKEN="$TOKEN" npm run start -w late-agent-sidecar >"$LATE_LOG_DIR/sidecar.log" 2>&1 &
 started+=($!)
 sleep 0.4
 if ! up "http://127.0.0.1:7430/health"; then
-  LATE_RPC_TOKEN="$TOKEN" npm run dev -w late-agent-sidecar >/tmp/late-sidecar.log 2>&1 &
+  LATE_RPC_TOKEN="$TOKEN" npm run dev -w late-agent-sidecar >"$LATE_LOG_DIR/sidecar.log" 2>&1 &
   started+=($!)
 fi
 wait_up "http://127.0.0.1:7430/health" "sidecar"
@@ -170,7 +182,7 @@ wait_up "http://127.0.0.1:7430/health" "sidecar"
 UI_URL="http://127.0.0.1:5173"
 if ! up "$UI_URL"; then
   echo "late: Vite :5173"
-  npm run dev -w late-desktop >/tmp/late-ui.log 2>&1 &
+  npm run dev -w late-desktop >"$LATE_LOG_DIR/ui.log" 2>&1 &
   started+=($!)
   UI_URL="http://127.0.0.1:5173"
   wait_up "$UI_URL" "UI"
@@ -181,16 +193,28 @@ if ! ELECTRON_BIN="$("$ROOT/scripts/ensure-electron.sh")"; then
   exit 1
 fi
 
-export DISPLAY="${DISPLAY:-:0}"
 export LATE_DEV_URL="$UI_URL"
 # GPU compositing is on by default (snappier). Intel Arc + Wayland used to blank the
-# window — Electron main forces X11. Escape hatch: LATE_SOFTWARE_RENDER=1
-ELECTRON_ARGS=(--no-sandbox --ozone-platform=x11 --log-level=3)
+# window — Electron main forces X11 on Linux. Escape hatch: LATE_SOFTWARE_RENDER=1
+# Disable the Chromium sandbox only when Linux chrome-sandbox is not setuid.
+# macOS and Windows keep the sandbox. A setuid helper keeps it on Linux too.
+ELECTRON_ARGS=(--log-level=3)
+case "$(uname -s)" in
+  Linux*)
+    export DISPLAY="${DISPLAY:-:0}"
+    ELECTRON_ARGS+=(--ozone-platform=x11)
+    helper="$(dirname "$ELECTRON_BIN")/chrome-sandbox"
+    if [[ ! -u "$helper" ]]; then
+      export ELECTRON_DISABLE_SANDBOX=1
+      ELECTRON_ARGS=(--no-sandbox "${ELECTRON_ARGS[@]}")
+    fi
+    ;;
+esac
 if [[ "${LATE_SOFTWARE_RENDER:-}" == "1" || "${LATE_SOFTWARE_RENDER:-}" == "true" ]]; then
   export LIBGL_ALWAYS_SOFTWARE=1
   ELECTRON_ARGS+=(--disable-gpu --disable-gpu-compositing --disable-gpu-vsync)
 fi
 echo "late: opening window"
 "$ELECTRON_BIN" "${ELECTRON_ARGS[@]}" \
-  "$ROOT/apps/desktop/electron/main.cjs" >>/tmp/late-electron.log 2>&1
+  "$ROOT/apps/desktop/electron/main.cjs" >>"$LATE_LOG_DIR/electron.log" 2>&1
 # Window closed — cleanup only what we started.
