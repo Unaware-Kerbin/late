@@ -76,7 +76,7 @@ impl PolicyEngine {
                     || path.extension().and_then(|s| s.to_str()) == Some("yml")
                 {
                     let raw = std::fs::read_to_string(&path)?;
-                    let p: VendorPolicy = serde_yaml::from_str(&raw)?;
+                    let p: VendorPolicy = serde_saphyr::from_str(&raw)?;
                     engine.policies.insert(p.vendor.clone(), p);
                 }
             }
@@ -94,7 +94,7 @@ impl PolicyEngine {
             let ext = path.extension().and_then(|s| s.to_str());
             if ext == Some("yaml") || ext == Some("yml") {
                 let raw = std::fs::read_to_string(&path)?;
-                let p: VendorPolicy = serde_yaml::from_str(&raw)?;
+                let p: VendorPolicy = serde_saphyr::from_str(&raw)?;
                 self.policies.insert(p.vendor.clone(), p);
             }
         }
@@ -386,8 +386,8 @@ fn verb_on_allow(allow: &[String], stage_l: &str) -> bool {
 pub fn absorb_bundled_allow(dest: &Path, bundled: &Path) -> Result<bool> {
     let dest_raw = std::fs::read_to_string(dest)?;
     let bundled_raw = std::fs::read_to_string(bundled)?;
-    let mut dest_p: VendorPolicy = serde_yaml::from_str(&dest_raw)?;
-    let bundled_p: VendorPolicy = serde_yaml::from_str(&bundled_raw)?;
+    let mut dest_p: VendorPolicy = serde_saphyr::from_str(&dest_raw)?;
+    let bundled_p: VendorPolicy = serde_saphyr::from_str(&bundled_raw)?;
     if !dest_p.vendor.is_empty()
         && !bundled_p.vendor.is_empty()
         && !dest_p.vendor.eq_ignore_ascii_case(&bundled_p.vendor)
@@ -402,7 +402,7 @@ pub fn absorb_bundled_allow(dest: &Path, bundled: &Path) -> Result<bool> {
         }
     }
     if added {
-        std::fs::write(dest, serde_yaml::to_string(&dest_p)?)?;
+        std::fs::write(dest, serde_saphyr::to_string(&dest_p)?)?;
     }
     Ok(added)
 }
@@ -502,7 +502,7 @@ pub fn write_vendor_policy(path: &Path, policy: &VendorPolicy) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_yaml::to_string(policy)?)?;
+    std::fs::write(path, serde_saphyr::to_string(policy)?)?;
     Ok(())
 }
 
@@ -1170,7 +1170,7 @@ allow_always_allow: true
         )
         .unwrap();
         let raw = std::fs::read_to_string(&dest).unwrap();
-        let p: VendorPolicy = serde_yaml::from_str(&raw).unwrap();
+        let p: VendorPolicy = serde_saphyr::from_str(&raw).unwrap();
         let saved = apply_allow_list(
             p,
             vec![
@@ -1184,7 +1184,7 @@ allow_always_allow: true
         .unwrap();
         write_vendor_policy(&dest, &saved).unwrap();
         let loaded: VendorPolicy =
-            serde_yaml::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+            serde_saphyr::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
         assert!(
             loaded.allow.iter().any(|a| a.eq_ignore_ascii_case("name")),
             "{:?}",
@@ -1201,7 +1201,7 @@ allow_always_allow: true
 
     #[test]
     fn explicit_reload_drops_overlay_deny_and_warns_as_dangerous() {
-        let p: VendorPolicy = serde_yaml::from_str(
+        let p: VendorPolicy = serde_saphyr::from_str(
             r#"
 vendor: aos_cx
 allow: [show]

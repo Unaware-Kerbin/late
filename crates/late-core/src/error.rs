@@ -44,7 +44,9 @@ pub enum LateError {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
     #[error("yaml: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_saphyr::Error),
+    #[error("yaml: {0}")]
+    YamlWrite(#[from] serde_saphyr::SerializeError),
     #[error("toml: {0}")]
     TomlDe(#[from] toml::de::Error),
     #[error("toml: {0}")]
